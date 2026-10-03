@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
 
 STATE_DIR="${XDG_RUNTIME_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}}/tiny-dictate"
-REC_FILE="$STATE_DIR/tiny-dictate.mp3"
-REC_PIDFILE="$STATE_DIR/arecord.pid"
-WORKER_PIDFILE="$STATE_DIR/worker.pid"
-SPINNER_PIDFILE="$STATE_DIR/spinner.pid"
+# One directory per dictation. It *is* the claim on the microphone: creating it
+# with mkdir is atomic, so two dictations can never run at once.
+SESSION_DIR="$STATE_DIR/session"
+SESSION_PIDFILE="$SESSION_DIR/session.pid"
+RECORDER_PIDFILE="$SESSION_DIR/arecord.pid"
+ENCODER_PIDFILE="$SESSION_DIR/lame.pid"
+SPINNER_PIDFILE="$SESSION_DIR/spinner.pid"
+SPINNER_STOP_FILE="$SESSION_DIR/spinner.stop"
+AUDIO_FILE="$SESSION_DIR/audio.mp3"
+AUDIO_FIFO="$SESSION_DIR/audio.fifo"
+AUDIO_ERROR_FILE="$SESSION_DIR/arecord.err"
+TRANSCRIBE_ERROR_FILE="$SESSION_DIR/transcribe.err"
 NOTIFY_IDFILE="$STATE_DIR/notification.id"
 COMMAND_LOCK_DIR="$STATE_DIR/command.lock"
 
@@ -66,31 +74,71 @@ close_notification() {
     fi
 }
 
-start_spinner() {
+# The spinner is the only writer of the notification while it runs. It is never
+# killed: whoever wants to write the notification asks it to stop and waits for it,
+# so no dunstify call of the spinner can land after the notification was replaced.
+spinner_loop() {
     local label="$1"
+    local owner_pid="$2"
 
-    stop_spinner
+    # This runs in a subshell: do not inherit the caller's EXIT trap.
+    trap - EXIT
 
-    (
-        local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
-        local i=0
+    local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+    local i=0
 
-        while true; do
-            notify_message "$label ${frames[$i]}" || true
-            i=$(( (i + 1) % ${#frames[@]} ))
-            sleep 0.15
-        done
-    ) &
+    while [ ! -e "$SPINNER_STOP_FILE" ] && kill -0 "$owner_pid" 2>/dev/null; do
+        notify_message "$label ${frames[$i]}" || true
+        i=$(( (i + 1) % ${#frames[@]} ))
+        sleep 0.15
+    done
 
-    SPINNER_PID=$!
+    # The owner died without asking us to stop: nobody else will clean up, so close
+    # the notification ourselves instead of leaving it frozen on screen.
+    if [ ! -e "$SPINNER_STOP_FILE" ]; then
+        close_notification
+    fi
 }
 
+start_spinner() {
+    local label="$1"
+    local owner_pid="$2"
+
+    rm -f "$SPINNER_STOP_FILE"
+    spinner_loop "$label" "$owner_pid" &
+    SPINNER_PID=$!
+    printf '%s' "$SPINNER_PID" > "$SPINNER_PIDFILE"
+}
+
+# Ask the spinner to stop and wait for it to be gone. Once this returns, no frame
+# of the spinner is in flight and the caller may safely write the notification.
 stop_spinner() {
-    if [ -n "${SPINNER_PID:-}" ] && kill -0 "$SPINNER_PID" 2>/dev/null; then
-        kill "$SPINNER_PID" 2>/dev/null || true
-        wait "$SPINNER_PID" 2>/dev/null || true
+    local pid="${SPINNER_PID:-}"
+    local i
+
+    if [ -z "$pid" ] && [ -f "$SPINNER_PIDFILE" ]; then
+        pid="$(cat "$SPINNER_PIDFILE" 2>/dev/null)"
     fi
+    [ -z "$pid" ] && return 0
+
+    if kill -0 "$pid" 2>/dev/null; then
+        # The spinner exits when it sees the stop file, or when its owner dies. If the
+        # session directory is already gone (we are being torn down) it cannot see the
+        # file: kill it instead of waiting forever for it.
+        if ! touch "$SPINNER_STOP_FILE" 2>/dev/null; then
+            kill "$pid" 2>/dev/null || true
+        fi
+
+        # Bounded wait: a spinner is gone once kill -0 fails, and it is alive while any
+        # dunstify call of it is in flight.
+        for i in {1..40}; do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.05
+        done
+    fi
+
     SPINNER_PID=""
+    rm -f "$SPINNER_PIDFILE" 2>/dev/null
 }
 
 detect_clipboard_tool() {
@@ -164,34 +212,26 @@ acquire_command_lock() {
     return 1
 }
 
+# Query only: nothing is modified here, so a query cannot perturb a live session.
 is_running_pidfile() {
-    local pidfile="$1"
+    local pid
 
-    if [ ! -f "$pidfile" ]; then
-        return 1
-    fi
-
-    kill -0 "$(cat "$pidfile")" 2>/dev/null
+    pid="$(cat "$1" 2>/dev/null)" || return 1
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null
 }
 
 recording_active() {
-    if is_running_pidfile "$REC_PIDFILE"; then
-        return 0
-    fi
-
-    rm -f "$REC_PIDFILE"
-    return 1
+    is_running_pidfile "$RECORDER_PIDFILE"
 }
 
-worker_active() {
-    if is_running_pidfile "$WORKER_PIDFILE"; then
-        return 0
-    fi
-
-    rm -f "$WORKER_PIDFILE"
-    return 1
+session_active() {
+    is_running_pidfile "$SESSION_PIDFILE"
 }
 
+# Send a signal to the process recorded in a pidfile. The pidfile is deliberately NOT
+# removed: the session uses it to tell whether the recorder is still alive, so deleting
+# it here would make the session believe that recording is over.
 kill_from_pidfile() {
     local pidfile="$1"
     local signal="$2"
@@ -199,23 +239,21 @@ kill_from_pidfile() {
     if is_running_pidfile "$pidfile"; then
         kill "$signal" "$(cat "$pidfile")" 2>/dev/null
     fi
-
-    rm -f "$pidfile"
 }
 
-stop_spinner_with_pidfile() {
-    if [ -z "${SPINNER_PID:-}" ] && [ -f "$SPINNER_PIDFILE" ]; then
-        SPINNER_PID="$(cat "$SPINNER_PIDFILE")"
-    fi
-    stop_spinner
-    rm -f "$SPINNER_PIDFILE"
-}
+# Create the session directory. mkdir is the atomic claim: it fails when a session
+# already exists, whether it is live or stale.
+claim_session() {
+    mkdir "$SESSION_DIR" 2>/dev/null && return 0
 
-start_spinner_with_pidfile() {
-    start_spinner "$1"
-    if [ -n "${SPINNER_PID:-}" ]; then
-        printf '%s' "$SPINNER_PID" > "$SPINNER_PIDFILE"
+    # A stale directory (session killed by a signal, crash…) can be reclaimed, but
+    # never while a session or a recorder process is still alive.
+    if session_active || recording_active; then
+        return 1
     fi
+
+    rm -rf "$SESSION_DIR"
+    mkdir "$SESSION_DIR" 2>/dev/null
 }
 
 microphone_is_muted() {
@@ -260,99 +298,168 @@ ensure_micro_not_muted() {
     return 0
 }
 
+# The session process owns the whole dictation lifecycle: it outlives the `start`
+# command that forked it and it is the only process driving the progress spinner.
+session() {
+    local transcript
+    local error_message
+    local recording_failed=0
+    local encoder_failed=0
+    local had_error=0
+
+    # This runs in a subshell: do not inherit the caller's EXIT trap.
+    trap - EXIT
+    trap session_cleanup EXIT
+
+    # $BASHPID, not $$: inside a subshell $$ still expands to the pid of the
+    # `tiny-dictate start` process, which exits right after forking us.
+    start_spinner "🎤 Recording" "$BASHPID"
+
+    # Wait for the recorder, which our parent started and recorded before forking us.
+    # If the encoder dies first, the recorder writes into a pipe nobody reads and
+    # would block forever: give up instead of spinning forever.
+    while is_running_pidfile "$RECORDER_PIDFILE"; do
+        if ! is_running_pidfile "$ENCODER_PIDFILE"; then
+            recording_failed=1
+            break
+        fi
+        sleep 0.1
+    done
+
+    # The encoder exits once the recorder is gone and it has flushed its last frames.
+    # Bounded: lame blocks in open() until arecord opens the pipe, so never wait for
+    # it forever.
+    for _ in {1..100}; do
+        is_running_pidfile "$ENCODER_PIDFILE" || break
+        sleep 0.05
+    done
+
+    if is_running_pidfile "$ENCODER_PIDFILE"; then
+        recording_failed=1
+        encoder_failed=1
+    fi
+
+    [ -s "$AUDIO_FILE" ] || recording_failed=1
+
+    stop_spinner
+
+    if [ "$recording_failed" -eq 1 ]; then
+        kill_from_pidfile "$RECORDER_PIDFILE" -INT
+        kill_from_pidfile "$ENCODER_PIDFILE" -TERM
+        if [ "$encoder_failed" -eq 1 ]; then
+            error_message="the audio encoder did not finish"
+        else
+            error_message="$(format_error_message "$(cat "$AUDIO_ERROR_FILE" 2>/dev/null)")"
+        fi
+        notify_message "❌ Recording failed: $error_message" 6000 || true
+        return 0
+    fi
+
+    start_spinner "⏳ Transcribing" "$BASHPID"
+
+    if transcript="$(llm groq-whisper - < "$AUDIO_FILE" 2>"$TRANSCRIBE_ERROR_FILE")"; then
+        if [ -n "$transcript" ]; then
+            if ! clipboard_paste_via_shift_insert "$transcript"; then
+                notify_message "❌ Could not paste the transcription" 6000 critical || true
+            fi
+        fi
+    else
+        had_error=1
+        stop_spinner
+        error_message="$(format_error_message "$(cat "$TRANSCRIBE_ERROR_FILE" 2>/dev/null)")"
+        notify_message "❌ Transcription failed: $error_message" 6000 || true
+    fi
+
+    stop_spinner
+    if [ "$had_error" -eq 0 ]; then
+        close_notification
+    fi
+}
+
+session_cleanup() {
+    stop_spinner
+    rm -rf "$SESSION_DIR"
+}
+
 start() {
-    # A worker process exists for both recording and transcribing phases.
-    # Refuse to start a second run while one is already active.
-    if worker_active || recording_active; then
-        notify_message "⏳ tiny-dictate is already busy" 1500 || true
+    local recorder_pid
+    local encoder_pid
+
+    if ! claim_session; then
+        # A session is running: its spinner already shows what is going on, and it must
+        # stay the only writer of the notification.
+        printf 'tiny-dictate is already busy\n' >&2
         return 1
     fi
 
-    ensure_micro_not_muted || return 1
+    if ! ensure_micro_not_muted; then
+        rm -rf "$SESSION_DIR"
+        return 1
+    fi
 
-    rm -f "$REC_FILE"
+    if ! mkfifo "$AUDIO_FIFO"; then
+        rm -rf "$SESSION_DIR"
+        notify_message "❌ Cannot create the audio pipe" 6000 || true
+        return 1
+    fi
 
-    start_spinner_with_pidfile "🎤 Recording"
+    # lame opens the pipe for reading, arecord for writing. Both PIDs are recorded
+    # here, synchronously, *before* the session process is forked: that is what makes
+    # the wait in `session` race-free.
+    lame -r -s 16 --bitwidth 16 --signed --little-endian -m m -b 64 -S - "$AUDIO_FILE" \
+        < "$AUDIO_FIFO" &
+    encoder_pid=$!
+    printf '%s' "$encoder_pid" > "$ENCODER_PIDFILE"
 
-    { arecord -f S16_LE -r 16000 -c 1 -t raw - & echo $! > "$REC_PIDFILE"; wait; } \
-        | lame -r -s 16 --bitwidth 16 --signed --little-endian -m m -b 64 -S - "$REC_FILE" &
+    arecord -f S16_LE -r 16000 -c 1 -t raw > "$AUDIO_FIFO" 2>"$AUDIO_ERROR_FILE" &
+    recorder_pid=$!
+    printf '%s' "$recorder_pid" > "$RECORDER_PIDFILE"
 
-    (
-        local transcript
-        local transcribe_err_file
-        local transcribe_err_msg
-        local had_error=0
-
-        cleanup_worker() {
-            [ -n "${transcribe_err_file:-}" ] && rm -f "$transcribe_err_file"
-            rm -f "$REC_FILE"
-            stop_spinner_with_pidfile
-        }
-        trap cleanup_worker EXIT
-
-        # Wait for recording to finish
-        while is_running_pidfile "$REC_PIDFILE"; do
-            sleep 0.1
-        done
-
-        start_spinner_with_pidfile "⏳ Transcribing"
-
-        transcribe_err_file="$(mktemp "$STATE_DIR/transcribe.XXXXXX.err")"
-
-        if transcript="$(llm groq-whisper - < "$REC_FILE" 2>"$transcribe_err_file")"; then
-            if [ -n "$transcript" ]; then
-                clipboard_paste_via_shift_insert "$transcript"
-            fi
-        else
-            had_error=1
-            stop_spinner_with_pidfile
-            transcribe_err_msg="$(format_error_message "$(cat "$transcribe_err_file")")"
-            notify_message "❌ Transcription failed: $transcribe_err_msg" 6000
-        fi
-
-        rm -f "$transcribe_err_file"
-        stop_spinner_with_pidfile
-        if [ "$had_error" -eq 0 ]; then
-            close_notification
-        fi
-        rm -f "$WORKER_PIDFILE"
-    ) &
-    echo $! > "$WORKER_PIDFILE"
+    session &
+    printf '%s' "$!" > "$SESSION_PIDFILE"
 }
 
 stop() {
     if recording_active; then
-        kill_from_pidfile "$REC_PIDFILE" -INT
-    elif worker_active; then
-        notify_message "⏳ Transcription already in progress" 1500 || true
+        kill_from_pidfile "$RECORDER_PIDFILE" -INT
+    elif session_active; then
+        # No notification here: the session spinner already shows "Transcribing" and
+        # must stay the only writer of the notification.
+        printf 'Transcription already in progress\n' >&2
     fi
 }
 
 cancel() {
-    if ! recording_active && ! worker_active; then
+    if ! recording_active && ! session_active; then
         echo "No recording in progress"
         return 0
     fi
 
-    kill_from_pidfile "$WORKER_PIDFILE" -TERM
-    kill_from_pidfile "$REC_PIDFILE" -INT
-    stop_spinner_with_pidfile
+    # Kill the session first: once it is gone no new spinner can appear, so the one
+    # stopped below is the last writer of the notification.
+    kill_from_pidfile "$SESSION_PIDFILE" -TERM
+    kill_from_pidfile "$RECORDER_PIDFILE" -INT
+    kill_from_pidfile "$ENCODER_PIDFILE" -TERM
+    stop_spinner
+    rm -rf "$SESSION_DIR"
+    # The 1s timeout dismisses this notification. Do not keep a detached process that
+    # would close it later: it would be a second writer of the notification, and a
+    # dictation started in the meantime would lose its own notification.
     notify_message "🛑 Recording cancelled" 1000
-    (sleep 1; close_notification) & disown
 }
 
 toggle() {
     if recording_active; then
         stop
-    elif worker_active; then
-        notify_message "⏳ Transcription already in progress" 1500 || true
+    elif session_active; then
+        printf 'Transcription already in progress\n' >&2
     else
         start
     fi
 }
 
 status() {
-    if recording_active || worker_active; then
+    if recording_active || session_active; then
         echo "working"
     else
         echo "idle"
