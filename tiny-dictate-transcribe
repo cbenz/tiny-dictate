@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+#
+# Reference tiny-dictate transcription plugin: Groq Whisper.
+#
+# Contract (see AGENTS.md):
+#   $1      path to the recorded audio file
+#   stdout  the transcribed text
+#   exit 0  on success; any other status means failure and stderr is shown to the user
+#
+# It is the default plugin: tiny-dictate runs it when TINY_DICTATE_TRANSCRIBE is not set.
+# Plug another backend by pointing TINY_DICTATE_TRANSCRIBE at any command that honours
+# the same contract (another service, a local whisper.cpp, your own script).
+#
+#   GROQ_API_KEY       required
+#   GROQ_WHISPER_MODEL defaults to whisper-large-v3 (whisper-large-v3-turbo is faster
+#                      and cheaper)
+
+set -euo pipefail
+
+API_URL="https://api.groq.com/openai/v1/audio/transcriptions"
+
+audio_file="${1:-}"
+
+if [ -z "$audio_file" ]; then
+    printf 'usage: %s <audio file>\n' "${0##*/}" >&2
+    exit 2
+fi
+
+if [ ! -s "$audio_file" ]; then
+    printf 'audio file is missing or empty: %s\n' "$audio_file" >&2
+    exit 1
+fi
+
+if [ -z "${GROQ_API_KEY:-}" ]; then
+    printf 'GROQ_API_KEY is not set (create one at https://console.groq.com/keys)\n' >&2
+    exit 1
+fi
+
+curl --silent --show-error --fail --max-time 300 \
+    "$API_URL" \
+    --header "Authorization: Bearer $GROQ_API_KEY" \
+    --form "file=@$audio_file" \
+    --form "model=${GROQ_WHISPER_MODEL:-whisper-large-v3}" \
+    --form "response_format=text"

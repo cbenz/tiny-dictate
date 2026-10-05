@@ -41,7 +41,8 @@ without one.
 - the reference implementation targets Groq Whisper and ships with the tool
 - the plugin converts audio to text and nothing else: the core owns notifications and
   keyboard injection, so its code path does not depend on the chosen backend
-- resolved as `$TINY_DICTATE_TRANSCRIBE` if set, else `tiny-dictate-transcribe` on `PATH`
+- resolved with `command -v`: `$TINY_DICTATE_TRANSCRIBE` if set, else `tiny-dictate-transcribe` on
+  `PATH`; an unresolvable command is reported to the user before any recording starts
 
 ### Runtime model
 
@@ -63,8 +64,9 @@ without one.
 ### Technical specs
 
 - audio recording via `arecord` (S16_LE, 16 kHz, mono), encoded to MP3 on the fly with `lame`
-- transcription via the plugin command described above (the current implementation still calls
-  `llm groq-whisper` directly: to be replaced)
+- transcription via the plugin command described above: `$TINY_DICTATE_TRANSCRIBE` if set, else
+  `tiny-dictate-transcribe` on `PATH`; the reference implementation (`tiny-dictate-transcribe`,
+  Groq Whisper) ships with the tool
 - keyboard result injection: copy text to **CLIPBOARD and PRIMARY** (`wl-copy` and `wl-copy --primary`) followed by `ydotool key Shift-Insert`
   - CLIPBOARD for modern applications (VS Code, browsers)
   - PRIMARY for classic Unix applications (terminals, xterm, vim)

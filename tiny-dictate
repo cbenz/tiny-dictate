@@ -298,10 +298,18 @@ ensure_micro_not_muted() {
     return 0
 }
 
+# The transcription command is provided by the user: it receives the audio file as $1 and
+# prints the transcribed text on stdout. $TINY_DICTATE_TRANSCRIBE wins, otherwise the
+# reference implementation is looked up on PATH. Prints the resolved path, or nothing.
+resolve_transcribe_command() {
+    command -v "${TINY_DICTATE_TRANSCRIBE:-tiny-dictate-transcribe}" 2>/dev/null
+}
+
 # The session process owns the whole dictation lifecycle: it outlives the `start`
 # command that forked it and it is the only process driving the progress spinner.
 session() {
     local transcript
+    local transcribe_command
     local error_message
     local recording_failed=0
     local encoder_failed=0
@@ -327,19 +335,22 @@ session() {
     done
 
     # The encoder exits once the recorder is gone and it has flushed its last frames.
-    # Bounded: lame blocks in open() until arecord opens the pipe, so never wait for
-    # it forever.
-    for _ in {1..100}; do
-        is_running_pidfile "$ENCODER_PIDFILE" || break
-        sleep 0.05
-    done
+    # Bounded: lame blocks in open() until arecord opens the pipe, so never wait for it
+    # forever. When nothing was captured there is nothing to flush, and the encoder can be
+    # blocked in open() for good, so do not wait for it at all.
+    if [ -s "$AUDIO_FILE" ]; then
+        for _ in {1..100}; do
+            is_running_pidfile "$ENCODER_PIDFILE" || break
+            sleep 0.05
+        done
 
-    if is_running_pidfile "$ENCODER_PIDFILE"; then
+        if is_running_pidfile "$ENCODER_PIDFILE"; then
+            recording_failed=1
+            encoder_failed=1
+        fi
+    else
         recording_failed=1
-        encoder_failed=1
     fi
-
-    [ -s "$AUDIO_FILE" ] || recording_failed=1
 
     stop_spinner
 
@@ -348,8 +359,13 @@ session() {
         kill_from_pidfile "$ENCODER_PIDFILE" -TERM
         if [ "$encoder_failed" -eq 1 ]; then
             error_message="the audio encoder did not finish"
+        elif [ -s "$AUDIO_FILE" ]; then
+            error_message="the audio encoder stopped while recording"
         else
-            error_message="$(format_error_message "$(cat "$AUDIO_ERROR_FILE" 2>/dev/null)")"
+            error_message="no audio was captured"
+        fi
+        if [ -s "$AUDIO_ERROR_FILE" ]; then
+            error_message="$error_message ($(format_error_message "$(cat "$AUDIO_ERROR_FILE" 2>/dev/null)"))"
         fi
         notify_message "❌ Recording failed: $error_message" 6000 || true
         return 0
@@ -357,7 +373,8 @@ session() {
 
     start_spinner "⏳ Transcribing" "$BASHPID"
 
-    if transcript="$(llm groq-whisper - < "$AUDIO_FILE" 2>"$TRANSCRIBE_ERROR_FILE")"; then
+    transcribe_command="$(resolve_transcribe_command)"
+    if transcript="$("$transcribe_command" "$AUDIO_FILE" 2>"$TRANSCRIBE_ERROR_FILE")"; then
         if [ -n "$transcript" ]; then
             if ! clipboard_paste_via_shift_insert "$transcript"; then
                 notify_message "❌ Could not paste the transcription" 6000 critical || true
@@ -376,7 +393,14 @@ session() {
     fi
 }
 
+# Remove what this session owns, and nothing else: a newer session could have reclaimed the
+# same paths in the meantime (the directory is the microphone claim, so this only happens
+# when a session died without cleaning up), and its files and its spinner are not ours.
 session_cleanup() {
+    if [ "$(cat "$SESSION_PIDFILE" 2>/dev/null)" != "$BASHPID" ]; then
+        return 0
+    fi
+
     stop_spinner
     rm -rf "$SESSION_DIR"
 }
@@ -384,6 +408,12 @@ session_cleanup() {
 start() {
     local recorder_pid
     local encoder_pid
+
+    if [ -z "$(resolve_transcribe_command)" ]; then
+        printf 'No transcription command: set TINY_DICTATE_TRANSCRIBE or install tiny-dictate-transcribe\n' >&2
+        notify_message "❌ No transcription command. Set TINY_DICTATE_TRANSCRIBE or install tiny-dictate-transcribe" 8000 critical || true
+        return 1
+    fi
 
     if ! claim_session; then
         # A session is running: its spinner already shows what is going on, and it must
@@ -479,7 +509,7 @@ Commands:
 EOF
 }
 
-if ! require_commands arecord lame llm ydotool dunstify; then
+if ! require_commands arecord lame ydotool dunstify curl; then
     dunstify --appname "tiny-dictate" --timeout 6000 "tiny-dictate" "❌ Missing dependencies" >/dev/null 2>&1 || true
     printf 'Install the missing commands and retry.\n' >&2
     exit 1

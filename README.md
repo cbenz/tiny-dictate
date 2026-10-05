@@ -7,8 +7,8 @@ Opinionated workflow: press a keyboard shortcut to start recording, press it aga
 Based on the following tools:
 
 - audio recording with `arecord`, encoded to MP3 on-the-fly with `lame`
-- transcription with `llm groq-whisper`
-- result pasted into active window via clipboard + `ydotool Shift+Insert`
+- transcription with a command you provide: `tiny-dictate-transcribe` (Groq Whisper) by default
+- result pasted into the active window via clipboard + `ydotool Shift+Insert`
 - status notifications with `dunstify`
 
 ## Installation
@@ -16,27 +16,35 @@ Based on the following tools:
 ### Dependencies
 
 - `arecord` (alsa-utils)
+- `curl`
 - `lame`
 - [dunst](https://dunst-project.org/)
-- [llm](https://github.com/simonw/llm)
-- [llm-groq-whisper](https://github.com/simonw/llm-groq-whisper) llm plugin
 - [wl-clipboard](https://github.com/bugaevc/wl-clipboard)
 - [ydotool](https://github.com/ReimuNotMoe/ydotool)
 
-### Configure `llm` for Groq Whisper
+### Install the scripts
+
+Install both scripts in your PATH, for example `~/.local/bin`:
 
 ```bash
-llm install llm-groq-whisper
-llm keys set groq
-# Paste your Groq API key
+install -m 755 tiny-dictate tiny-dictate-transcribe ~/.local/bin
 ```
 
-### Install script
+### Configure the transcription command
 
-Install the script in your PATH, for example `~/.local/bin`:
+`tiny-dictate` has no transcription backend of its own: it calls a command you provide, which
+receives the recorded audio file as `$1` and writes the transcribed text to stdout. The bundled
+`tiny-dictate-transcribe` is the Groq Whisper implementation:
 
 ```bash
-install -m 755 tiny-dictate ~/.local/bin/tiny-dictate
+export GROQ_API_KEY=...   # create one at https://console.groq.com/keys
+```
+
+Plug another backend — another service, a local `whisper.cpp`, your own script — by pointing
+`TINY_DICTATE_TRANSCRIBE` at it:
+
+```bash
+export TINY_DICTATE_TRANSCRIBE=~/.local/bin/my-transcriber
 ```
 
 ### Configure keyboard shortcuts
@@ -44,8 +52,8 @@ install -m 755 tiny-dictate ~/.local/bin/tiny-dictate
 Example with i3/sway:
 
 ```text
-bindsym $mod+backslash exec ~/.local/bin/tiny-dictate toggle
-bindsym $mod+Shift+backslash exec ~/.local/bin/tiny-dictate cancel
+bindsym $mod+backslash exec tiny-dictate toggle
+bindsym $mod+Shift+backslash exec tiny-dictate cancel
 ```
 
 ## Usage
@@ -60,3 +68,12 @@ Commands:
   toggle  Start if idle, stop if recording
   status  Show status (idle or working)
 ```
+
+## Tests
+
+```bash
+tests/run.sh
+```
+
+The test suite stubs the recorder, the encoder, the transcription command, the notifier and the
+keyboard injector: it needs no microphone, no notification daemon and no network.
