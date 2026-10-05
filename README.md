@@ -82,10 +82,11 @@ reference transcriber:
 GROQ_API_KEY="$(my-key-helper 'Groq API key')" exec ~/path/to/tiny-dictate/transcribers/groq "$@"
 ```
 
-`my-key-helper` is whatever prints the key: `keepassxc-cli show -s -a Password <database> <entry>`,
-a `secret-tool` lookup, `pass`, `rbw`, your own script. Note that a shell function from your
-interactive shell (say a zsh function in your `.zshrc`) is not available to a script: either make
-it a script too, or call it explicitly as `zsh -ic 'my-key-helper "Groq API key"'`.
+`my-key-helper` is whatever prints the key without prompting: a `secret-tool lookup Title 'Groq API
+key'` (KeePassXC's Secret Service integration, as long as the database is unlocked), a
+`keepassxc-cli show -s -a Password <database> <entry>`, `pass`, `rbw`, your own script. A shell
+function from your interactive shell is not available to a script: make it a script, or call it
+explicitly as `zsh -ic 'my-key-helper "Groq API key"'`.
 
 ## Usage
 
