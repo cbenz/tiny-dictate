@@ -7,9 +7,11 @@
 #   stdout  the transcribed text
 #   exit 0  on success; any other status means failure and stderr is shown to the user
 #
-# It is the default plugin: tiny-dictate runs it when TINY_DICTATE_TRANSCRIBE is not set.
-# Plug another backend by pointing TINY_DICTATE_TRANSCRIBE at any command that honours
-# the same contract (another service, a local whisper.cpp, your own script).
+# This is the transcriber shipped with the tool: install it as `tiny-dictate-transcribe` on PATH,
+# or point TINY_DICTATE_TRANSCRIBE at it. Copy it, or wrap it to fetch the key from wherever you
+# keep it:
+#
+#   GROQ_API_KEY="$(my-key-helper 'Groq API key')" exec transcribers/groq "$@"
 #
 #   GROQ_API_KEY       required
 #   GROQ_WHISPER_MODEL defaults to whisper-large-v3 (whisper-large-v3-turbo is faster

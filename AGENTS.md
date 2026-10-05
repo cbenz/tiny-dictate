@@ -38,7 +38,11 @@ without one.
 - the command receives the recorded audio file as `$1` and writes the transcribed text to stdout
 - a non-zero exit status means failure: stderr is shown to the user as a single truncated line
 - any command can be plugged in: another service, a local `whisper.cpp`, a user script
-- the reference implementation targets Groq Whisper and ships with the tool
+- the reference implementation targets Groq Whisper and ships with the tool under
+  `transcribers/` (`transcribers/groq`)
+- a transcriber is a plain executable script, so it can fetch its credentials wherever the user
+  keeps them (password manager, secrets store), as long as nothing prompts: the tool runs from a
+  keyboard shortcut, with no terminal
 - the plugin converts audio to text and nothing else: the core owns notifications and
   keyboard injection, so its code path does not depend on the chosen backend
 - resolved with `command -v`: `$TINY_DICTATE_TRANSCRIBE` if set, else `tiny-dictate-transcribe` on
@@ -65,8 +69,8 @@ without one.
 
 - audio recording via `arecord` (S16_LE, 16 kHz, mono), encoded to MP3 on the fly with `lame`
 - transcription via the plugin command described above: `$TINY_DICTATE_TRANSCRIBE` if set, else
-  `tiny-dictate-transcribe` on `PATH`; the reference implementation (`tiny-dictate-transcribe`,
-  Groq Whisper) ships with the tool
+  `tiny-dictate-transcribe` on `PATH`; the reference implementation is `transcribers/groq`
+  (Groq Whisper), installed under that default name
 - keyboard result injection: copy text to **CLIPBOARD and PRIMARY** (`wl-copy` and `wl-copy --primary`) followed by `ydotool key Shift-Insert`
   - CLIPBOARD for modern applications (VS Code, browsers)
   - PRIMARY for classic Unix applications (terminals, xterm, vim)
