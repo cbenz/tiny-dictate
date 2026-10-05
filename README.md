@@ -93,31 +93,47 @@ explicitly as `zsh -ic 'my-key-helper "Groq API key"'`.
 Everything below is outside the tool: a transcriber is a command, so a script decides what the
 recorded audio becomes before the text reaches your keyboard.
 
-### Skipping silence
+### Hallucinations on silence
 
-Whisper was trained on subtitles, so on non-speech audio it completes with its most frequent
-training lines: "Thank you.", "Sous-titres réalisés par…". No parameter removes that; the fix is
-to not transcribe, which also avoids the API call:
+Whisper was trained on subtitles, so on non-speech audio it completes with whatever it finds
+likely: "Thank you.", "Sous-titres réalisés par…", or any plausible sentence in the language it
+detected. Measured on a microphone in a quiet room:
+
+| recording | mean volume | peak volume | transcription |
+|-----------|-------------|-------------|---------------|
+| digital silence | -91.0 dB | -91.0 dB | nothing |
+| 440 Hz tone | -21.5 dB | -18.5 dB | `.` |
+| silence in the room | -32.0 dB | -18.6 dB | `C'est vraiment vrai.` |
+
+The noise floor of the room peaks as high as the tone does, so **no volume threshold can tell
+silence from speech**. It still recognises digital silence, which is worth filtering because it
+happens — a muted microphone, a keystroke that recorded nothing — and it saves the request:
 
 ```bash
 #!/usr/bin/env bash
-# ~/.local/bin/tiny-dictate-transcribe
-if ! peak="$(ffmpeg -hide_banner -nostats -i "$1" -af volumedetect -f null - 2>&1 |
-        sed -n 's/.*max_volume: \(-*[0-9.]*\) dB.*/\1/p' | tail -1)"; then
-    :
+duration="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$1")"
+if awk -v d="$duration" 'BEGIN { exit !(d < 0.5) }'; then
+    exit 0                              # nothing was recorded
 fi
-if [ -n "$peak" ] && awk -v p="$peak" 'BEGIN { exit !(p < -45) }'; then
-    exit 0          # silence: no text on stdout, so nothing is inserted
+peak="$(ffmpeg -hide_banner -nostats -i "$1" -af volumedetect -f null - 2>&1 |
+    sed -n 's/.*max_volume: \([^ ]*\) dB.*/\1/p' | tail -1)"
+[ "$peak" = "-inf" ] && peak=-99        # ffmpeg reports -inf for digital silence
+if awk -v p="$peak" 'BEGIN { exit !(p < -45) }'; then
+    exit 0                              # muted microphone: no text on stdout
 fi
 ```
 
-Digital silence sits around -91 dB; speech peaks well above -20 dB. A duration floor catches the
-accidental double-tap:
+Everything else is decided by the API. `response_format=verbose_json` reports `no_speech_prob` per
+segment, Whisper's own judgement about whether that segment holds speech — the signal that
+separates an invented sentence from a dictated one:
 
 ```bash
-duration="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$1")"
-awk -v d="$duration" 'BEGIN { exit !(d < 0.5) }' && exit 0
+GROQ_RESPONSE_FORMAT=verbose_json transcribers/groq "$1" | my-no-speech-filter
 ```
+
+Keep the segments below the threshold (0.6 is Whisper's own default), drop the rest: the
+hallucination goes away, and a sentence dictated after a long pause survives. `sox file -n stat`
+reports the same volumes as a 0..1 amplitude if you prefer it to ffmpeg.
 
 Groq also reports `no_speech_prob` per segment with `response_format=verbose_json`, if you prefer
 to let the API decide (it costs the request, and Groq bills a 10 second minimum).
@@ -135,11 +151,11 @@ export GROQ_LANGUAGE=fr
 export GROQ_PROMPT_FILE=~/.config/tiny-dictate/hints.txt
 ```
 
-**Rewriting the transcript** is the deterministic half, and it needs no backend support. Have a
-look at how `tiny-dictate-dictionary` and `tiny-dictate-fix-word` are wired in this setup if you
-want the same: a TSV of `as the transcriber hears it` → `what you want`, applied word by word,
-plus a launcher action that adds an entry from the text you just selected and fixes it on the
-spot.
+**Rewriting the transcript** is the deterministic half, and it needs no backend support: a TSV of
+`as the transcriber hears it` → `what you want`, applied word by word, plus the way this
+installation grows it — `tiny-dictate-dictionary` and `tiny-dictate-fix-word` live in the
+dotfiles, and the second one is a launcher action that takes the spelling you type, records the
+pair, and replaces the word you had selected.
 
 ## Usage
 
