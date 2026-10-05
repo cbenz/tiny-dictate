@@ -140,6 +140,7 @@ GROQ_RESPONSE_FORMAT=verbose_json transcribers/groq "$1" | my-segment-filter
 #   no_speech_prob       >= 0.6      Whisper's default
 #   avg_logprob          <= -1.0     the one that catches non-speech here
 #   compression_ratio    >= 2.4      repetition loops
+# then drop a transcript that holds no word at all: Whisper answers "." or "♪♪" to non-speech
 ```
 
 Dropping only the flagged segments keeps the speech around a long pause, and printing the reason
