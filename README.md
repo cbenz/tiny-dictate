@@ -153,24 +153,27 @@ activity detector on the audio before the request.
 Groq also reports `no_speech_prob` per segment with `response_format=verbose_json`, if you prefer
 to let the API decide (it costs the request, and Groq bills a 10 second minimum).
 
-### A personal dictionary
+### A vocabulary
 
-Two mechanisms answer two different problems.
-
-A **prompt** biases the decoder towards spellings it is about to guess wrong. Groq accepts one,
-capped at 224 tokens — a handful of words, not a glossary, because Whisper sometimes echoes the
-prompt instead of transcribing:
+Groq's transcription request takes a `prompt` that "guides the model's style or specifies how to
+spell unfamiliar words". It rides along in the same request, so it costs nothing extra, and it
+belongs to the transcriber, not to the core:
 
 ```bash
 export GROQ_LANGUAGE=fr
-export GROQ_PROMPT_FILE=~/.config/tiny-dictate/hints.txt
+export GROQ_PROMPT="DBnomics, herdr, keyd, Vicinae"      # or GROQ_PROMPT_FILE
 ```
 
-**Rewriting the transcript** is the deterministic half, and it needs no backend support: a TSV of
-`as the transcriber hears it` → `what you want`, applied word by word, plus the way this
-installation grows it — `tiny-dictate-dictionary` and `tiny-dictate-fix-word` live in the
-dotfiles, and the second one is a launcher action that takes the spelling you type, records the
-pair, and replaces the word you had selected.
+It is a bias, not a rule: it can fail, and Whisper sometimes echoes the prompt in the transcript
+instead of transcribing. That is the only reason the list has to stay short — Groq caps the prompt
+at 224 tokens, so a dozen terms, not a glossary. In this setup the list lives in
+`~/.config/tiny-dictate/words`, one term per line, managed by `tiny-dictate-words`, and the
+transcriber joins it with commas before each request.
+
+Rewriting the transcript afterwards is the deterministic alternative: a table of `as the
+transcriber hears it` → `what you want`, applied to the text. It guarantees the spelling, at the
+price of anticipating every mistake, and it cannot repair a word the model heard as something
+unrelated. Worth keeping for the few terms the prompt keeps missing.
 
 ## Usage
 
