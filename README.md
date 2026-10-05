@@ -48,6 +48,28 @@ bindsym $mod+backslash exec tiny-dictate toggle
 bindsym $mod+Shift+backslash exec tiny-dictate cancel
 ```
 
+### Waybar module (optional)
+
+`contrib/waybar/tiny-dictate-module.jsonc` puts the dictation state in the bar: `tiny-dictate status`
+prints `idle` or `working`, and the module maps either to an icon, a tooltip and a CSS class. A click
+runs `tiny-dictate toggle`.
+
+```bash
+cp contrib/waybar/tiny-dictate-module.jsonc ~/.config/waybar/
+```
+
+Then include the fragment and add the module to a bar:
+
+```jsonc
+{
+  "include": ["tiny-dictate-module.jsonc"],
+  "modules-right": ["custom/tiny-dictate"]
+}
+```
+
+The bar is a standing reminder that dictation is on; the [pill](#presenter) is what shows a dictation
+while it runs, and what reports a cancellation.
+
 ## Transcribers
 
 `tiny-dictate` has no transcription backend of its own: it calls a command you provide. That

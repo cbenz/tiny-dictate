@@ -1,0 +1,14 @@
+{
+  "custom/tiny-dictate": {
+    "format": "{}",
+    // The script only prints "idle" or "working", so the icon is
+    // mapped here: waybar's format-icons requires a JSON "alt" field, which
+    // this script does not emit. Line 1 is the text, line 2 the tooltip,
+    // line 3 the CSS class.
+    "exec": "tiny-dictate status | sed -e 's/^idle$/🎤\\nDictation idle\\nidle/' -e 's/^working$/⏳\\nDictation working…\\nworking/'",
+    "interval": 1,
+    "exec-on-event": true,
+    "on-click": "tiny-dictate toggle",
+    "tooltip": true
+  }
+}
