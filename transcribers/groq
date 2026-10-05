@@ -16,6 +16,15 @@
 #   GROQ_API_KEY       required
 #   GROQ_WHISPER_MODEL defaults to whisper-large-v3 (whisper-large-v3-turbo is faster
 #                      and cheaper)
+#   GROQ_LANGUAGE      ISO-639-1 code of the spoken language (e.g. fr), improves accuracy
+#                      and latency
+#   GROQ_PROMPT        short hint that biases the decoder towards the spelling of words it
+#                      would otherwise guess wrong; the API caps it at 224 tokens, and
+#                      Whisper sometimes echoes it instead of transcribing, so keep it to a
+#                      handful of words. GROQ_PROMPT_FILE reads it from a file.
+#
+# For a deterministic fix of what it mishears, rewrite the transcript afterwards: it is plain
+# text, and a wrapper does that in three lines.
 
 set -euo pipefail
 
@@ -38,9 +47,22 @@ if [ -z "${GROQ_API_KEY:-}" ]; then
     exit 1
 fi
 
-curl --silent --show-error --fail --max-time 300 \
-    "$API_URL" \
+prompt="${GROQ_PROMPT:-}"
+if [ -z "$prompt" ] && [ -s "${GROQ_PROMPT_FILE:-}" ]; then
+    prompt="$(cat "$GROQ_PROMPT_FILE")"
+fi
+
+form=(--form "file=@$audio_file")
+# --form-string, so that a prompt starting with @ or < is not read as a filename
+form+=(--form-string "model=${GROQ_WHISPER_MODEL:-whisper-large-v3}")
+form+=(--form-string "response_format=text")
+if [ -n "${GROQ_LANGUAGE:-}" ]; then
+    form+=(--form-string "language=$GROQ_LANGUAGE")
+fi
+if [ -n "$prompt" ]; then
+    form+=(--form-string "prompt=$prompt")
+fi
+
+curl --silent --show-error --fail --max-time 300 "$API_URL" \
     --header "Authorization: Bearer $GROQ_API_KEY" \
-    --form "file=@$audio_file" \
-    --form "model=${GROQ_WHISPER_MODEL:-whisper-large-v3}" \
-    --form "response_format=text"
+    "${form[@]}"

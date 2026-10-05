@@ -88,6 +88,59 @@ key'` (KeePassXC's Secret Service integration, as long as the database is unlock
 function from your interactive shell is not available to a script: make it a script, or call it
 explicitly as `zsh -ic 'my-key-helper "Groq API key"'`.
 
+## Tuning a transcriber
+
+Everything below is outside the tool: a transcriber is a command, so a script decides what the
+recorded audio becomes before the text reaches your keyboard.
+
+### Skipping silence
+
+Whisper was trained on subtitles, so on non-speech audio it completes with its most frequent
+training lines: "Thank you.", "Sous-titres réalisés par…". No parameter removes that; the fix is
+to not transcribe, which also avoids the API call:
+
+```bash
+#!/usr/bin/env bash
+# ~/.local/bin/tiny-dictate-transcribe
+if ! peak="$(ffmpeg -hide_banner -nostats -i "$1" -af volumedetect -f null - 2>&1 |
+        sed -n 's/.*max_volume: \(-*[0-9.]*\) dB.*/\1/p' | tail -1)"; then
+    :
+fi
+if [ -n "$peak" ] && awk -v p="$peak" 'BEGIN { exit !(p < -45) }'; then
+    exit 0          # silence: no text on stdout, so nothing is inserted
+fi
+```
+
+Digital silence sits around -91 dB; speech peaks well above -20 dB. A duration floor catches the
+accidental double-tap:
+
+```bash
+duration="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$1")"
+awk -v d="$duration" 'BEGIN { exit !(d < 0.5) }' && exit 0
+```
+
+Groq also reports `no_speech_prob` per segment with `response_format=verbose_json`, if you prefer
+to let the API decide (it costs the request, and Groq bills a 10 second minimum).
+
+### A personal dictionary
+
+Two mechanisms answer two different problems.
+
+A **prompt** biases the decoder towards spellings it is about to guess wrong. Groq accepts one,
+capped at 224 tokens — a handful of words, not a glossary, because Whisper sometimes echoes the
+prompt instead of transcribing:
+
+```bash
+export GROQ_LANGUAGE=fr
+export GROQ_PROMPT_FILE=~/.config/tiny-dictate/hints.txt
+```
+
+**Rewriting the transcript** is the deterministic half, and it needs no backend support. Have a
+look at how `tiny-dictate-dictionary` and `tiny-dictate-fix-word` are wired in this setup if you
+want the same: a TSV of `as the transcriber hears it` → `what you want`, applied word by word,
+plus a launcher action that adds an entry from the text you just selected and fixes it on the
+spot.
+
 ## Usage
 
 ```text
