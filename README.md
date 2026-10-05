@@ -11,7 +11,7 @@ Built on the following tools:
 - transcription by a command you provide (see [Transcribers](#transcribers))
 - live status drawn as a layer-shell pill by the presenter (see [Presenter](#presenter))
 - result pasted into the active window via clipboard + `ydotool Shift+Insert`
-- failures and cancellation notified with `notify-send`
+- failures notified with `notify-send`, the cancellation shown as a verdict on the pill
 
 ## Installation
 
@@ -186,7 +186,8 @@ unrelated. Worth keeping for the few terms the prompt keeps missing.
 The pill that shows what `tiny-dictate` is doing is a command you provide, on the same terms as the
 transcriber. It receives:
 
-- `$1`: the path of a **state file**, holding one word: `recording`, `transcribing`, or `stop`
+- `$1`: the path of a **state file**, holding one word: `recording`, `transcribing`, `cancelled`,
+  or `stop`
 - `$2`: the pid of the session that owns the pill
 
 It leaves when the state file disappears, when it reads `stop`, or when that pid is gone. Those
@@ -201,9 +202,10 @@ of the screen with GTK4 and gtk4-layer-shell. It needs a compositor with `wlr-la
 (sway, Hyprland, niri, KDE) and exits with an error on GNOME/Mutter, where the dictation still works
 but nothing is shown.
 
-Failures and the cancellation are not the pill's business: they are desktop notifications sent with
-`notify-send`, once each, never replaced. There is nothing to keep in sync, so no notification id
-and no `dunstify`.
+Failures are not the pill's business: they are desktop notifications sent with `notify-send`, once
+each, never replaced. There is nothing to keep in sync, so no notification id and no `dunstify`. The
+cancellation is, because it is a verdict about the dictation itself: `cancel` writes the `cancelled`
+state, the pill shows it for a second, and the session goes down without transcribing anything.
 
 Plug in anything else — a notification-based presenter, a bar module, your own script — by pointing
 `TINY_DICTATE_PRESENT` at it. The three lines above are the whole interface: nothing in the core

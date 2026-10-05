@@ -7,7 +7,7 @@ Minimal voice dictation tool for Linux (speech-to-text, STT).
 - the user configures a keyboard shortcut (e.g. `mod+backspace`) in their desktop environment to run `tiny-dictate toggle`
 - when the shortcut is pressed, a pill reading "Recording" appears at the bottom of the screen
 - the user speaks for as long as they want
-- the recording can be canceled by running `tiny-dictate cancel` (e.g. bound to another shortcut or run manually): the notification "🛑 Recording cancelled" appears briefly
+- the recording can be canceled by running `tiny-dictate cancel` (e.g. bound to another shortcut or run manually): the pill reads "🛑 Cancelled" for a second, then disappears
 - when the same shortcut is pressed again: recording stops, the pill switches to "Transcribing" and stays visible for the whole transcription
 - after processing, the transcribed text is inserted into the active text field (as if the user had typed it)
 - the pill disappears
@@ -19,8 +19,8 @@ Minimal voice dictation tool for Linux (speech-to-text, STT).
 - the user starts dictation by running the script and stops it by running it again
 - the user can configure a keyboard shortcut if they want (outside the script scope)
 - the transcribed text is inserted into the active field without sending an equivalent "Enter" keypress
-- the user can cancel an ongoing recording, and is told that it was cancelled: the recording is not
-  transcribed and not reported as a failure
+- the user can cancel an ongoing recording, and the pill says so: a cancelled dictation is neither
+  transcribed nor reported as a failure
 - the live status is drawn by the presenter and nothing else draws while it runs: a pill never
   fights a stale frame of itself, and a killed dictation cannot leave one behind
 - the pill never takes keyboard focus: the paste that ends a dictation goes to the focused window,
@@ -59,13 +59,14 @@ second plugin, and the second one that is a plain executable script.
 
 - the command receives the path of a **state file** as `$1`, and the pid of the session that owns
   it as `$2`
-- the state file holds one word: `recording` or `transcribing`; `stop` asks the presenter to leave
+- the state file holds one word: `recording`, `transcribing`, `cancelled`, or `stop`, which asks the
+  presenter to leave
 - the presenter leaves on its own when the state file disappears, when it reads `stop`, or when the
   process it was given is gone: three ways out, so a killed dictation cannot leave a pill frozen on
   screen
-- it draws the live state and nothing else. Terminal events (failures, cancellation) are desktop
-  notifications sent once with `notify-send`: nothing replaces them, so there is no notification id
-  to track and no daemon beyond libnotify to require
+- it draws every state the core asks for, the `cancelled` verdict included. Failures are the only
+  thing left to notify: they are desktop notifications sent once with `notify-send`, so nothing has to
+  replace them, there is no notification id to track, and no daemon beyond libnotify to require
 - the reference implementation targets `wlr-layer-shell` and ships with the tool under `presenters/`
   (`presenters/layer-shell`). gtk4-layer-shell must be loaded *before* `libwayland-client`, which a
   plain import is too late for: the script re-executes itself with `LD_PRELOAD` set
@@ -89,6 +90,10 @@ second plugin, and the second one that is a plain executable script.
   only process drawing on it
 - the session waits for the presenter to be gone before it notifies anything, so a notification
   never lands on top of the pill
+- `cancel` writes its verdict into the state file and signals the recorder, never the session: the
+  session is the one that reads the verdict, keeps the pill up for the dwell, and tears itself down
+  without transcribing anything. It reads the verdict twice, before transcribing and before pasting,
+  so a cancel that lands during the transcription drops the text instead of pasting it
 - `stop` signals the recorder only, never the encoder: the encoder must outlive it to flush the last
   frames, and the session waits for both to be gone before it reads the audio file
 - sending a signal must never remove the pidfile it was read from: the session relies on that pidfile
@@ -107,8 +112,8 @@ second plugin, and the second one that is a plain executable script.
   `tiny-dictate-present` on `PATH`; the reference implementation is `presenters/layer-shell`
   (GTK4 + gtk4-layer-shell), installed under that default name. It draws a pill anchored to the
   bottom edge, on the overlay layer, with the keyboard mode set to none
-- failures and cancellation via `notify-send`: one notification per event, never replaced, always
-  with an expiry, so nothing can be left sticky on screen
+- failures via `notify-send`: one notification per event, never replaced, always with an expiry, so
+  nothing can be left sticky on screen
 - the session directory is a subdirectory of the XDG runtime directory and is removed when the
   session ends
 

@@ -72,7 +72,13 @@ FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 # Clears the bar (waybar sits at the bottom of the screen here).
 MARGIN_PX = 64
 
-STATES = {"recording": "Recording", "transcribing": "Transcribing"}
+STATES = {
+    "recording": ("Recording", True),
+    "transcribing": ("Transcribing", True),
+    # A verdict, not a live state: nothing is running any more, so the spinner stops. Only a
+    # verdict carries an emoji -- the live states are one word next to a turning spinner.
+    "cancelled": ("🛑 Cancelled", False),
+}
 
 CSS = """
 window { background-color: transparent; }
@@ -86,6 +92,7 @@ window { background-color: transparent; }
 .spinner { font-family: monospace; font-size: 16px; }
 .pill.recording .spinner { color: #f87171; }
 .pill.transcribing .spinner { color: #fbbf24; }
+.pill.cancelled label { color: #d4d4d8; }
 """
 
 
@@ -165,7 +172,9 @@ class Pill:
         # An empty or unknown read is a write in progress, not a reason to leave.
         if state in STATES and state != self.state:
             self.state = state
-            self.label.set_text(STATES[state])
+            label, live = STATES[state]
+            self.label.set_text(label)
+            self.spinner.set_visible(live)
             self.pill.add_css_class(state)
 
         if self.state:

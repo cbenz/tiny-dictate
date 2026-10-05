@@ -47,11 +47,15 @@ format_error_message() {
 
 # ── presentation ─────────────────────────────────────────────
 # Two channels, one job each:
-#   - the live state (recording, transcribing) is drawn by the presenter, the only thing on
-#     screen while a dictation runs
-#   - terminal events (failures, cancellation) are desktop notifications, sent once: nothing
-#     has to replace them, so there is no notification id to track
+#   - the live state (recording, transcribing) and the cancelled verdict are drawn by the
+#     presenter, the only thing on screen while a dictation runs
+#   - failures are desktop notifications, sent once: nothing has to replace them, so there
+#     is no notification id to track
 NOTIFY_APP_NAME="tiny-dictate"
+
+# How long a verdict stays on screen before the session takes the pill down. It is the
+# timeout the cancellation notification used to have.
+VERDICT_SECONDS=1
 notify_event() {
     local message="$1"
     local timeout="${2:-6000}"
@@ -72,6 +76,20 @@ write_presenter_state() {
     local temporary="$PRESENTER_STATE_FILE.$$"
 
     printf '%s\n' "$1" > "$temporary" && mv "$temporary" "$PRESENTER_STATE_FILE"
+}
+
+# A verdict written by `cancel` owns the screen. The session reads it off the state file
+# rather than waiting for a signal, so it can arrive at any moment and is never missed.
+cancelled() {
+    [ "$(cat "$PRESENTER_STATE_FILE" 2>/dev/null)" = "cancelled" ]
+}
+
+# Show the verdict for as long as a notification of it used to stay on screen. The pill is
+# already drawing it: this is the dwell, before the session takes it down.
+show_verdict() {
+    kill_from_pidfile "$ENCODER_PIDFILE" -TERM
+    sleep "$VERDICT_SECONDS"
+    stop_presenter
 }
 
 # One presenter per dictation, never replaced: changing state is a write to the file it
@@ -311,6 +329,13 @@ session() {
         recording_failed=1
     fi
 
+    # `cancel` writes its verdict into the state file: it owns the last word, so a cancelled
+    # dictation is neither a failure nor something to transcribe.
+    if cancelled; then
+        show_verdict
+        return 0
+    fi
+
     if [ "$recording_failed" -eq 1 ]; then
         kill_from_pidfile "$RECORDER_PIDFILE" -INT
         kill_from_pidfile "$ENCODER_PIDFILE" -TERM
@@ -334,6 +359,12 @@ session() {
 
     transcribe_command="$(resolve_transcribe_command)"
     if transcript="$("$transcribe_command" "$AUDIO_FILE" 2>"$TRANSCRIBE_ERROR_FILE")"; then
+        # A cancel that landed while the transcription was running: the text is dropped
+        # rather than pasted behind the user's back.
+        if cancelled; then
+            show_verdict
+            return 0
+        fi
         # The live state is over once there is text: the pill has nothing left to say,
         # and what may follow is a terminal event.
         stop_presenter
@@ -427,16 +458,23 @@ cancel() {
         return 0
     fi
 
-    # Kill the session first: once it is gone no new pill can appear, and the one that is up
-    # leaves on its own -- the directory it reads disappears just below, and the session that
-    # owns it is dead.
-    kill_from_pidfile "$SESSION_PIDFILE" -TERM
+    # A verdict is a state like any other: writing it is what shows it, so it is written
+    # before anything is signalled. The session reads it and reports it rather than the
+    # failure of a recording that was cut short.
+    write_presenter_state cancelled 2>/dev/null || true
+
+    # Stop the recorder, never the encoder: the encoder outlives it to flush the last frames.
     kill_from_pidfile "$RECORDER_PIDFILE" -INT
+
+    if session_active; then
+        # And never the session either: it is the one showing the verdict, taking the pill
+        # down once the dwell is over, and removing its own directory.
+        return 0
+    fi
+
+    # No session left to do any of that: only its leftovers are here.
     kill_from_pidfile "$ENCODER_PIDFILE" -TERM
     rm -rf "$SESSION_DIR"
-    # The 1s timeout dismisses this notification. Nothing rewrites it afterwards: the session
-    # and its pill are both gone, so there is no second writer to arbitrate with.
-    notify_event "🛑 Recording cancelled" 1000
 }
 
 toggle() {

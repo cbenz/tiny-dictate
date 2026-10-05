@@ -483,10 +483,26 @@ test_cancel() {
     td start
     sleep 0.3
     td cancel
-    check "cancellation reported" grep -q '🛑 Recording cancelled' "$WORK/events.log"
+    check "the pill shows the verdict" wait_for_event '^PRESENT state=cancelled'
+    check "cancelling notifies nothing" no_notification_at_all
     check "session finishes" wait_idle
-    check "the pill left" wait_for_event '^PRESENT (stop|gone|orphaned)'
     check "nothing pasted" [ -z "$(pasted_text)" ]
+    check "no presentation left behind" presenter_left
+    check "no leftover process" no_leftover_process
+    check "session directory removed" session_dir_gone
+}
+
+test_cancel_during_transcription() {
+    start_test "cancel while transcribing"
+    TRANSCRIBE_SLEEP=1 td start
+    sleep 0.3
+    td stop
+    sleep 0.2
+    td cancel
+    check "the pill shows the verdict" wait_for_event '^PRESENT state=cancelled'
+    check "cancelling notifies nothing" no_notification_at_all
+    check "session finishes" wait_idle
+    check "the transcription is dropped" [ -z "$(pasted_text)" ]
     check "no presentation left behind" presenter_left
     check "no leftover process" no_leftover_process
     check "session directory removed" session_dir_gone
@@ -586,6 +602,7 @@ run_test test_no_transcribe_command
 run_test test_no_presenter
 run_test test_default_commands
 run_test test_cancel
+run_test test_cancel_during_transcription
 run_test test_second_start_refused
 run_test test_toggle_during_transcription
 run_test test_race_loop
