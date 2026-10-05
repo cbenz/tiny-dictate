@@ -3,7 +3,7 @@
 # presenter, notifier and keyboard injector. No microphone, no notification daemon, no
 # layer-shell surface, no network.
 #
-#   tests/run.sh                              # tests ../tiny-dictate
+#   tests/run.sh                              # tests ../src/tiny-dictate
 #   SCRIPT=/path/to/tiny-dictate tests/run.sh
 #   OLD_SCRIPT=/path/to/other tests/run.sh    # also compare the recorder race
 #   RACE_ITERATIONS=50 tests/run.sh
@@ -13,7 +13,7 @@
 # bus address and a Wayland display that do not exist, so even a missed stub could not pop a
 # notification, draw a pill or touch the real clipboard.
 
-SCRIPT="${SCRIPT:-$(cd "$(dirname "$0")/.." && pwd)/tiny-dictate}"
+SCRIPT="${SCRIPT:-$(cd "$(dirname "$0")/.." && pwd)/src/tiny-dictate}"
 OLD_SCRIPT="${OLD_SCRIPT:-}"
 RACE_ITERATIONS="${RACE_ITERATIONS:-25}"
 ONLY="${ONLY:-}"

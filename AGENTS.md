@@ -2,6 +2,13 @@
 
 Minimal voice dictation tool for Linux (speech-to-text, STT).
 
+## Layout
+
+- `src/tiny-dictate`: the tool itself, the only file that has to be on `PATH`
+- `src/presenters/`: the presenters shipped with the tool
+- `src/transcribers/`: the transcribers shipped with the tool
+- `tests/run.sh`: the integration suite, every external command stubbed
+
 ## Use case
 
 - the user configures a keyboard shortcut (e.g. `mod+backspace`) in their desktop environment to run `tiny-dictate toggle`
@@ -43,7 +50,7 @@ without one.
 - a non-zero exit status means failure: stderr is shown to the user as a single truncated line
 - any command can be plugged in: another service, a local `whisper.cpp`, a user script
 - the reference implementation targets Groq Whisper and ships with the tool under
-  `transcribers/` (`transcribers/groq`)
+  `src/transcribers/` (`src/transcribers/groq`)
 - a transcriber is a plain executable script, so it can fetch its credentials wherever the user
   keeps them (password manager, secrets store), as long as nothing prompts: the tool runs from a
   keyboard shortcut, with no terminal
@@ -67,9 +74,10 @@ second plugin, and the second one that is a plain executable script.
 - it draws every state the core asks for, the `cancelled` verdict included. Failures are the only
   thing left to notify: they are desktop notifications sent once with `notify-send`, so nothing has to
   replace them, there is no notification id to track, and no daemon beyond libnotify to require
-- the reference implementation targets `wlr-layer-shell` and ships with the tool under `presenters/`
-  (`presenters/layer-shell`). gtk4-layer-shell must be loaded *before* `libwayland-client`, which a
-  plain import is too late for: the script re-executes itself with `LD_PRELOAD` set
+- the reference implementation targets `wlr-layer-shell` and ships with the tool under
+  `src/presenters/` (`src/presenters/layer-shell`). gtk4-layer-shell must be loaded *before*
+  `libwayland-client`, which a plain import is too late for: the script re-executes itself with
+  `LD_PRELOAD` set
 - a presenter on a compositor without layer-shell support exits non-zero: the dictation still
   works, only the pill is missing
 - resolved with `command -v`: `$TINY_DICTATE_PRESENT` if set, else `tiny-dictate-present` on `PATH`;
@@ -103,13 +111,13 @@ second plugin, and the second one that is a plain executable script.
 
 - audio recording via `arecord` (S16_LE, 16 kHz, mono), encoded to MP3 on the fly with `lame`
 - transcription via the plugin command described above: `$TINY_DICTATE_TRANSCRIBE` if set, else
-  `tiny-dictate-transcribe` on `PATH`; the reference implementation is `transcribers/groq`
+  `tiny-dictate-transcribe` on `PATH`; the reference implementation is `src/transcribers/groq`
   (Groq Whisper), installed under that default name
 - keyboard result injection: copy text to **CLIPBOARD and PRIMARY** (`wl-copy` and `wl-copy --primary`) followed by `ydotool key Shift-Insert`
   - CLIPBOARD for modern applications (VS Code, browsers)
   - PRIMARY for classic Unix applications (terminals, xterm, vim)
 - live status via the presenter command described above: `$TINY_DICTATE_PRESENT` if set, else
-  `tiny-dictate-present` on `PATH`; the reference implementation is `presenters/layer-shell`
+  `tiny-dictate-present` on `PATH`; the reference implementation is `src/presenters/layer-shell`
   (GTK4 + gtk4-layer-shell), installed under that default name. It draws a pill anchored to the
   bottom edge, on the overlay layer, with the keyboard mode set to none
 - failures via `notify-send`: one notification per event, never replaced, always with an expiry, so

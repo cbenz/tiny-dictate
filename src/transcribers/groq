@@ -11,7 +11,7 @@
 # or point TINY_DICTATE_TRANSCRIBE at it. Copy it, or wrap it to fetch the key from wherever you
 # keep it:
 #
-#   GROQ_API_KEY="$(my-key-helper 'Groq API key')" exec transcribers/groq "$@"
+#   GROQ_API_KEY="$(my-key-helper 'Groq API key')" exec src/transcribers/groq "$@"
 #
 #   GROQ_API_KEY       required
 #   GROQ_WHISPER_MODEL defaults to whisper-large-v3 (whisper-large-v3-turbo is faster

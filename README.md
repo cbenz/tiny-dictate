@@ -31,9 +31,9 @@ A notification daemon (dunst, mako, your desktop's) displays the failures and th
 ### Install the tool, a transcriber and a presenter
 
 ```bash
-install -m 755 tiny-dictate ~/.local/bin/
-install -m 755 transcribers/groq ~/.local/bin/tiny-dictate-transcribe
-install -m 755 presenters/layer-shell ~/.local/bin/tiny-dictate-present
+install -m 755 src/tiny-dictate ~/.local/bin/
+install -m 755 src/transcribers/groq ~/.local/bin/tiny-dictate-transcribe
+install -m 755 src/presenters/layer-shell ~/.local/bin/tiny-dictate-present
 ```
 
 `tiny-dictate-transcribe` and `tiny-dictate-present` are the default command names, so both are used
@@ -60,7 +60,7 @@ command:
 It is resolved with `command -v`: `$TINY_DICTATE_TRANSCRIBE` if set, else `tiny-dictate-transcribe`
 on `PATH`. An unresolvable command is reported before any recording starts.
 
-The transcribers shipped with the tool live in `transcribers/`. `transcribers/groq` is the
+The transcribers shipped with the tool live in `src/transcribers/`. `src/transcribers/groq` is the
 reference implementation (Groq Whisper):
 
 ```bash
@@ -85,7 +85,7 @@ reference transcriber:
 ```bash
 #!/usr/bin/env bash
 # ~/.local/bin/tiny-dictate-transcribe
-GROQ_API_KEY="$(my-key-helper 'Groq API key')" exec ~/path/to/tiny-dictate/transcribers/groq "$@"
+GROQ_API_KEY="$(my-key-helper 'Groq API key')" exec ~/path/to/tiny-dictate/src/transcribers/groq "$@"
 ```
 
 `my-key-helper` is whatever prints the key without prompting: a `secret-tool lookup Title 'Groq API
@@ -141,7 +141,7 @@ And then Whisper's own three suspicion heuristics, which apply to the segments o
 `response_format=verbose_json` answer:
 
 ```bash
-GROQ_RESPONSE_FORMAT=verbose_json transcribers/groq "$1" | my-segment-filter
+GROQ_RESPONSE_FORMAT=verbose_json src/transcribers/groq "$1" | my-segment-filter
 # drop a segment when any of these fires, and say which:
 #   no_speech_prob       >= 0.6      Whisper's default
 #   avg_logprob          <= -1.0     the one that catches non-speech here
@@ -197,10 +197,10 @@ them — a screen that shows "Recording" over a dead session is worse than no pi
 It must never take keyboard focus: the paste that ends a dictation goes to the focused window, so a
 focusable pill would receive the text itself.
 
-The presenter shipped with the tool, `presenters/layer-shell`, draws a pill anchored to the bottom
-of the screen with GTK4 and gtk4-layer-shell. It needs a compositor with `wlr-layer-shell` support
-(sway, Hyprland, niri, KDE) and exits with an error on GNOME/Mutter, where the dictation still works
-but nothing is shown.
+The presenter shipped with the tool, `src/presenters/layer-shell`, draws a pill anchored to the
+bottom of the screen with GTK4 and gtk4-layer-shell. It needs a compositor with `wlr-layer-shell`
+support (sway, Hyprland, niri, KDE) and exits with an error on GNOME/Mutter, where the dictation
+still works but nothing is shown.
 
 Failures are not the pill's business: they are desktop notifications sent with `notify-send`, once
 each, never replaced. There is nothing to keep in sync, so no notification id and no `dunstify`. The
