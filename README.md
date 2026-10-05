@@ -97,43 +97,57 @@ recorded audio becomes before the text reaches your keyboard.
 
 Whisper was trained on subtitles, so on non-speech audio it completes with whatever it finds
 likely: "Thank you.", "Sous-titres réalisés par…", or any plausible sentence in the language it
-detected. Measured on a microphone in a quiet room:
+detected. Measured on this setup, the signals do not behave as one would hope:
 
-| recording | mean volume | peak volume | transcription |
-|-----------|-------------|-------------|---------------|
-| digital silence | -91.0 dB | -91.0 dB | nothing |
-| 440 Hz tone | -21.5 dB | -18.5 dB | `.` |
-| silence in the room | -32.0 dB | -18.6 dB | `C'est vraiment vrai.` |
+| recording | mean volume | peak volume | no_speech_prob | avg_logprob | transcription |
+|-----------|-------------|-------------|----------------|-------------|---------------|
+| digital silence | -91.0 dB | -91.0 dB | — | — | nothing |
+| 440 Hz tone | -21.5 dB | -18.5 dB | 0.0001 | -1.03 | `d` |
+| the same tone, another run | | | 0.993 | — | `.` |
+| a room with people talking | | | 0.001 | -0.27 | coherent sentences |
 
-The noise floor of the room peaks as high as the tone does, so **no volume threshold can tell
-silence from speech**. It still recognises digital silence, which is worth filtering because it
-happens — a muted microphone, a keystroke that recorded nothing — and it saves the request:
+The same audio gives `no speech` on one run and `certainly speech` on the next, so **no single
+signal settles this**. Three things, in this order, cover most of it.
+
+A duration floor, for a keystroke that captured nothing:
 
 ```bash
-#!/usr/bin/env bash
 duration="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$1")"
 if awk -v d="$duration" 'BEGIN { exit !(d < 0.5) }'; then
-    exit 0                              # nothing was recorded
+    exit 0
 fi
+```
+
+Digital silence, which is what a muted microphone produces. A room's noise is louder (measured:
+-18.6 dB peak for a room containing a conversation), so treat the threshold as something to
+calibrate on your own room, by recording three seconds of it and reading the `max_volume` line:
+
+```bash
 peak="$(ffmpeg -hide_banner -nostats -i "$1" -af volumedetect -f null - 2>&1 |
     sed -n 's/.*max_volume: \([^ ]*\) dB.*/\1/p' | tail -1)"
 [ "$peak" = "-inf" ] && peak=-99        # ffmpeg reports -inf for digital silence
 if awk -v p="$peak" 'BEGIN { exit !(p < -45) }'; then
-    exit 0                              # muted microphone: no text on stdout
+    exit 0
 fi
 ```
 
-Everything else is decided by the API. `response_format=verbose_json` reports `no_speech_prob` per
-segment, Whisper's own judgement about whether that segment holds speech — the signal that
-separates an invented sentence from a dictated one:
+And then Whisper's own three suspicion heuristics, which apply to the segments of a
+`response_format=verbose_json` answer:
 
 ```bash
-GROQ_RESPONSE_FORMAT=verbose_json transcribers/groq "$1" | my-no-speech-filter
+GROQ_RESPONSE_FORMAT=verbose_json transcribers/groq "$1" | my-segment-filter
+# drop a segment when any of these fires, and say which:
+#   no_speech_prob       >= 0.6      Whisper's default
+#   avg_logprob          <= -1.0     the one that catches non-speech here
+#   compression_ratio    >= 2.4      repetition loops
 ```
 
-Keep the segments below the threshold (0.6 is Whisper's own default), drop the rest: the
-hallucination goes away, and a sentence dictated after a long pause survives. `sox file -n stat`
-reports the same volumes as a 0..1 amplitude if you prefer it to ffmpeg.
+Dropping only the flagged segments keeps the speech around a long pause, and printing the reason
+on stderr is what makes the thresholds tunable from the journal. This is still a heuristic: a
+mumble can be dropped, and loud non-speech can get through. The robust answer is a real voice
+activity detector on the audio before the request.
+
+`sox file -n stat` reports the same volumes as a 0..1 amplitude if you prefer it to ffmpeg.
 
 Groq also reports `no_speech_prob` per segment with `response_format=verbose_json`, if you prefer
 to let the API decide (it costs the request, and Groq bills a 10 second minimum).
