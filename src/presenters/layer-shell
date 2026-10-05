@@ -1,12 +1,23 @@
 #!/usr/bin/env python3
 """Layer-shell pill showing what tiny-dictate is doing.
 
-Usage: layer-shell <state-file> <owner-pid>
+Usage: layer-shell <state-file> <owner-pid> [waveform-file]
 
 Draws one pill anchored to the bottom of the screen and reads the state file on
 every tick. It exits when the state file disappears, when it holds "stop", or when
 the owner process is gone: three ways out, so a killed dictation cannot leave a
 pill on screen.
+
+While recording it draws the input waveform instead of a spinner. The waveform
+file is the core's waveform channel: one line per 96 ms of audio, holding the
+lowest and highest sample of each of 24 slices of 4 ms. The meter reads the last
+whole line on every tick, so it draws the shape of the last 96 ms of the voice
+rather than a history that scrolls. It normalizes each window against the level
+of the voice around it, because the shape of the voice is what it is there to
+show. An unreadable channel is not an error: the spinner stands in.
+
+The waveform is white, and TINY_DICTATE_PRESENT_COLOR takes any #rgb or #rrggbb
+the user's theme is written in.
 
 The window never takes keyboard focus. The paste that ends a dictation goes to the
 focused window, and a pill that could be focused would receive the text itself.
@@ -62,18 +73,56 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 gi.require_version("Gtk4LayerShell", "1.0")
 
+import cairo
 from gi.repository import Gdk, GLib, Gtk, Gtk4LayerShell  # noqa: E402
 
-# One tick per frame: 100 ms is the cadence of the notification spinner this
-# replaces, and it bounds how long a pill can outlive the session that owns it.
+# One tick per frame: 100 ms is the cadence the core publishes waveform lines at, and it bounds
+# how long a pill can outlive the session that owns it.
 TICK_MS = 100
 FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+# The waveform: one bar per slice of audio, mirrored around the middle of the meter, so the pill
+# draws the shape of the voice and not a level that slides.
+SLICES = 24
+BAR_WIDTH_PX = 2.0
+BAR_STEP_PX = 4.5
+# A silent slice still draws a bar, so the meter reads as live even between words.
+BAR_MIN_PX = 2.0
+METER_HEIGHT_PX = 18
+METER_WIDTH_PX = (SLICES - 1) * BAR_STEP_PX + BAR_WIDTH_PX
+LEVEL_FULL_SCALE = 32768
+# The pill shows how the voice moves, not how loud it is: the reference is the level the meter is
+# calibrated on, each window is drawn against it, so the tallest bar fills the meter most of the
+# time and what is left to see is the variation. It follows the loudest window of the last second,
+# never faster than REFERENCE_RISE -- a plosive or a knock costs a few ticks of height rather than a
+# meter that collapses -- and it decays at REFERENCE_DECAY when the voice gets quieter.
+#
+# A window more than PAUSE_MARGIN below the reference is the room, not the voice. The reference is
+# then held rather than following the room tone down, which is what would otherwise amplify it until
+# it filled the meter a second after the user stopped talking. The hold expires, so a voice that
+# really did get quieter is followed in the end, and it can never follow anything below the floor:
+# that is the most the meter will ever amplify, so neither a pause nor a noisy room can fill it.
+PAUSE_MARGIN = 0.125  # -18 dB below the reference: under this, a window is room tone
+HOLD_TICKS = 50  # 5 s at TICK_MS: how long a pause holds the calibration before it follows
+REFERENCE_FLOOR = 0.03  # ≈ -30 dBFS: 33x, the highest gain the meter draws with
+REFERENCE_RISE = 2.0  # at most +6 dB per tick
+REFERENCE_DECAY = 0.9  # how fast the meter recalibrates to a quieter voice
+# Enough to hold whole lines whatever the cadence is, the first and last of them perhaps partial.
+LEVEL_TAIL_BYTES = 4096
+
+# The pill draws over whatever the user has on screen, so its colour is theirs to pick. Zinc-200 by
+# default: pure white on a near-black pill is harsh at this bar width, and this is the softer white
+# a theme's foreground usually is. COLOR_VARIABLE takes any #rgb or #rrggbb.
+DEFAULT_COLOR = (228 / 255, 228 / 255, 231 / 255)  # #e4e4e7, zinc-200
+COLOR_VARIABLE = "TINY_DICTATE_PRESENT_COLOR"
 
 # Clears the bar (waybar sits at the bottom of the screen here).
 MARGIN_PX = 64
 
 STATES = {
-    "recording": ("Recording", True),
+    # Recording carries no word: the waveform is the whole message, and a pill that announces the
+    # state the user just asked for announces nothing.
+    "recording": ("", True),
     "transcribing": ("Transcribing", True),
     # A verdict, not a live state: nothing is running any more, so the spinner stops. Only a
     # verdict carries an emoji -- the live states are one word next to a turning spinner.
@@ -90,7 +139,7 @@ window { background-color: transparent; }
 }
 .pill label { color: #fafafa; font-size: 14px; }
 .spinner { font-family: monospace; font-size: 16px; }
-.pill.recording .spinner { color: #f87171; }
+.pill.recording .spinner { color: %(waveform)s; }
 .pill.transcribing .spinner { color: #fbbf24; }
 .pill.cancelled label { color: #d4d4d8; }
 """
@@ -107,12 +156,46 @@ def owner_alive(pid: int) -> bool:
     return True
 
 
+def parse_color(text: str) -> tuple[float, float, float] | None:
+    """A #rgb or #rrggbb colour, the two forms a theme file is likely to hold."""
+    digits = text.strip().removeprefix("#")
+    if len(digits) == 3:
+        digits = "".join(character * 2 for character in digits)
+    if len(digits) != 6:
+        return None
+    try:
+        channels = [int(digits[index:index + 2], 16) for index in (0, 2, 4)]
+    except ValueError:
+        return None
+    return tuple(channel / 255 for channel in channels)
+
+
+def hex_color(color: tuple[float, float, float]) -> str:
+    """The same colour, in the form GTK CSS reads."""
+    return "#" + "".join(f"{round(channel * 255):02x}" for channel in color)
+
+
+def configured_color() -> tuple[float, float, float]:
+    """The colour the pill draws with, white unless the environment names another one."""
+    text = os.environ.get(COLOR_VARIABLE, "")
+    color = parse_color(text)
+    if color is None and text:
+        print(f"{COLOR_VARIABLE}={text!r} is not a colour: drawing {hex_color(DEFAULT_COLOR)}",
+              file=sys.stderr)
+    return color or DEFAULT_COLOR
+
+
 class Pill:
-    def __init__(self, state_file: str, owner_pid: int) -> None:
+    def __init__(self, state_file: str, owner_pid: int, waveform_file: str) -> None:
         self.state_file = state_file
         self.owner_pid = owner_pid
+        self.waveform_file = waveform_file
         self.state = ""
         self.frame = 0
+        self.waveform: list[tuple[int, int]] = [(0, 0)] * SLICES
+        self.reference = REFERENCE_FLOOR
+        self.hold = 0
+        self.color = configured_color()
         self.loop = GLib.MainLoop()
 
         self.window = Gtk.Window()
@@ -134,8 +217,14 @@ class Pill:
         self.pill.add_css_class("pill")
         self.spinner = Gtk.Label(label=FRAMES[0], width_chars=1)
         self.spinner.add_css_class("spinner")
+        self.meter = Gtk.DrawingArea()
+        self.meter.set_size_request(METER_WIDTH_PX, METER_HEIGHT_PX)
+        self.meter.set_draw_func(self._draw_waveform)
+        self.meter.set_visible(False)
         self.label = Gtk.Label(label="")
+        self.label.set_visible(False)
         self.pill.append(self.spinner)
+        self.pill.append(self.meter)
         self.pill.append(self.label)
         self.window.set_child(self.pill)
 
@@ -146,7 +235,7 @@ class Pill:
     def _load_css(self) -> None:
         provider = Gtk.CssProvider()
         load = getattr(provider, "load_from_string", None) or provider.load_from_data
-        load(CSS)
+        load(CSS % {"waveform": hex_color(self.color)})
         Gtk.StyleContext.add_provider_for_display(
             Gdk.Display.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
@@ -158,6 +247,79 @@ class Pill:
                 return handle.read().strip()
         except OSError:
             return None
+
+    def _read_waveform(self) -> list[tuple[int, int]] | None:
+        """The newest whole line of slice pairs, or None when there is none to read."""
+        if not self.waveform_file:
+            return None
+
+        try:
+            with open(self.waveform_file, "rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                handle.seek(max(0, handle.tell() - LEVEL_TAIL_BYTES))
+                tail = handle.read()
+        except OSError:
+            return None
+
+        # The channel is append-only and the core writes whole lines: the first line of the window
+        # may be cut at the front and the last one at the back, and both are discarded by the
+        # field count rather than guessed at.
+        for line in reversed(tail.split(b"\n")):
+            values = line.split()
+            if len(values) != 2 * SLICES:
+                continue
+            try:
+                samples = [int(value) for value in values]
+            except ValueError:
+                continue
+            return list(zip(samples[0::2], samples[1::2]))
+        return None
+
+    def _update_waveform(self) -> bool:
+        """Take the newest line as the shape to draw. False when there is nothing to draw."""
+        waveform = self._read_waveform()
+        if waveform is None:
+            return False
+
+        self.waveform = waveform
+        self._track_reference(waveform)
+        return True
+
+    def _track_reference(self, waveform: list[tuple[int, int]]) -> None:
+        """Recalibrate the meter on the window just read: see the constants above."""
+        peak = max(max(abs(low), abs(high)) for low, high in waveform) / LEVEL_FULL_SCALE
+
+        if peak >= self.reference * PAUSE_MARGIN:
+            self.hold = HOLD_TICKS
+        elif self.hold > 0:
+            self.hold -= 1
+            return
+
+        decayed = max(self.reference * REFERENCE_DECAY, REFERENCE_FLOOR)
+        self.reference = min(max(peak, decayed), self.reference * REFERENCE_RISE)
+
+    def _excursion(self, value: int, half_height: float) -> float:
+        """One side of a bar: how far that sample reaches from the middle of the meter."""
+        loudness = min(1.0, abs(value) / LEVEL_FULL_SCALE / self.reference)
+        return max(BAR_MIN_PX / 2, loudness * half_height)
+
+    def _draw_waveform(self, _area: Gtk.DrawingArea, cr: cairo.Context, width: int, height: int,
+                       _data: object = None) -> None:
+        cr.set_source_rgba(*self.color, 1.0)
+        cr.set_line_width(BAR_WIDTH_PX)
+        cr.set_line_cap(cairo.LINE_CAP_ROUND)
+
+        middle = height / 2
+        for index, (low, high) in enumerate(self.waveform):
+            # A slice of 4 ms covers about half a pitch period, so its lowest and highest samples are
+            # that half period: drawn as they are, the bar points up on one slice and down on the
+            # next, and the meter reads as noise through no fault of the voice. The peak is mirrored
+            # instead, which is the shape of the window without the slice alignment showing through.
+            excursion = self._excursion(max(abs(low), abs(high)), middle)
+            x = index * BAR_STEP_PX + BAR_WIDTH_PX / 2
+            cr.move_to(x, middle - excursion)
+            cr.line_to(x, middle + excursion)
+        cr.stroke()
 
     def tick(self) -> bool:
         state = self._read_state()
@@ -172,14 +334,25 @@ class Pill:
         # An empty or unknown read is a write in progress, not a reason to leave.
         if state in STATES and state != self.state:
             self.state = state
-            label, live = STATES[state]
-            self.label.set_text(label)
-            self.spinner.set_visible(live)
+            text = STATES[state][0]
+            self.label.set_text(text)
+            # An empty label still takes the box spacing: hide it as well as emptying it, so a
+            # state that carries no word leaves the pill centred on its meter alone.
+            self.label.set_visible(bool(text))
             self.pill.add_css_class(state)
 
         if self.state:
             self.frame = (self.frame + 1) % len(FRAMES)
             self.spinner.set_text(FRAMES[self.frame])
+
+        # The waveform only stands in where there is audio to draw: while recording. A presenter
+        # given no waveform file, or one it cannot read, keeps the spinner it can always draw.
+        drawn = self.state == "recording" and self._update_waveform()
+        live = STATES.get(self.state, ("", False))[1]
+        self.meter.set_visible(drawn)
+        self.spinner.set_visible(not drawn and live)
+        if drawn:
+            self.meter.queue_draw()
 
         return GLib.SOURCE_CONTINUE
 
@@ -196,11 +369,12 @@ def main() -> int:
         print("layer-shell is not supported by this compositor", file=sys.stderr)
         return 1
 
-    if len(sys.argv) != 3:
+    if len(sys.argv) not in (3, 4):
         print(__doc__.strip(), file=sys.stderr)
         return 2
 
-    Pill(sys.argv[1], int(sys.argv[2])).run()
+    waveform_file = sys.argv[3] if len(sys.argv) == 4 else ""
+    Pill(sys.argv[1], int(sys.argv[2]), waveform_file).run()
     return 0
 
 

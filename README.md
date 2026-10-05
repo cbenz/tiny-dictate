@@ -9,7 +9,8 @@ Built on the following tools:
 
 - audio recording with `arecord`, encoded to MP3 on-the-fly with `lame`
 - transcription by a command you provide (see [Transcribers](#transcribers))
-- live status drawn as a layer-shell pill by the presenter (see [Presenter](#presenter))
+- live status drawn as a layer-shell pill by the presenter (see [Presenter](#presenter)), with the
+  input waveform drawn in it while recording
 - result pasted into the active window via clipboard + `ydotool Shift+Insert`
 - failures notified with `notify-send`, the cancellation shown as a verdict on the pill
 
@@ -211,6 +212,11 @@ transcriber. It receives:
 - `$1`: the path of a **state file**, holding one word: `recording`, `transcribing`, `cancelled`,
   or `stop`
 - `$2`: the pid of the session that owns the pill
+- `$3`: the path of a **waveform file**, holding the input waveform: one line per 96 ms of audio,
+  24 slices of 4 ms, each reduced to the lowest and highest sample of the slice (appended while the
+  recorder runs; empty before recording starts). It is a copy of the stream and never the stream
+  itself: a waveform channel that dies cannot interrupt a dictation, and a presenter that ignores
+  `$3` is still a valid presenter
 
 It leaves when the state file disappears, when it reads `stop`, or when that pid is gone. Those
 three exits are what keep a pill from surviving its dictation, so a presenter has to follow all of
@@ -220,9 +226,20 @@ It must never take keyboard focus: the paste that ends a dictation goes to the f
 focusable pill would receive the text itself.
 
 The presenter shipped with the tool, `src/presenters/layer-shell`, draws a pill anchored to the
-bottom of the screen with GTK4 and gtk4-layer-shell. It needs a compositor with `wlr-layer-shell`
-support (sway, Hyprland, niri, KDE) and exits with an error on GNOME/Mutter, where the dictation
-still works but nothing is shown.
+bottom of the screen with GTK4 and gtk4-layer-shell. It draws the input waveform in it while
+recording, normalized on the level of the voice around it: the bars fill the meter and what is left
+to see is how the voice moves, which is what a pill can show at ten frames per second whatever the
+microphone gain happens to be. A window too quiet to be a voice is drawn small rather than
+gigantic, and a `$3` that is absent or unreadable falls back to the spinner. It needs a compositor
+with `wlr-layer-shell` support (sway, Hyprland, niri, KDE) and exits with an error on
+GNOME/Mutter, where the dictation still works but nothing is shown.
+
+The waveform is a soft white (`#e4e4e7`), and takes its colour from `TINY_DICTATE_PRESENT_COLOR`
+(any `#rgb` or `#rrggbb`) when the environment names one:
+
+```sh
+TINY_DICTATE_PRESENT_COLOR='#285577' tiny-dictate toggle
+```
 
 Failures are not the pill's business: they are desktop notifications sent with `notify-send`, once
 each, never replaced. There is nothing to keep in sync, so no notification id and no `dunstify`. The

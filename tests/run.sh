@@ -132,7 +132,8 @@ cat > "$BIN/present" <<'STUB'
 # owner is gone.
 state_file="$1"
 owner="$2"
-printf 'PRESENT start owner=%s file=%s caller=%s\n' "$owner" "$state_file" "$PPID" >> "$WORK/events.log"
+waveform_file="$3"
+printf 'PRESENT start owner=%s file=%s waveform=%s caller=%s\n' "$owner" "$state_file" "$waveform_file" "$PPID" >> "$WORK/events.log"
 state=""
 while :; do
     if ! current="$(cat "$state_file" 2>/dev/null)"; then
@@ -189,10 +190,18 @@ cat > "$BIN/amixer" <<'STUB'
 echo "[on]"
 STUB
 
-chmod +x "$BIN"/*
+# A meter that dies on its first slice instead of reading it. The waveform channel is a copy of
+# the stream, so nothing downstream of `tee -p` may be able to end the recording.
+mkdir -p "$BIN-broken-meter"
+cat > "$BIN-broken-meter/od" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+
+chmod +x "$BIN"/* "$BIN-broken-meter"/*
 
 # A broken stub would silently test nothing: check them before running anything.
-for stub in "$BIN"/*; do
+for stub in "$BIN"/* "$BIN-broken-meter"/*; do
     if ! bash -n "$stub"; then
         printf 'ERROR: stub %s is not valid bash\n' "$stub"
         exit 99
@@ -217,6 +226,13 @@ td() {
 # up on PATH.
 td_default() {
     PATH="$BIN:$PATH" XDG_RUNTIME_DIR="$RUN" HOME="$HOME_DIR" "$SCRIPT" "$@"
+}
+
+# Same as td, with a waveform meter that dies instead of reading the stream.
+td_broken_meter() {
+    PATH="$BIN-broken-meter:$BIN:$PATH" \
+        TINY_DICTATE_TRANSCRIBE="$BIN/transcribe" TINY_DICTATE_PRESENT="$BIN/present" \
+        XDG_RUNTIME_DIR="$RUN" HOME="$HOME_DIR" "$SCRIPT" "$@"
 }
 
 dump() {
@@ -299,6 +315,41 @@ wait_idle() {
 
 audio_size() { cat "$WORK/transcribe-size" 2>/dev/null || echo "none"; }
 
+waveform_file() { printf '%s/tiny-dictate/session/waveform' "$RUN"; }
+
+# The waveform file holds one line per 96 ms of audio: 24 slices, each the lowest and highest
+# sample of the slice, so 48 integers. Only the last line may be short: a read can catch the
+# writer between the fields of the line it is appending.
+waveform_file_is_a_slice_series() {
+    local file
+
+    file="$(waveform_file)"
+    [ -s "$file" ] || return 1
+    awk '
+        {
+            if (NF != 48) short_line = NR
+            for (i = 1; i <= NF; i++)
+                if ($i !~ /^-?[0-9]+$/ || $i < -32768 || $i > 32767) bad = 1
+        }
+        END { exit !(bad != 1 && (short_line == 0 || short_line == NR)) }
+    ' "$file"
+}
+
+# The pill is handed the waveform file as $3, so the waveform it draws is the recording it
+# belongs to.
+presenter_got_waveform_file() {
+    grep -q "^PRESENT start .*waveform=$(waveform_file) " "$WORK/events.log"
+}
+
+# The recorder the core recorded, checked for liveness: the waveform channel is beside the voice
+# path, so nothing that happens in it may end a recording that is still going on.
+recorder_alive() {
+    local pid
+
+    pid="$(cat "$RUN/tiny-dictate/session/arecord.pid" 2>/dev/null)" || return 1
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
 pasted_text() { cat "$WORK/clipboard" 2>/dev/null; }
 
 pasted() { [ -n "$(pasted_text)" ]; }
@@ -376,6 +427,20 @@ no_leftover_process() {
     ! pgrep -f "$WORK/bin/" >/dev/null 2>&1 && ! pgrep -f 'arecord -D null' >/dev/null 2>&1
 }
 
+# Nothing is left reading the waveform channel once the recording is over. The fifo path pins the
+# match to this run's own copy: a dictation the user happens to be running for real, on the real
+# runtime directory, is none of this test's business. The meter is the tee's child and goes when the
+# tee does, so looking for the tee is enough.
+no_waveform_channel_process() {
+    local i
+
+    for i in $(seq 1 20); do
+        pgrep -f "$RUN/tiny-dictate/session/audio.fifo" >/dev/null 2>&1 || return 0
+        sleep 0.05
+    done
+    return 1
+}
+
 session_dir_gone() { [ ! -e "$RUN/tiny-dictate/session" ]; }
 
 # ─────────────────────────── tests ───────────────────────────
@@ -396,6 +461,37 @@ test_normal_flow() {
         [ "$(audio_size)" -gt 0 ] 2>/dev/null
     check "the pill showed recording then transcribing" pill_showed_both_states
     check "the happy path notifies nothing" no_notification_at_all
+    check "no presentation left behind" presenter_left
+    check "no leftover process" no_leftover_process
+    check "session directory removed" session_dir_gone
+}
+
+test_waveform_channel() {
+    start_test "the waveform channel carries the recording to the pill"
+    td start
+    sleep 0.4
+    check "the pill is given the waveform file" presenter_got_waveform_file
+    check "the waveform file is a series of slices" waveform_file_is_a_slice_series
+    td stop
+    check "session finishes" wait_idle
+    check "transcription pasted" [ "$(pasted_text)" = "text transcribed" ]
+    check "no waveform channel process left behind" no_waveform_channel_process
+    check "session directory removed" session_dir_gone
+}
+
+# The waveform channel is a copy, and this is what that buys: a meter that dies on its first
+# slice cannot close the pipe under the recorder. Without `tee -p` the recorder takes the SIGPIPE
+# and the dictation is lost.
+test_broken_meter() {
+    start_test "the waveform meter dies mid-recording"
+    td_broken_meter start
+    sleep 0.4
+    check "the recorder outlives a dead meter" recorder_alive
+    td stop
+    check "session finishes" wait_idle
+    check "transcription pasted" [ "$(pasted_text)" = "text transcribed" ]
+    check "audio given to the transcriber is not empty (was $(audio_size) bytes)" \
+        [ "$(audio_size)" -gt 0 ] 2>/dev/null
     check "no presentation left behind" presenter_left
     check "no leftover process" no_leftover_process
     check "session directory removed" session_dir_gone
@@ -595,6 +691,8 @@ run_test() {
 }
 
 run_test test_normal_flow
+run_test test_waveform_channel
+run_test test_broken_meter
 run_test test_stop_immediately
 run_test test_recorder_failure
 run_test test_transcription_failure

@@ -10,6 +10,7 @@ ENCODER_PIDFILE="$SESSION_DIR/lame.pid"
 PRESENTER_STATE_FILE="$SESSION_DIR/state"
 AUDIO_FILE="$SESSION_DIR/audio.mp3"
 AUDIO_FIFO="$SESSION_DIR/audio.fifo"
+WAVEFORM_FILE="$SESSION_DIR/waveform"
 AUDIO_ERROR_FILE="$SESSION_DIR/arecord.err"
 TRANSCRIBE_ERROR_FILE="$SESSION_DIR/transcribe.err"
 COMMAND_LOCK_DIR="$STATE_DIR/command.lock"
@@ -97,8 +98,40 @@ show_verdict() {
 # of the screen, and no frame of it can land after it is gone.
 start_presenter() {
     write_presenter_state "$1"
-    "$PRESENTER" "$PRESENTER_STATE_FILE" "$BASHPID" &
+    "$PRESENTER" "$PRESENTER_STATE_FILE" "$BASHPID" "$WAVEFORM_FILE" &
     PRESENTER_PID=$!
+}
+
+# ── waveform channel ─────────────────────────────────────────
+# The pill draws the input waveform while recording, so the core publishes it: a copy of the raw
+# stream, sliced every LEVEL_SLICE_SAMPLES, each slice reduced to its lowest and highest sample,
+# one line per LEVEL_SLICES slices -- 96 ms of audio, renewed ten times a second, so the pill has
+# the shape of the voice and not a history that scrolls. It is a copy of the stream and nothing
+# else reads it, which is why the tee takes `-p`: without it a write error to the pipe closes
+# tee, the recorder takes the SIGPIPE, and a dead meter costs the dictation. The presenter reads
+# the last whole line of that file; an absent or unreadable file costs the waveform only.
+LEVEL_SLICE_SAMPLES=64  # 4 ms of S16_LE mono at 16 kHz
+LEVEL_SLICE_BYTES=$((LEVEL_SLICE_SAMPLES * 2))
+LEVEL_SLICES=24  # 24 slices of 4 ms = one line per 96 ms of audio
+waveform_meter() {
+    od -An -td2 -v -w"$LEVEL_SLICE_BYTES" 2>/dev/null | awk -v slices="$LEVEL_SLICES" '
+        {
+            low = $1
+            high = $1
+            for (i = 2; i <= NF; i++) {
+                if ($i < low) low = $i
+                if ($i > high) high = $i
+            }
+            if (n > 0) line = line " "
+            line = line low " " high
+            n++
+            if (n == slices) {
+                print line
+                fflush()
+                line = ""
+                n = 0
+            }
+        }'
 }
 
 # Bounded, like every wait here: a wedged process must not hold the session hostage, and
@@ -426,15 +459,20 @@ start() {
         return 1
     fi
 
-    # lame opens the pipe for reading, arecord for writing. Both PIDs are recorded
-    # here, synchronously, *before* the session process is forked: that is what makes
-    # the wait in `session` race-free.
+    # tee opens the pipe for writing, lame for reading: the encoder is already waiting on it
+    # when the recorder starts. Both PIDs are recorded here, synchronously, *before* the session
+    # process is forked: that is what makes the wait in `session` race-free. The recorder PID is
+    # arecord's own, not the subshell that copies the stream.
     lame -r -s 16 --bitwidth 16 --signed --little-endian -m m -b 64 -S - "$AUDIO_FILE" \
         < "$AUDIO_FIFO" &
     encoder_pid=$!
     printf '%s' "$encoder_pid" > "$ENCODER_PIDFILE"
 
-    arecord -f S16_LE -r 16000 -c 1 -t raw > "$AUDIO_FIFO" 2>"$AUDIO_ERROR_FILE" &
+    # The stream is copied into the waveform channel on its way to the encoder: the microphone is
+    # opened once, and the meter sits beside the voice path rather than in it.
+    : > "$WAVEFORM_FILE"
+    arecord -f S16_LE -r 16000 -c 1 -t raw \
+        > >(tee -p "$AUDIO_FIFO" | waveform_meter >> "$WAVEFORM_FILE") 2>"$AUDIO_ERROR_FILE" &
     recorder_pid=$!
     printf '%s' "$recorder_pid" > "$RECORDER_PIDFILE"
 
