@@ -159,12 +159,3 @@ layer shell:
 
 - <https://github.com/wmww/gtk4-layer-shell>
 - <https://github.com/wmww/gtk4-layer-shell/blob/main/linking.md>
-
-dunst (the daemon that displays the remaining notifications):
-
-- <https://dunst-project.org/documentation/>
-- <https://dunst-project.org/documentation/dunst/>
-- <https://dunst-project.org/documentation/guides/>
-- <https://dunst-project.org/documentation/dunstify/>
-- <https://dunst-project.org/documentation/faq/>
-- <https://wiki.archlinux.org/title/Dunst>
