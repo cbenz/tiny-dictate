@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+"""Layer-shell pill showing what tiny-dictate is doing.
+
+Usage: layer-shell <state-file> <owner-pid>
+
+Draws one pill anchored to the bottom of the screen and reads the state file on
+every tick. It exits when the state file disappears, when it holds "stop", or when
+the owner process is gone: three ways out, so a killed dictation cannot leave a
+pill on screen.
+
+The window never takes keyboard focus. The paste that ends a dictation goes to the
+focused window, and a pill that could be focused would receive the text itself.
+"""
+
+from __future__ import annotations
+
+import glob
+import os
+import sys
+
+
+# Longest-first so that a versioned file wins over the symlink pointing at it.
+PRELOAD_PATTERNS = (
+    "/usr/lib/libgtk4-layer-shell.so*",
+    "/usr/lib64/libgtk4-layer-shell.so*",
+    "/usr/lib/*/libgtk4-layer-shell.so*",
+    "/usr/local/lib/libgtk4-layer-shell.so*",
+)
+
+
+def preload_library() -> str:
+    """Path to the gtk4-layer-shell shared object, or "" when it is not installed."""
+    for pattern in PRELOAD_PATTERNS:
+        for candidate in sorted(glob.glob(pattern)):
+            if os.path.isfile(os.path.realpath(candidate)):
+                return os.path.realpath(candidate)
+    return ""
+
+
+# gtk4-layer-shell talks to the compositor through libwayland-client, and it only gets
+# the protocol wired up when the loader has loaded it *before* that library. A plain
+# import is too late: re-exec with it preloaded, then do the real work in the child.
+# Without this, the compositor answers "layer-shell is not supported" on a compositor
+# that supports it.
+if "libgtk4-layer-shell" not in os.environ.get("LD_PRELOAD", ""):
+    library = preload_library()
+    if library:
+        preloaded = os.pathsep.join(filter(None, (library, os.environ.get("LD_PRELOAD", ""))))
+        os.environ["LD_PRELOAD"] = preloaded
+        os.execv(sys.executable, [sys.executable, *sys.argv])
+
+import warnings
+
+import gi
+
+# Importing GTK warns about deprecations inside PyGObject itself, at every level: nothing
+# here can act on them, and the pill's stderr is the session's stderr.
+warnings.filterwarnings("ignore", category=gi.PyGIDeprecationWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="gi")
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
+gi.require_version("Gtk4LayerShell", "1.0")
+
+from gi.repository import Gdk, GLib, Gtk, Gtk4LayerShell  # noqa: E402
+
+# One tick per frame: 100 ms is the cadence of the notification spinner this
+# replaces, and it bounds how long a pill can outlive the session that owns it.
+TICK_MS = 100
+FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+# Clears the bar (waybar sits at the bottom of the screen here).
+MARGIN_PX = 64
+
+STATES = {"recording": "Recording", "transcribing": "Transcribing"}
+
+CSS = """
+window { background-color: transparent; }
+.pill {
+    background-color: rgba(24, 24, 27, 0.88);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 999px;
+    padding: 8px 18px;
+}
+.pill label { color: #fafafa; font-size: 14px; }
+.spinner { font-family: monospace; font-size: 16px; }
+.pill.recording .spinner { color: #f87171; }
+.pill.transcribing .spinner { color: #fbbf24; }
+"""
+
+
+def owner_alive(pid: int) -> bool:
+    """False once the process is gone; a signal to a zombie process still succeeds."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+class Pill:
+    def __init__(self, state_file: str, owner_pid: int) -> None:
+        self.state_file = state_file
+        self.owner_pid = owner_pid
+        self.state = ""
+        self.frame = 0
+        self.loop = GLib.MainLoop()
+
+        self.window = Gtk.Window()
+        # Layer shell is configured on the window before it is realized, and the
+        # window must exist before anything else is built on it.
+        Gtk4LayerShell.init_for_window(self.window)
+        Gtk4LayerShell.set_namespace(self.window, "tiny-dictate")
+        Gtk4LayerShell.set_layer(self.window, Gtk4LayerShell.Layer.OVERLAY)
+        Gtk4LayerShell.set_anchor(self.window, Gtk4LayerShell.Edge.BOTTOM, True)
+        # Never reserve space, never accept the keyboard: see the module docstring.
+        Gtk4LayerShell.set_exclusive_zone(self.window, -1)
+        Gtk4LayerShell.set_keyboard_mode(self.window, Gtk4LayerShell.KeyboardMode.NONE)
+        Gtk4LayerShell.set_margin(self.window, Gtk4LayerShell.Edge.BOTTOM, MARGIN_PX)
+
+        self.window.set_decorated(False)
+        self.window.set_resizable(False)
+
+        self.pill = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        self.pill.add_css_class("pill")
+        self.spinner = Gtk.Label(label=FRAMES[0], width_chars=1)
+        self.spinner.add_css_class("spinner")
+        self.label = Gtk.Label(label="")
+        self.pill.append(self.spinner)
+        self.pill.append(self.label)
+        self.window.set_child(self.pill)
+
+        self._load_css()
+        self.window.present()
+        GLib.timeout_add(TICK_MS, self.tick)
+
+    def _load_css(self) -> None:
+        provider = Gtk.CssProvider()
+        load = getattr(provider, "load_from_string", None) or provider.load_from_data
+        load(CSS)
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
+
+    def _read_state(self) -> str | None:
+        """The state, or None once the session is over and the file is gone."""
+        try:
+            with open(self.state_file, encoding="utf-8") as handle:
+                return handle.read().strip()
+        except OSError:
+            return None
+
+    def tick(self) -> bool:
+        state = self._read_state()
+
+        # Removing the source only stops the ticks: the main loop runs until it is
+        # told to quit, so leaving is two calls, not one.
+        if state is None or state == "stop" or not owner_alive(self.owner_pid):
+            self.window.destroy()
+            self.loop.quit()
+            return GLib.SOURCE_REMOVE
+
+        # An empty or unknown read is a write in progress, not a reason to leave.
+        if state in STATES and state != self.state:
+            self.state = state
+            self.label.set_text(STATES[state])
+            self.pill.add_css_class(state)
+
+        if self.state:
+            self.frame = (self.frame + 1) % len(FRAMES)
+            self.spinner.set_text(FRAMES[self.frame])
+
+        return GLib.SOURCE_CONTINUE
+
+    def run(self) -> None:
+        self.loop.run()
+
+
+def main() -> int:
+    # The layer-shell support check reads the GDK display, so GTK must be initialized
+    # first: before that, it answers False on a compositor that does support it.
+    Gtk.init()
+
+    if not Gtk4LayerShell.is_supported():
+        print("layer-shell is not supported by this compositor", file=sys.stderr)
+        return 1
+
+    if len(sys.argv) != 3:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+
+    Pill(sys.argv[1], int(sys.argv[2])).run()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

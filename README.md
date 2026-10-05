@@ -1,6 +1,6 @@
 # tiny-dictate
 
-Minimal desktop voice dictation tool: no daemon, no GUI, just keyboard shortcuts and notifications.
+Minimal desktop voice dictation tool: no daemon, just keyboard shortcuts and a pill on screen.
 
 Opinionated workflow: press a keyboard shortcut to start recording, press it again to stop and
 transcribe (or cancel with another keyboard shortcut).
@@ -9,8 +9,9 @@ Built on the following tools:
 
 - audio recording with `arecord`, encoded to MP3 on-the-fly with `lame`
 - transcription by a command you provide (see [Transcribers](#transcribers))
+- live status drawn as a layer-shell pill by the presenter (see [Presenter](#presenter))
 - result pasted into the active window via clipboard + `ydotool Shift+Insert`
-- status notifications with `dunstify`
+- failures and cancellation notified with `notify-send`
 
 ## Installation
 
@@ -19,19 +20,24 @@ Built on the following tools:
 - `arecord` (alsa-utils)
 - `curl`
 - `lame`
-- [dunst](https://dunst-project.org/)
+- `notify-send` (libnotify)
 - [wl-clipboard](https://github.com/bugaevc/wl-clipboard)
 - [ydotool](https://github.com/ReimuNotMoe/ydotool)
+- a compositor with `wlr-layer-shell` support (sway, Hyprland, niri, KDE) for the presenter
+- for the presenter: `python-gobject`, `gtk4`, [gtk4-layer-shell](https://github.com/wmww/gtk4-layer-shell)
 
-### Install the tool and a transcriber
+A notification daemon (dunst, mako, your desktop's) displays the failures and the cancellation.
+
+### Install the tool, a transcriber and a presenter
 
 ```bash
 install -m 755 tiny-dictate ~/.local/bin/
 install -m 755 transcribers/groq ~/.local/bin/tiny-dictate-transcribe
+install -m 755 presenters/layer-shell ~/.local/bin/tiny-dictate-present
 ```
 
-`tiny-dictate-transcribe` is the default command name, so a transcriber installed under that name
-is used without any further configuration.
+`tiny-dictate-transcribe` and `tiny-dictate-present` are the default command names, so both are used
+without any further configuration once installed under those names.
 
 ### Configure keyboard shortcuts
 
@@ -175,6 +181,34 @@ transcriber hears it` → `what you want`, applied to the text. It guarantees th
 price of anticipating every mistake, and it cannot repair a word the model heard as something
 unrelated. Worth keeping for the few terms the prompt keeps missing.
 
+## Presenter
+
+The pill that shows what `tiny-dictate` is doing is a command you provide, on the same terms as the
+transcriber. It receives:
+
+- `$1`: the path of a **state file**, holding one word: `recording`, `transcribing`, or `stop`
+- `$2`: the pid of the session that owns the pill
+
+It leaves when the state file disappears, when it reads `stop`, or when that pid is gone. Those
+three exits are what keep a pill from surviving its dictation, so a presenter has to follow all of
+them — a screen that shows "Recording" over a dead session is worse than no pill at all.
+
+It must never take keyboard focus: the paste that ends a dictation goes to the focused window, so a
+focusable pill would receive the text itself.
+
+The presenter shipped with the tool, `presenters/layer-shell`, draws a pill anchored to the bottom
+of the screen with GTK4 and gtk4-layer-shell. It needs a compositor with `wlr-layer-shell` support
+(sway, Hyprland, niri, KDE) and exits with an error on GNOME/Mutter, where the dictation still works
+but nothing is shown.
+
+Failures and the cancellation are not the pill's business: they are desktop notifications sent with
+`notify-send`, once each, never replaced. There is nothing to keep in sync, so no notification id
+and no `dunstify`.
+
+Plug in anything else — a notification-based presenter, a bar module, your own script — by pointing
+`TINY_DICTATE_PRESENT` at it. The three lines above are the whole interface: nothing in the core
+knows what a pill is.
+
 ## Usage
 
 ```text
@@ -194,5 +228,6 @@ Commands:
 tests/run.sh
 ```
 
-The test suite stubs the recorder, the encoder, the transcription command, the notifier and the
-keyboard injector: it needs no microphone, no notification daemon and no network.
+The test suite stubs the recorder, the encoder, the transcription command, the presenter, the
+notifier and the keyboard injector: it needs no microphone, no notification daemon, no layer-shell
+surface and no network.

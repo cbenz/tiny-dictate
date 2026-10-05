@@ -7,13 +7,11 @@ SESSION_DIR="$STATE_DIR/session"
 SESSION_PIDFILE="$SESSION_DIR/session.pid"
 RECORDER_PIDFILE="$SESSION_DIR/arecord.pid"
 ENCODER_PIDFILE="$SESSION_DIR/lame.pid"
-SPINNER_PIDFILE="$SESSION_DIR/spinner.pid"
-SPINNER_STOP_FILE="$SESSION_DIR/spinner.stop"
+PRESENTER_STATE_FILE="$SESSION_DIR/state"
 AUDIO_FILE="$SESSION_DIR/audio.mp3"
 AUDIO_FIFO="$SESSION_DIR/audio.fifo"
 AUDIO_ERROR_FILE="$SESSION_DIR/arecord.err"
 TRANSCRIBE_ERROR_FILE="$SESSION_DIR/transcribe.err"
-NOTIFY_IDFILE="$STATE_DIR/notification.id"
 COMMAND_LOCK_DIR="$STATE_DIR/command.lock"
 
 mkdir -p "$STATE_DIR"
@@ -47,98 +45,61 @@ format_error_message() {
     printf '%.180s' "$single_line"
 }
 
-notify_init() {
-    NOTIFY_APP_NAME="$1"
-    NOTIFY_IDFILE="$2"
-}
-
-notify_message() {
+# ── presentation ─────────────────────────────────────────────
+# Two channels, one job each:
+#   - the live state (recording, transcribing) is drawn by the presenter, the only thing on
+#     screen while a dictation runs
+#   - terminal events (failures, cancellation) are desktop notifications, sent once: nothing
+#     has to replace them, so there is no notification id to track
+NOTIFY_APP_NAME="tiny-dictate"
+notify_event() {
     local message="$1"
-    local timeout="${2:-0}"
+    local timeout="${2:-6000}"
     local urgency="${3:-normal}"
-    local args=(--printid --appname "$NOTIFY_APP_NAME" --urgency "$urgency" --timeout "$timeout")
-    local notify_id
 
-    if [ -f "$NOTIFY_IDFILE" ]; then
-        args+=(--replace "$(cat "$NOTIFY_IDFILE")")
-    fi
-
-    notify_id="$(dunstify "${args[@]}" "$NOTIFY_APP_NAME" "$message")" || return 1
-    printf '%s' "$notify_id" > "$NOTIFY_IDFILE"
+    notify-send --app-name="$NOTIFY_APP_NAME" --urgency="$urgency" \
+        --expire-time="$timeout" "$NOTIFY_APP_NAME" "$message" >/dev/null 2>&1 || true
 }
 
-close_notification() {
-    if [ -f "$NOTIFY_IDFILE" ]; then
-        dunstify --close="$(cat "$NOTIFY_IDFILE")" >/dev/null 2>&1 || true
-        rm -f "$NOTIFY_IDFILE"
-    fi
+# The command that draws the live state. Like the transcription command it is resolved
+# with `command -v`, and it is given the state file and the pid it must outlive.
+resolve_presenter() {
+    command -v "${TINY_DICTATE_PRESENT:-tiny-dictate-present}" 2>/dev/null
 }
 
-# The spinner is the only writer of the notification while it runs. It is never
-# killed: whoever wants to write the notification asks it to stop and waits for it,
-# so no dunstify call of the spinner can land after the notification was replaced.
-spinner_loop() {
-    local label="$1"
-    local owner_pid="$2"
+# A reader must never see half a state: a truncating write is not atomic, `mv` is.
+write_presenter_state() {
+    local temporary="$PRESENTER_STATE_FILE.$$"
 
-    # This runs in a subshell: do not inherit the caller's EXIT trap.
-    trap - EXIT
-
-    local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
-    local i=0
-
-    while [ ! -e "$SPINNER_STOP_FILE" ] && kill -0 "$owner_pid" 2>/dev/null; do
-        notify_message "$label ${frames[$i]}" || true
-        i=$(( (i + 1) % ${#frames[@]} ))
-        sleep 0.15
-    done
-
-    # The owner died without asking us to stop: nobody else will clean up, so close
-    # the notification ourselves instead of leaving it frozen on screen.
-    if [ ! -e "$SPINNER_STOP_FILE" ]; then
-        close_notification
-    fi
+    printf '%s\n' "$1" > "$temporary" && mv "$temporary" "$PRESENTER_STATE_FILE"
 }
 
-start_spinner() {
-    local label="$1"
-    local owner_pid="$2"
-
-    rm -f "$SPINNER_STOP_FILE"
-    spinner_loop "$label" "$owner_pid" &
-    SPINNER_PID=$!
-    printf '%s' "$SPINNER_PID" > "$SPINNER_PIDFILE"
+# One presenter per dictation, never replaced: changing state is a write to the file it
+# watches. The session is the only writer of that file, so the presenter is the only writer
+# of the screen, and no frame of it can land after it is gone.
+start_presenter() {
+    write_presenter_state "$1"
+    "$PRESENTER" "$PRESENTER_STATE_FILE" "$BASHPID" &
+    PRESENTER_PID=$!
 }
 
-# Ask the spinner to stop and wait for it to be gone. Once this returns, no frame
-# of the spinner is in flight and the caller may safely write the notification.
-stop_spinner() {
-    local pid="${SPINNER_PID:-}"
+# Bounded, like every wait here: a wedged process must not hold the session hostage, and
+# SIGKILL always works. The presenter also leaves on its own when the state file or the
+# session that owns it disappears.
+stop_presenter() {
+    local pid="${PRESENTER_PID:-}"
     local i
 
-    if [ -z "$pid" ] && [ -f "$SPINNER_PIDFILE" ]; then
-        pid="$(cat "$SPINNER_PIDFILE" 2>/dev/null)"
-    fi
-    [ -z "$pid" ] && return 0
+    [ -n "$pid" ] || return 0
 
-    if kill -0 "$pid" 2>/dev/null; then
-        # The spinner exits when it sees the stop file, or when its owner dies. If the
-        # session directory is already gone (we are being torn down) it cannot see the
-        # file: kill it instead of waiting forever for it.
-        if ! touch "$SPINNER_STOP_FILE" 2>/dev/null; then
-            kill "$pid" 2>/dev/null || true
-        fi
+    write_presenter_state stop 2>/dev/null || true
+    for i in {1..40}; do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.05
+    done
+    kill -KILL "$pid" 2>/dev/null || true
 
-        # Bounded wait: a spinner is gone once kill -0 fails, and it is alive while any
-        # dunstify call of it is in flight.
-        for i in {1..40}; do
-            kill -0 "$pid" 2>/dev/null || break
-            sleep 0.05
-        done
-    fi
-
-    SPINNER_PID=""
-    rm -f "$SPINNER_PIDFILE" 2>/dev/null
+    PRESENTER_PID=""
 }
 
 detect_clipboard_tool() {
@@ -181,8 +142,6 @@ clipboard_paste_via_shift_insert() {
 
     return "$key_status"
 }
-
-notify_init "tiny-dictate" "$NOTIFY_IDFILE"
 
 release_command_lock() {
     rm -rf "$COMMAND_LOCK_DIR"
@@ -291,7 +250,7 @@ microphone_is_muted() {
 
 ensure_micro_not_muted() {
     if microphone_is_muted; then
-        notify_message "🎙️ Microphone is muted. Unmute it before dictating." 4500 critical || true
+        notify_event "🎙️ Microphone is muted. Unmute it before dictating." 4500 critical
         return 1
     fi
 
@@ -306,22 +265,22 @@ resolve_transcribe_command() {
 }
 
 # The session process owns the whole dictation lifecycle: it outlives the `start`
-# command that forked it and it is the only process driving the progress spinner.
+# command that forked it and it is the only process driving the presenter.
 session() {
     local transcript
     local transcribe_command
     local error_message
     local recording_failed=0
     local encoder_failed=0
-    local had_error=0
 
     # This runs in a subshell: do not inherit the caller's EXIT trap.
     trap - EXIT
     trap session_cleanup EXIT
 
     # $BASHPID, not $$: inside a subshell $$ still expands to the pid of the
-    # `tiny-dictate start` process, which exits right after forking us.
-    start_spinner "🎤 Recording" "$BASHPID"
+    # `tiny-dictate start` process, which exits right after forking us. The presenter
+    # watches that pid: it is how it knows to leave if we are killed.
+    start_presenter recording
 
     # Wait for the recorder, which our parent started and recorded before forking us.
     # If the encoder dies first, the recorder writes into a pipe nobody reads and
@@ -352,8 +311,6 @@ session() {
         recording_failed=1
     fi
 
-    stop_spinner
-
     if [ "$recording_failed" -eq 1 ]; then
         kill_from_pidfile "$RECORDER_PIDFILE" -INT
         kill_from_pidfile "$ENCODER_PIDFILE" -TERM
@@ -367,41 +324,40 @@ session() {
         if [ -s "$AUDIO_ERROR_FILE" ]; then
             error_message="$error_message ($(format_error_message "$(cat "$AUDIO_ERROR_FILE" 2>/dev/null)"))"
         fi
-        notify_message "❌ Recording failed: $error_message" 6000 || true
+        # The pill goes before the notification: one thing on screen at a time.
+        stop_presenter
+        notify_event "❌ Recording failed: $error_message" 6000
         return 0
     fi
 
-    start_spinner "⏳ Transcribing" "$BASHPID"
+    write_presenter_state transcribing
 
     transcribe_command="$(resolve_transcribe_command)"
     if transcript="$("$transcribe_command" "$AUDIO_FILE" 2>"$TRANSCRIBE_ERROR_FILE")"; then
+        # The live state is over once there is text: the pill has nothing left to say,
+        # and what may follow is a terminal event.
+        stop_presenter
         if [ -n "$transcript" ]; then
             if ! clipboard_paste_via_shift_insert "$transcript"; then
-                notify_message "❌ Could not paste the transcription" 6000 critical || true
+                notify_event "❌ Could not paste the transcription" 6000 critical
             fi
         fi
     else
-        had_error=1
-        stop_spinner
+        stop_presenter
         error_message="$(format_error_message "$(cat "$TRANSCRIBE_ERROR_FILE" 2>/dev/null)")"
-        notify_message "❌ Transcription failed: $error_message" 6000 || true
-    fi
-
-    stop_spinner
-    if [ "$had_error" -eq 0 ]; then
-        close_notification
+        notify_event "❌ Transcription failed: $error_message" 6000
     fi
 }
 
 # Remove what this session owns, and nothing else: a newer session could have reclaimed the
 # same paths in the meantime (the directory is the microphone claim, so this only happens
-# when a session died without cleaning up), and its files and its spinner are not ours.
+# when a session died without cleaning up), and its files and its presenter are not ours.
 session_cleanup() {
     if [ "$(cat "$SESSION_PIDFILE" 2>/dev/null)" != "$BASHPID" ]; then
         return 0
     fi
 
-    stop_spinner
+    stop_presenter
     rm -rf "$SESSION_DIR"
 }
 
@@ -411,13 +367,19 @@ start() {
 
     if [ -z "$(resolve_transcribe_command)" ]; then
         printf 'No transcription command: set TINY_DICTATE_TRANSCRIBE or install tiny-dictate-transcribe\n' >&2
-        notify_message "❌ No transcription command. Set TINY_DICTATE_TRANSCRIBE or install tiny-dictate-transcribe" 8000 critical || true
+        notify_event "❌ No transcription command. Set TINY_DICTATE_TRANSCRIBE or install tiny-dictate-transcribe" 8000 critical
+        return 1
+    fi
+
+    if [ -z "$PRESENTER" ]; then
+        printf 'No presenter: set TINY_DICTATE_PRESENT or install tiny-dictate-present\n' >&2
+        notify_event "❌ No presenter. Set TINY_DICTATE_PRESENT or install tiny-dictate-present" 8000 critical
         return 1
     fi
 
     if ! claim_session; then
-        # A session is running: its spinner already shows what is going on, and it must
-        # stay the only writer of the notification.
+        # A session is running: its pill already shows what is going on, and it is the
+        # only writer of the screen.
         printf 'tiny-dictate is already busy\n' >&2
         return 1
     fi
@@ -429,7 +391,7 @@ start() {
 
     if ! mkfifo "$AUDIO_FIFO"; then
         rm -rf "$SESSION_DIR"
-        notify_message "❌ Cannot create the audio pipe" 6000 || true
+        notify_event "❌ Cannot create the audio pipe" 6000
         return 1
     fi
 
@@ -453,8 +415,8 @@ stop() {
     if recording_active; then
         kill_from_pidfile "$RECORDER_PIDFILE" -INT
     elif session_active; then
-        # No notification here: the session spinner already shows "Transcribing" and
-        # must stay the only writer of the notification.
+        # No notification here: the session's pill already shows "Transcribing", and it
+        # is the only writer of the screen.
         printf 'Transcription already in progress\n' >&2
     fi
 }
@@ -465,17 +427,16 @@ cancel() {
         return 0
     fi
 
-    # Kill the session first: once it is gone no new spinner can appear, so the one
-    # stopped below is the last writer of the notification.
+    # Kill the session first: once it is gone no new pill can appear, and the one that is up
+    # leaves on its own -- the directory it reads disappears just below, and the session that
+    # owns it is dead.
     kill_from_pidfile "$SESSION_PIDFILE" -TERM
     kill_from_pidfile "$RECORDER_PIDFILE" -INT
     kill_from_pidfile "$ENCODER_PIDFILE" -TERM
-    stop_spinner
     rm -rf "$SESSION_DIR"
-    # The 1s timeout dismisses this notification. Do not keep a detached process that
-    # would close it later: it would be a second writer of the notification, and a
-    # dictation started in the meantime would lose its own notification.
-    notify_message "🛑 Recording cancelled" 1000
+    # The 1s timeout dismisses this notification. Nothing rewrites it afterwards: the session
+    # and its pill are both gone, so there is no second writer to arbitrate with.
+    notify_event "🛑 Recording cancelled" 1000
 }
 
 toggle() {
@@ -509,15 +470,17 @@ Commands:
 EOF
 }
 
-if ! require_commands arecord lame ydotool dunstify curl; then
-    dunstify --appname "tiny-dictate" --timeout 6000 "tiny-dictate" "❌ Missing dependencies" >/dev/null 2>&1 || true
+PRESENTER="$(resolve_presenter)"
+
+if ! require_commands arecord lame ydotool notify-send curl; then
+    notify_event "❌ Missing dependencies" 6000
     printf 'Install the missing commands and retry.\n' >&2
     exit 1
 fi
 
 if ! detect_clipboard_tool; then
     printf 'Missing dependencies: wl-copy and wl-paste\n' >&2
-    dunstify --appname "tiny-dictate" --timeout 6000 "tiny-dictate" "❌ Missing dependencies: wl-copy and wl-paste" >/dev/null 2>&1 || true
+    notify_event "❌ Missing dependencies: wl-copy and wl-paste" 6000
     printf 'Install wl-clipboard and retry.\n' >&2
     exit 1
 fi
@@ -548,7 +511,7 @@ done
 case "$command" in
     start|stop|cancel|toggle)
         if ! acquire_command_lock; then
-            notify_message "⏳ tiny-dictate is already handling another command" 1200 || true
+            notify_event "⏳ tiny-dictate is already handling another command" 1200
             exit 1
         fi
         ;;
