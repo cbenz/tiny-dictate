@@ -3,21 +3,25 @@
 ## Running the suite
 
 ```bash
+cargo build --release
 tests/run.sh
 ```
 
-The suite stubs the recorder, the encoder, the transcription command, the presenter, the notifier and
-the keyboard injector: it needs no microphone, no notification daemon, no layer-shell surface and no
+The suite runs the built binary at `target/release/tiny-dictate` and never builds it: a suite that
+silently compiles would test whatever it produced rather than what the user asked for. When the
+binary is absent it says so and exits non-zero.
+
+It stubs the recorder, the encoder, the transcription command, the presenter, the notifier and the
+keyboard injector: it needs no microphone, no notification daemon, no layer-shell surface and no
 network.
 
 | variable | effect |
 |----------|--------|
-| `SCRIPT` | the executable under test (defaults to `src/tiny-dictate` in this tree) |
+| `SCRIPT` | the executable under test (defaults to `target/release/tiny-dictate` in this tree) |
 | `OLD_SCRIPT` | a second executable to compare the recorder race against |
 | `RACE_ITERATIONS` | how many times the race loop runs (default 25) |
 | `ONLY` | run one test by function name |
 | `DIAG` | dump the state after each test and keep `/tmp/td-diag` |
-| `TRACE` | run the executable under `bash -x`, into `trace.log` |
 
 ## The safety net
 
@@ -47,7 +51,9 @@ presenter was asked to draw, the lifecycle of the processes, the exit codes.
 - the normal flow: start, record, stop, paste
 - the waveform channel carries the recording to the pill, and hands the pill the waveform file and
   the command to run
-- a waveform meter that dies mid-recording does not end the recording (the `tee -p` guarantee)
+- a waveform meter that dies mid-recording does not end the recording: the guarantee the `tee -p`
+  pipeline used to carry, kept as a regression scenario even though the in-process slicer no longer
+  calls the stub the scenario breaks
 - stopping immediately after starting (the reported race)
 - the recorder failing at startup, with its stderr shown to the user
 - the transcription command failing

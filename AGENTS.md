@@ -6,20 +6,22 @@ to install.
 
 ## Layout
 
-- `src/tiny-dictate`: the tool itself, the only file that has to be on `PATH`
-- `src/presenters/`: the presenters shipped with the tool
+- `src/`: the Rust crate: the tool itself, the pill included. `main.rs` parses the command line,
+  and each layer of the tool lives in its own module.
 - `transcribers/`: the transcribers shipped with the tool
 - `tests/run.sh`: the integration suite, every external command stubbed
 - `contrib/`: integrations with other tools, none of which the tool needs at runtime
 
 ## Toolchain
 
-- `tests/run.sh`: the integration suite. It stubs every external command, and needs no microphone,
-  no notification daemon, no layer-shell surface and no network.
+- `cargo build --release` builds the binary. The pill links GTK4 and gtk4-layer-shell, so their
+  development packages are needed to build; nothing is needed beside the binary at runtime.
+- `tests/run.sh` runs the built binary at `target/release/tiny-dictate`, and never builds it. It
+  stubs every external command, and needs no microphone, no notification daemon, no layer-shell
+  surface and no network.
 - `SCRIPT=<path> tests/run.sh`: run the suite against another executable.
 - `ONLY=<test> tests/run.sh` runs one test; `DIAG=1 tests/run.sh` dumps the state after each test.
-- The tool and its reference plugins are plain executables: bash for `src/tiny-dictate` and the
-  reference transcriber, Python with GTK4 for the reference presenter. There is nothing to build.
+- The reference transcriber is a plain shell script, and stays one: "any command" is the contract.
 
 ## Invariants
 
@@ -31,9 +33,12 @@ Rules the tool does not break, whatever implementation runs them:
   pid: no window in which it could believe the recorder finished when it has not started.
 - `stop` and `cancel` signal the recorder, never the session. A signal never removes the pidfile it
   was read from.
-- The encoder outlives the recorder, so it can flush the last frames.
+- The kill order: the recorder is signalled before the encoder, and the encoder outlives it so it can
+  flush the last frames.
 - One presenter per dictation, and the session is the only writer of the state file: the presenter is
   the only writer of the screen.
+- The pill leaves on its own: the state file disappears, it reads `stop`, or the process it was given
+  is gone. A killed dictation cannot leave a pill frozen on screen.
 - The session waits for the presenter to be gone before it notifies anything.
 - The pill never takes keyboard focus: the paste goes to the focused window.
 - A cancelled dictation is neither transcribed nor reported as a failure.

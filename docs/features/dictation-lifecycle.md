@@ -51,12 +51,13 @@ The session waits for the recorder to exit, then for the encoder to flush its la
 
 ## The pipeline
 
-`arecord` captures the microphone as raw S16_LE, 16 kHz, mono, and writes it into a fifo. `lame`
-reads that fifo and encodes MP3 (64 kbps, mono) into `audio.mp3` from the first frame: it writes
-progressively instead of buffering the whole recording, so a killed encoder leaves a file that
-decoders still open. The normal stop path, where the recorder dies first and the encoder sees
-end-of-file, finalises the file properly. The recorder and the encoder are two processes;
-the [waveform channel](pill.md) is a copy of the same stream.
+`arecord` captures the microphone as raw S16_LE, 16 kHz, mono. Its stream goes to the `_pump`
+process of the same binary, which forwards it into a fifo while, beside it, appending the
+[waveform lines](pill.md); `lame` reads that fifo and encodes MP3 (64 kbps, mono) into `audio.mp3`
+from the first frame: it writes progressively instead of buffering the whole recording, so a killed
+encoder leaves a file that decoders still open. The normal stop path, where the recorder dies first
+and the encoder sees end-of-file, finalises the file properly. The recorder, the pump and the
+encoder are three processes; the waveform channel is a copy of the same stream.
 
 The pipeline exists only while a dictation runs, and its files go with the session directory.
 
@@ -94,9 +95,10 @@ The failures that are notified:
   before any recording starts.
 - `Cannot create the audio pipe`, and `Microphone is muted. Unmute it before dictating.` with
   critical urgency.
-- `Missing dependencies`, when `arecord`, `lame`, `ydotool`, `notify-send`, `curl`, `wl-copy` or
-  `wl-paste` is not on `PATH`. The same message also goes to stderr with a line telling the user to
-  install the missing commands.
+
+A missing command is not a notification of its own: the tool reports what it could not do. `start`
+says the transcriber is missing before anything is claimed, and an `arecord` or `lame` that cannot be
+run fails the pipeline, reported on stderr.
 
 A cancelled dictation is never a failure: its verdict replaces the notification it used to be.
 

@@ -9,8 +9,7 @@ Built on the following tools:
 
 - audio recording with `arecord`, encoded to MP3 on-the-fly with `lame`
 - transcription by a command you provide (see [Transcribers](#transcribers))
-- live status drawn as a layer-shell pill by the presenter, with the input waveform drawn in it while
-  recording
+- the pill, the live status and the input waveform, drawn by the tool itself
 - result pasted into the active window via clipboard + `ydotool Shift+Insert`
 - failures notified with `notify-send`, the cancellation shown as a verdict on the pill
 
@@ -19,29 +18,42 @@ How it works, and the decisions behind it, live in [`docs/SPECS.md`](docs/SPECS.
 
 ## Installation
 
-### Dependencies
+The tool is a Rust binary. It links GTK4 and [gtk4-layer-shell](https://github.com/wmww/gtk4-layer-shell)
+for its pill, so their development packages, a Rust toolchain and a C compiler must be installed to
+build it; there is nothing to install beside it at runtime.
+
+### Build
+
+```bash
+cargo build --release
+```
+
+The GUI toolkit is linked into every invocation, `tiny-dictate status` included. That is deliberate,
+not a packaging mistake.
+
+### Runtime dependencies
 
 - `arecord` (alsa-utils)
-- `curl`
 - `lame`
+- [ydotool](https://github.com/ReimuNotMoe/ydotool)
 - `notify-send` (libnotify)
 - [wl-clipboard](https://github.com/bugaevc/wl-clipboard)
-- [ydotool](https://github.com/ReimuNotMoe/ydotool)
-- a compositor with `wlr-layer-shell` support (sway, Hyprland, niri, KDE) for the presenter
-- for the presenter: `python-gobject`, `gtk4`, [gtk4-layer-shell](https://github.com/wmww/gtk4-layer-shell)
+- a compositor with `wlr-layer-shell` support (sway, Hyprland, niri, KDE), for the pill only: without
+  one the dictation still works, nothing is drawn on screen
+- `curl`, for the reference transcriber
 
 A notification daemon (dunst, mako, your desktop's) displays the failures.
 
-### Install the tool, a transcriber and a presenter
+### Install the binary and a transcriber
 
 ```bash
-install -m 755 src/tiny-dictate ~/.local/bin/
+install -m 755 target/release/tiny-dictate ~/.local/bin/
 install -m 755 transcribers/groq ~/.local/bin/tiny-dictate-transcribe
-install -m 755 src/presenters/layer-shell ~/.local/bin/tiny-dictate-present
 ```
 
-`tiny-dictate-transcribe` and `tiny-dictate-present` are the default command names, so both are used
-without any further configuration once installed under those names.
+The pill is built into the binary. The only thing installed beside it is a transcriber, and
+`tiny-dictate-transcribe` is its default command name, so the reference one needs no further
+configuration once installed under that name.
 
 ### Configure keyboard shortcuts
 
@@ -57,9 +69,9 @@ Bindings through a key remapper such as keyd work the same way. The
 
 ### Waybar module (optional)
 
-`contrib/waybar/tiny-dictate-module.jsonc` puts the dictation state in the bar: `tiny-dictate status`
-prints `idle` or `working`, and the module maps either to an icon, a tooltip and a CSS class. A click
-runs `tiny-dictate toggle`.
+`contrib/waybar/tiny-dictate-module.jsonc` puts the dictation state in the bar: the module reads the
+session state file, maps the word it holds to an icon, a tooltip and a CSS class, and treats a
+missing file as idle. A click runs `tiny-dictate toggle`.
 
 ```bash
 cp contrib/waybar/tiny-dictate-module.jsonc ~/.config/waybar/

@@ -1,9 +1,10 @@
 # Specifications
 
 tiny-dictate records one dictation at a time, has it transcribed by a command the user provides, and
-pastes the text into the focused window. It runs no daemon: the `start` command forks a session
-process that owns the whole lifecycle, and nothing of the tool outlives a dictation beyond the
-clipboard offer that carries the text.
+pastes the text into the focused window. It is one Rust binary: the command line, the audio pipeline
+and the pill. It runs no daemon: the `start` command forks a session process that owns the whole
+lifecycle, and nothing of the tool outlives a dictation beyond the clipboard offer that carries the
+text.
 
 These pages describe the tool as it works today. The decisions taken during design are recorded in
 [`docs/adr/`](adr/), and each feature page names the ones that concern it.
@@ -60,7 +61,7 @@ start costs the pill only: the dictation goes on without one (see
 [features/pill.md](features/pill.md)).
 
 The presenter is the one seam the tests keep. The session spawns the binary's own `_present` mode —
-`tiny-dictate _present <state file> <pid> <waveform file> <self command>` — and
+`tiny-dictate _present <state file> <pid> <waveform file> <self command> [limit seconds]` — and
 `TINY_DICTATE_PRESENT_COMMAND` names another command instead. It is internal, never documented in
 the README.
 

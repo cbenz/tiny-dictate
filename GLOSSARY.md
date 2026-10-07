@@ -41,7 +41,9 @@ _Avoid_: timeout
 ## The plugins
 
 **Presenter**:
-The command that draws the live state of a dictation; a plugin surface the user can replace.
+The process that draws the live state of a dictation: the binary's own `_present` mode, spawned by
+the session. Not something the user installs; `TINY_DICTATE_PRESENT_COMMAND` replaces it for the
+tests only.
 _Avoid_: pill
 
 **Pill**:

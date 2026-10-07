@@ -50,9 +50,12 @@ Both are configuration outside the repository; the repository ships no keyd or s
 
 ## Waybar
 
-`contrib/waybar/tiny-dictate-module.jsonc` puts the dictation state in the bar: `tiny-dictate status`
-prints `idle` or `working`, and the module maps either to an icon, a tooltip and a CSS class. A click
-runs `tiny-dictate toggle`.
+`contrib/waybar/tiny-dictate-module.jsonc` puts the dictation state in the bar. The module reads the
+session state file — the same file the pill draws — rather than running the tool: the file holds
+`recording`, `transcribing` or `cancelled`, and is absent when no dictation is in flight. Reading it
+costs a file read, where spawning a GTK-linked binary every second the bar polls would cost the
+loader time [ADR-0001](../adr/0001-single-rust-binary.md) measured. A click runs
+`tiny-dictate toggle`.
 
 ```bash
 cp contrib/waybar/tiny-dictate-module.jsonc ~/.config/waybar/
@@ -67,9 +70,9 @@ Then include the fragment and add the module to a bar:
 }
 ```
 
-The module polls `status` once a second and on every bar event. The icons are mapped in the `exec`
-line with `sed`, because waybar's `format-icons` requires a JSON `alt` field that `status` does not
-emit: line 1 of the output is the text, line 2 the tooltip, line 3 the CSS class.
+The module polls the state file once a second and on every bar event. The words are mapped in the
+`exec` line with a `case`, because waybar's `format-icons` requires a JSON `alt` field that the
+mapping does not emit: line 1 of the output is the text, line 2 the tooltip, line 3 the CSS class.
 
 The bar is a standing reminder that dictation is on; the [pill](pill.md) is what shows a dictation
 while it runs, and what reports a cancellation.
