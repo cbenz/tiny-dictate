@@ -108,6 +108,23 @@ pub fn transcribe(
     Ok(text.trim_end_matches(['\n', '\r']).to_owned())
 }
 
+/// Run the transcriber and collapse its stderr into the one line a failure is shown as.
+///
+/// Both callers — a live dictation and a rescue — show the same one-line error, so the
+/// invocation and the collapse live here once, `transcribe`'s contract included.
+pub fn transcribe_collapsed(
+    command: &Path,
+    audio: &Path,
+    session: &Path,
+    error_file: &Path,
+) -> Result<String, String> {
+    transcribe(command, audio, session, error_file).map_err(|()| {
+        fs::read_to_string(error_file)
+            .map(|text| format_error(&text))
+            .unwrap_or_else(|_| "Unknown error".to_owned())
+    })
+}
+
 /// Flatten an error into the one line the user is shown: whitespace runs collapsed, trimmed,
 /// empty becomes "Unknown error", truncated.
 pub fn format_error(text: &str) -> String {

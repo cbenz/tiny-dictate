@@ -7,14 +7,15 @@
 
 use std::time::Duration;
 
-/// The slices one waveform line holds, each covering 4 ms of audio.
-pub const SLICES: usize = 24;
+use crate::audio::SLICES_PER_LINE;
+use crate::store::CANCELLED;
+
 /// The full-scale magnitude of a sample, as the recorder writes them (signed 16 bit).
 pub const FULL_SCALE: f32 = 32768.0;
 /// The meter's height in pixels; one bar reaches at most half of it from the middle.
 pub const METER_HEIGHT_PX: f32 = 18.0;
 /// The meter's width in pixels: one bar per slice, spaced by `BAR_STEP_PX`.
-pub const METER_WIDTH_PX: f32 = (SLICES as f32 - 1.0) * 4.5 + 2.0;
+pub const METER_WIDTH_PX: f32 = (SLICES_PER_LINE as f32 - 1.0) * 4.5 + 2.0;
 /// A silent slice still draws a bar, so the meter reads as live between words.
 pub const BAR_MIN_PX: f32 = 2.0;
 
@@ -66,7 +67,7 @@ impl State {
         match word {
             "recording" => Some(Self::Recording),
             "transcribing" => Some(Self::Transcribing),
-            "cancelled" => Some(Self::Cancelled),
+            _ if word == CANCELLED => Some(Self::Cancelled),
             _ => None,
         }
     }
@@ -91,7 +92,7 @@ impl State {
         match self {
             Self::Recording => "recording",
             Self::Transcribing => "transcribing",
-            Self::Cancelled => "cancelled",
+            Self::Cancelled => CANCELLED,
         }
     }
 }
@@ -104,7 +105,8 @@ pub enum Band {
     Red,
 }
 
-/// The progress bar under the meter. Ticket #15 draws it; the computation lives here already.
+/// The progress bar under the meter: how far the limit has been reached, and the band that
+/// falls in.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Bar {
     /// How much of the limit has elapsed, clamped to `0..=1`.
@@ -303,7 +305,7 @@ pub fn parse_waveform(tail: &[u8]) -> Option<Vec<Slice>> {
             .split(|byte| byte.is_ascii_whitespace())
             .filter(|field| !field.is_empty())
             .collect();
-        if fields.len() != 2 * SLICES {
+        if fields.len() != 2 * SLICES_PER_LINE {
             continue;
         }
 
@@ -341,7 +343,7 @@ mod tests {
                 low: value,
                 high: value
             };
-            SLICES
+            SLICES_PER_LINE
         ]
     }
 
@@ -393,7 +395,7 @@ mod tests {
         let (frame, _) = pill.advance(&reading(Some(State::Recording), Some(&waveform)));
 
         assert_eq!(frame.spinner, None);
-        assert_eq!(frame.bars.len(), SLICES);
+        assert_eq!(frame.bars.len(), SLICES_PER_LINE);
         assert!(frame.cancel);
         assert!(frame.confirm);
     }
@@ -568,7 +570,7 @@ mod tests {
     #[test]
     fn the_newest_whole_line_is_the_one_drawn() {
         let line = |value: i16| {
-            (0..SLICES)
+            (0..SLICES_PER_LINE)
                 .map(|_| format!("{value} {value}"))
                 .collect::<Vec<_>>()
                 .join(" ")
@@ -579,7 +581,7 @@ mod tests {
 
         let slices = parse_waveform(tail.as_bytes()).expect("a whole line is in there");
 
-        assert_eq!(slices.len(), SLICES);
+        assert_eq!(slices.len(), SLICES_PER_LINE);
         assert_eq!(
             slices[0],
             Slice {
@@ -592,7 +594,7 @@ mod tests {
     #[test]
     fn a_line_that_is_not_all_integers_is_skipped() {
         let mut line = String::new();
-        for index in 0..SLICES {
+        for index in 0..SLICES_PER_LINE {
             let value = if index == 3 { "oops" } else { "7" };
             line.push_str(&format!("{value} {value} "));
         }

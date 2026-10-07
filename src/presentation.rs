@@ -1,8 +1,8 @@
 //! The presentation layer: the state the pill draws, and the process that draws it.
 //!
-//! The pill is a mode of this binary, spawned by the session as a child process. The session
-//! is the only writer of the state file, so the presenter is the only writer of the screen; no
-//! frame of it can land after it is gone.
+//! The pill is a mode of this binary, spawned by the session as a child process. The session and
+//! `cancel`'s verdict are the only writers of the state file — never the presenter — so the
+//! presenter is the only writer of the screen, and no frame of it can land after it is gone.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -10,19 +10,14 @@ use std::process::{Child, Command, ExitCode};
 use std::thread::sleep;
 use std::time::Duration;
 
+use crate::files;
 use crate::session::{Paths, self_executable};
-
-/// The word a cancellation writes into the state file: the verdict, which belongs to the
-/// cancellation and not to the session it interrupts.
-pub const CANCELLED: &str = "cancelled";
+use crate::store::CANCELLED;
 
 /// Write one word into the state file, atomically: a reader must never see half a state, and a
 /// truncating write is not atomic while a rename is.
 pub fn write_state(state_file: &Path, word: &str) {
-    let temporary = state_file.with_extension(format!("tmp{}", std::process::id()));
-    if fs::write(&temporary, format!("{word}\n")).is_ok() {
-        let _ = fs::rename(&temporary, state_file);
-    }
+    let _ = files::write_atomic(state_file, &format!("{word}\n"));
 }
 
 /// Whether the state file holds the cancelled verdict.

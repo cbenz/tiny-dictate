@@ -40,8 +40,8 @@ const BAR_RED: (f32, f32, f32) = (239.0 / 255.0, 68.0 / 255.0, 68.0 / 255.0);
 /// Enough of the waveform channel to hold whole lines whatever the cadence is.
 const LEVEL_TAIL_BYTES: u64 = 4096;
 
-/// The pill's colour: the waveform and the recording spinner. Zinc-200 by default, the softer
-/// white a theme's foreground usually is. Ticket #13 wires the configured value in.
+/// The pill's colour: the waveform and the recording spinner. Its default is the one the
+/// configuration names, so the two cannot drift apart.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Color {
     pub red: f32,
@@ -49,13 +49,15 @@ pub struct Color {
     pub blue: f32,
 }
 
-impl Color {
-    pub const DEFAULT: Self = Self {
-        red: 228.0 / 255.0,
-        green: 228.0 / 255.0,
-        blue: 231.0 / 255.0,
-    };
+impl Default for Color {
+    /// Zinc-200, the softer white a theme's foreground usually is.
+    fn default() -> Self {
+        Self::parse_hex(crate::config::DEFAULT_COLOR)
+            .expect("the default colour is a `#rrggbb` literal")
+    }
+}
 
+impl Color {
     /// `#rrggbb` as the configuration writes it. Anything else is `None`, and the caller keeps
     /// the default: a colour the presenter cannot read must not cost the pill.
     pub fn parse_hex(value: &str) -> Option<Self> {
@@ -135,9 +137,7 @@ impl Options {
                 .and_then(|value| value.parse::<f64>().ok())
                 .filter(|seconds| *seconds > 0.0)
                 .map(Duration::from_secs_f64),
-            color: argument(5)
-                .and_then(Color::parse_hex)
-                .unwrap_or(Color::DEFAULT),
+            color: argument(5).and_then(Color::parse_hex).unwrap_or_default(),
         })
     }
 }
@@ -272,6 +272,20 @@ pub fn run(options: Options) -> ExitCode {
     });
     confirm.connect_clicked(move |_| run_verb(command.as_deref(), "stop"));
 
+    // What one frame paints, bundled so `apply` takes the frame and one set of widgets rather
+    // than a dozen arguments.
+    let widgets = Widgets {
+        spinner,
+        meter,
+        bar_area,
+        bar_value,
+        label,
+        cancel,
+        confirm,
+        pill,
+        bars,
+    };
+
     window.present();
 
     let main_loop = glib::MainLoop::new(None, false);
@@ -333,10 +347,7 @@ pub fn run(options: Options) -> ExitCode {
             let previous = pill_state.borrow().known();
             let (frame, next) = pill_state.borrow().advance(&reading);
 
-            apply(
-                &frame, &next, previous, &spinner, &meter, &bar_area, &bar_value, &label, &cancel,
-                &confirm, &pill, &bars,
-            );
+            apply(&frame, &next, previous, &widgets);
             *pill_state.borrow_mut() = next;
 
             ControlFlow::Continue
@@ -347,22 +358,34 @@ pub fn run(options: Options) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// The widgets one frame paints, bundled so `apply` takes the frame and one set of widgets
+/// rather than a dozen arguments.
+struct Widgets {
+    spinner: gtk::Label,
+    meter: gtk::DrawingArea,
+    bar_area: gtk::DrawingArea,
+    bar_value: Rc<RefCell<Option<Bar>>>,
+    label: gtk::Label,
+    cancel: gtk::Button,
+    confirm: gtk::Button,
+    pill: gtk::Box,
+    bars: Rc<RefCell<Vec<f32>>>,
+}
+
 /// Paint one frame on the widgets, and carry the state class the pill has just entered.
-#[allow(clippy::too_many_arguments)]
-fn apply(
-    frame: &Frame,
-    next: &Pill,
-    previous: Option<State>,
-    spinner: &gtk::Label,
-    meter: &gtk::DrawingArea,
-    bar_area: &gtk::DrawingArea,
-    bar_value: &Rc<RefCell<Option<Bar>>>,
-    label: &gtk::Label,
-    cancel: &gtk::Button,
-    confirm: &gtk::Button,
-    pill: &gtk::Box,
-    bars: &Rc<RefCell<Vec<f32>>>,
-) {
+fn apply(frame: &Frame, next: &Pill, previous: Option<State>, widgets: &Widgets) {
+    let Widgets {
+        spinner,
+        meter,
+        bar_area,
+        bar_value,
+        label,
+        cancel,
+        confirm,
+        pill,
+        bars,
+    } = widgets;
+
     if let Some(glyph) = frame.spinner {
         spinner.set_text(&glyph.to_string());
     }
@@ -519,7 +542,7 @@ mod tests {
         assert_eq!(options.waveform, Some(PathBuf::from("wave")));
         assert_eq!(options.command.as_deref(), Some("tool"));
         assert_eq!(options.limit, Some(Duration::from_secs(120)));
-        assert_eq!(options.color, Color::DEFAULT);
+        assert_eq!(options.color, Color::default());
     }
 
     #[test]
@@ -554,7 +577,7 @@ mod tests {
 
         // An unreadable or absent colour keeps the default rather than failing the pill.
         let default = parse(&["state", "1234", "wave", "tool", "120", "red"]).expect("six");
-        assert_eq!(default.color, Color::DEFAULT);
+        assert_eq!(default.color, Color::default());
     }
 
     #[test]

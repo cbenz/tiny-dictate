@@ -9,6 +9,8 @@
 use std::fs;
 use std::path::PathBuf;
 
+use crate::xdg;
+
 /// The pill's default colour: zinc-200, the softer white a theme's foreground usually is.
 pub const DEFAULT_COLOR: &str = "#e4e4e7";
 
@@ -45,11 +47,7 @@ pub fn load() -> Config {
 /// The configuration file: `$XDG_CONFIG_HOME/tiny-dictate/config.toml`, `$HOME/.config` by
 /// default. `None` when neither variable names a directory.
 pub fn path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
-
-    Some(base.join("tiny-dictate/config.toml"))
+    xdg::config().map(|base| base.join("tiny-dictate/config.toml"))
 }
 
 /// Read the flat keys of a TOML file. A line that is not `key = value`, a key this version does

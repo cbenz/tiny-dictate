@@ -13,12 +13,47 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// The outcome vocabulary, shared with the state the pill draws.
-pub const RECORDING: &str = "recording";
-pub const TRANSCRIBING: &str = "transcribing";
-pub const TRANSCRIBED: &str = "transcribed";
-pub const FAILED: &str = "failed";
+use crate::files;
+
+/// What became of a session, as `GLOSSARY.md` names it: a closed vocabulary, written verbatim
+/// into `metadata.json` and shown by `history`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    Recording,
+    Transcribing,
+    Transcribed,
+    Failed,
+    Cancelled,
+}
+
+/// The word a cancelled dictation carries, in its metadata and in the state file alike: the one
+/// word the outcome vocabulary and the pill's share, so it is written once.
 pub const CANCELLED: &str = "cancelled";
+
+impl Outcome {
+    /// The word the metadata holds.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Recording => "recording",
+            Self::Transcribing => "transcribing",
+            Self::Transcribed => "transcribed",
+            Self::Failed => "failed",
+            Self::Cancelled => CANCELLED,
+        }
+    }
+
+    /// The outcome a word names, or `None` for a word this version does not know.
+    pub fn parse(word: &str) -> Option<Self> {
+        Some(match word {
+            "recording" => Self::Recording,
+            "transcribing" => Self::Transcribing,
+            "transcribed" => Self::Transcribed,
+            "failed" => Self::Failed,
+            _ if word == CANCELLED => Self::Cancelled,
+            _ => return None,
+        })
+    }
+}
 
 /// The encoded recording, written by the encoder from the first frame.
 pub const AUDIO_FILE: &str = "audio.mp3";
@@ -68,7 +103,7 @@ pub struct Metadata {
     pub ended: Option<f64>,
     pub duration: Option<f64>,
     pub audio_bytes: u64,
-    pub outcome: String,
+    pub outcome: Outcome,
     pub pasted: bool,
     pub transcriber: Option<String>,
     pub error: Option<String>,
@@ -87,7 +122,9 @@ impl Metadata {
                 .and_then(json_number)
                 .map(|bytes| bytes.max(0.0) as u64)
                 .unwrap_or(0),
-            outcome: json_field(json, "outcome").and_then(json_decode_string)?,
+            outcome: json_field(json, "outcome")
+                .and_then(json_decode_string)
+                .and_then(|word| Outcome::parse(&word))?,
             pasted: json_field(json, "pasted") == Some("true"),
             transcriber: json_field(json, "transcriber").and_then(json_decode_string),
             error: json_field(json, "error").and_then(json_decode_string),
@@ -101,7 +138,7 @@ impl Metadata {
         let ended = optional_number(self.ended);
         let duration = optional_number(self.duration);
         let audio_bytes = self.audio_bytes;
-        let outcome = json_string(&self.outcome);
+        let outcome = json_string(self.outcome.as_str());
         let pasted = self.pasted;
         let transcriber = optional_string(self.transcriber.as_deref());
         let error = optional_string(self.error.as_deref());
@@ -161,9 +198,8 @@ impl Session {
         transcriber: Option<&Path>,
         started_at: SystemTime,
     ) -> Self {
-        Self::load(sessions, id).unwrap_or_else(|| {
-            Self::new(id.to_owned(), sessions.join(id), transcriber, started_at)
-        })
+        Self::load(sessions, id)
+            .unwrap_or_else(|| Self::new(id.to_owned(), sessions.join(id), transcriber, started_at))
     }
 
     /// Read a kept session back from disk, metadata included: the durable trace is the file,
@@ -194,7 +230,7 @@ impl Session {
             ended: None,
             duration: None,
             audio_bytes: 0,
-            outcome: RECORDING.to_owned(),
+            outcome: Outcome::Recording,
             pasted: false,
             transcriber: transcriber.map(|path| path.display().to_string()),
             error: None,
@@ -227,16 +263,14 @@ impl Session {
                 .unwrap_or_default()
                 .as_secs_f64(),
         );
-        self.metadata.audio_bytes = file_size(&self.audio());
+        self.metadata.audio_bytes = files::file_size(&self.audio());
     }
 
     /// Write the metadata atomically: a reader never sees a half-written file.
     pub fn save(&self) -> io::Result<()> {
         let path = self.directory.join(METADATA_FILE);
-        let temporary = path.with_extension(format!("json.tmp.{}", std::process::id()));
 
-        fs::write(&temporary, self.metadata.to_json())?;
-        fs::rename(&temporary, &path)
+        files::write_atomic(&path, &self.metadata.to_json())
     }
 }
 
@@ -402,12 +436,6 @@ fn epoch_seconds(time: SystemTime) -> f64 {
         .unwrap_or(0.0)
 }
 
-fn file_size(path: &Path) -> u64 {
-    fs::metadata(path)
-        .map(|metadata| metadata.len())
-        .unwrap_or(0)
-}
-
 fn optional_number(value: Option<f64>) -> String {
     value.map_or_else(|| "null".to_owned(), |number| number.to_string())
 }
@@ -455,7 +483,7 @@ mod tests {
             ended: Some(1759855601.45),
             duration: Some(79.33),
             audio_bytes: 365_720,
-            outcome: TRANSCRIBED.to_owned(),
+            outcome: Outcome::Transcribed,
             pasted: true,
             transcriber: Some("/home/me/.local/bin/tiny-dictate-transcribe".to_owned()),
             error: None,
@@ -482,7 +510,7 @@ mod tests {
             ended: None,
             duration: None,
             audio_bytes: 0,
-            outcome: FAILED.to_owned(),
+            outcome: Outcome::Failed,
             pasted: false,
             transcriber: None,
             error: Some("groq: \"invalid\" key\nretry".to_owned()),

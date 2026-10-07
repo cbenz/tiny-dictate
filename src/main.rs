@@ -10,12 +10,16 @@ mod audio;
 mod claim;
 mod cli;
 mod config;
+mod files;
 mod log;
+mod microphone;
 mod pill;
 mod presentation;
+mod rescue;
 mod session;
 mod store;
 mod text;
+mod xdg;
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -57,9 +61,9 @@ fn main() -> ExitCode {
         cli::Command::Stop => session::stop(),
         cli::Command::Cancel => session::cancel(),
         cli::Command::Toggle => session::toggle(),
-        cli::Command::History => session::history(),
-        cli::Command::Transcribe { target, print } => session::transcribe_session(&target, print),
-        cli::Command::SessionDelete { target } => session::session_delete(&target),
+        cli::Command::History => rescue::history(),
+        cli::Command::Transcribe { target, print } => rescue::transcribe_session(&target, print),
+        cli::Command::SessionDelete { target } => rescue::session_delete(&target),
     }
 }
 
