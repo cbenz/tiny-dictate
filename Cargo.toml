@@ -6,3 +6,4 @@ description = "Minimal voice dictation for Linux"
 publish = false
 
 [dependencies]
+libc = "0.2.190"

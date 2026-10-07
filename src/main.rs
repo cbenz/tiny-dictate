@@ -16,6 +16,16 @@ mod text;
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
 
+    // Hidden verbs are dispatched before any dependency check: they are internal, and a mode
+    // like `_present` runs on a machine where the recorder and the clipboard tools need not be
+    // installed.
+    match arguments.first().map(String::as_str) {
+        Some("_pump") => return audio::pump(&arguments[1..]),
+        Some("_session") => return session::run_session(),
+        Some("_present") => return presentation::present(&arguments[1..]),
+        _ => {}
+    }
+
     let command = match cli::parse(&arguments) {
         Ok(command) => command,
         Err(error) => {
@@ -34,9 +44,12 @@ fn main() -> ExitCode {
             println!("{}", status_line());
             ExitCode::SUCCESS
         }
+        cli::Command::Start => session::start(),
+        cli::Command::Stop => session::stop(),
+        cli::Command::Toggle => session::toggle(),
         command => {
-            // The other verbs are ported by the tickets that follow; refusing loudly beats a
-            // silent success that would pretend a dictation happened.
+            // The verbs the tickets that follow port; refusing loudly beats a silent success
+            // that would pretend a dictation happened.
             eprintln!("tiny-dictate: {} is not implemented yet", command.verb());
             ExitCode::FAILURE
         }

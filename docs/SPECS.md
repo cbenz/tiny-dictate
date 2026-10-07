@@ -59,6 +59,11 @@ The transcriber is the only mandatory plugin: the tool cannot work without one. 
 is also refused before recording starts, because a dictation with no feedback on screen is a
 dictation the user cannot see.
 
+The presenter is the one seam the Rust port keeps for its tests. The session spawns the binary's
+own `_present` mode — `tiny-dictate _present <state file> <pid> <waveform file> <self command>` — and
+`TINY_DICTATE_PRESENT_COMMAND` names another command instead. It is internal, never documented in
+the README: a pill that cannot start costs the pill only, and the dictation goes on.
+
 ## Invariants
 
 These hold whatever implementation runs them, and a port is expected to keep them:

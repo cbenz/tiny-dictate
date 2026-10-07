@@ -1,3 +1,96 @@
 //! The presentation layer: the state the pill draws, and the process that draws it.
 //!
-//! The pill is a mode of this binary, spawned by the session as a child process.
+//! The pill is a mode of this binary, spawned by the session as a child process. The session
+//! is the only writer of the state file, so the presenter is the only writer of the screen; no
+//! frame of it can land after it is gone.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, ExitCode};
+use std::thread::sleep;
+use std::time::Duration;
+
+use crate::session::{Paths, self_executable};
+
+/// Write one word into the state file, atomically: a reader must never see half a state, and a
+/// truncating write is not atomic while a rename is.
+pub fn write_state(state_file: &Path, word: &str) {
+    let temporary = state_file.with_extension(format!("tmp{}", std::process::id()));
+    if fs::write(&temporary, format!("{word}\n")).is_ok() {
+        let _ = fs::rename(&temporary, state_file);
+    }
+}
+
+/// The one presenter of this dictation, and the state file it watches.
+pub struct Presenter {
+    state: PathBuf,
+    child: Option<Child>,
+}
+
+impl Presenter {
+    /// Publish the first state and spawn the presenter.
+    ///
+    /// The default is this binary's own `_present` mode, handed the state file, the pid it
+    /// must outlive, the waveform file and the command that re-invokes the tool.
+    /// `TINY_DICTATE_PRESENT_COMMAND` names another command instead — the internal test seam
+    /// documented in `docs/SPECS.md`. A presenter that cannot start costs the pill only: the
+    /// dictation goes on without one.
+    pub fn start(paths: &Paths, word: &str) -> Self {
+        write_state(&paths.state, word);
+
+        Self {
+            state: paths.state.clone(),
+            child: spawn(paths),
+        }
+    }
+
+    /// Ask the presenter to leave, then wait for it, bounded; a wedged presenter is killed.
+    pub fn stop(&mut self) {
+        write_state(&self.state, "stop");
+
+        if let Some(mut child) = self.child.take() {
+            for _ in 0..40 {
+                match child.try_wait() {
+                    Ok(Some(_)) => return,
+                    _ => sleep(Duration::from_millis(50)),
+                }
+            }
+
+            // Bounded, like every wait here: a wedged process must not hold the session
+            // hostage, and SIGKILL always works.
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+fn spawn(paths: &Paths) -> Option<Child> {
+    let self_command = self_executable();
+    let own_pid = std::process::id().to_string();
+
+    let mut command = match std::env::var_os("TINY_DICTATE_PRESENT_COMMAND") {
+        Some(program) => {
+            let mut command = Command::new(program);
+            command.arg(&paths.state);
+            command
+        }
+        None => {
+            let mut command = Command::new(&self_command);
+            command.arg("_present").arg(&paths.state);
+            command
+        }
+    };
+
+    command
+        .arg(own_pid)
+        .arg(&paths.waveform)
+        .arg(&self_command)
+        .spawn()
+        .ok()
+}
+
+/// `_present`: the pill itself. Ticket #8 draws it; until then the mode exists, so the session's
+/// default presenter is a valid command that costs the dictation nothing.
+pub fn present(_arguments: &[String]) -> ExitCode {
+    ExitCode::SUCCESS
+}

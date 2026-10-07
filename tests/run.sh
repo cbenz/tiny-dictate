@@ -38,6 +38,11 @@ HOME_DIR="$WORK/home"
 mkdir -p "$BIN" "$RUN" "$HOME_DIR"
 export WORK BIN RUN HOME_DIR
 
+# The Rust binary reads TINY_DICTATE_PRESENT_COMMAND; the shell implementation still being
+# ported resolves its presenter under TINY_DICTATE_PRESENT. Both are pointed at the same stub,
+# so the suite stays a regression net for the script until #9 removes it.
+export TINY_DICTATE_PRESENT="${TINY_DICTATE_PRESENT:-$BIN/present}"
+
 FAILURES=0
 CURRENT_TEST=""
 
@@ -213,11 +218,11 @@ done
 td() {
     if [ -n "$TRACE" ]; then
         TINY_DICTATE_TRANSCRIBE="${TINY_DICTATE_TRANSCRIBE:-$BIN/transcribe}" \
-            TINY_DICTATE_PRESENT="${TINY_DICTATE_PRESENT:-$BIN/present}" PATH="$BIN:$PATH" \
+            TINY_DICTATE_PRESENT_COMMAND="${TINY_DICTATE_PRESENT_COMMAND:-$BIN/present}" PATH="$BIN:$PATH" \
             XDG_RUNTIME_DIR="$RUN" HOME="$HOME_DIR" bash -x "$SCRIPT" "$@" 2>>"$WORK/trace.log"
     else
         TINY_DICTATE_TRANSCRIBE="${TINY_DICTATE_TRANSCRIBE:-$BIN/transcribe}" \
-            TINY_DICTATE_PRESENT="${TINY_DICTATE_PRESENT:-$BIN/present}" PATH="$BIN:$PATH" \
+            TINY_DICTATE_PRESENT_COMMAND="${TINY_DICTATE_PRESENT_COMMAND:-$BIN/present}" PATH="$BIN:$PATH" \
             XDG_RUNTIME_DIR="$RUN" HOME="$HOME_DIR" "$SCRIPT" "$@"
     fi
 }
@@ -231,7 +236,7 @@ td_default() {
 # Same as td, with a waveform meter that dies instead of reading the stream.
 td_broken_meter() {
     PATH="$BIN-broken-meter:$BIN:$PATH" \
-        TINY_DICTATE_TRANSCRIBE="$BIN/transcribe" TINY_DICTATE_PRESENT="$BIN/present" \
+        TINY_DICTATE_TRANSCRIBE="$BIN/transcribe" TINY_DICTATE_PRESENT_COMMAND="$BIN/present" \
         XDG_RUNTIME_DIR="$RUN" HOME="$HOME_DIR" "$SCRIPT" "$@"
 }
 
