@@ -116,10 +116,10 @@ pub fn create_fifo(path: &Path) -> io::Result<()> {
 
 /// Start the encoder and the recorder, with the waveform pump between them.
 ///
-/// The encoder reads the fifo; the pump copies the recorder's stdout into that fifo and into
-/// the waveform channel. Both pids are recorded here, synchronously, so the session can wait
-/// on them without a race.
-pub fn start_pipeline(paths: &Paths) -> io::Result<()> {
+/// The encoder reads the fifo and writes the durable `audio.mp3` from the first frame; the
+/// pump copies the recorder's stdout into that fifo and into the waveform channel. Both pids
+/// are recorded here, synchronously, so the session can wait on them without a race.
+pub fn start_pipeline(paths: &Paths, audio: &Path) -> io::Result<()> {
     let reader = open_fifo_reader(&paths.fifo)?;
     let encoder = Command::new("lame")
         .args([
@@ -137,7 +137,7 @@ pub fn start_pipeline(paths: &Paths) -> io::Result<()> {
             "-S",
             "-",
         ])
-        .arg(&paths.audio)
+        .arg(audio)
         .stdin(Stdio::from(reader))
         .spawn()?;
     fs::write(&paths.encoder_pid, encoder.id().to_string())?;

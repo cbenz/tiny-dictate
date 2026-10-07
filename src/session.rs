@@ -10,11 +10,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use crate::audio;
 use crate::claim;
 use crate::presentation::{self, Presenter};
+use crate::store;
 use crate::text;
 
 /// How long a verdict stays on screen before the session takes the pill down: the timeout the
@@ -72,6 +73,20 @@ impl Runtime {
         self.directory.join("session")
     }
 
+    /// The root of the durable sessions: `$XDG_STATE_HOME/tiny-dictate/sessions`, falling
+    /// back to `$HOME/.local/state`. Kept apart from the runtime directory so a recording
+    /// survives the session process that made it.
+    pub fn sessions_directory(&self) -> PathBuf {
+        let base = std::env::var_os("XDG_STATE_HOME")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
+            })
+            .unwrap_or_else(std::env::temp_dir);
+
+        base.join("tiny-dictate/sessions")
+    }
+
     /// Every file a dictation keeps in its session directory.
     pub fn paths(&self) -> Paths {
         Paths::new(self.session_directory())
@@ -100,8 +115,6 @@ pub struct Paths {
     pub encoder_pid: PathBuf,
     /// The word the presenter draws.
     pub state: PathBuf,
-    /// The encoded recording.
-    pub audio: PathBuf,
     /// The pipe between the recorder's copy and the encoder.
     pub fifo: PathBuf,
     /// The waveform channel.
@@ -119,7 +132,6 @@ impl Paths {
             recorder_pid: session.join("arecord.pid"),
             encoder_pid: session.join("lame.pid"),
             state: session.join("state"),
-            audio: session.join("audio.mp3"),
             fifo: session.join("audio.fifo"),
             waveform: session.join("waveform"),
             recorder_error: session.join("arecord.err"),
@@ -181,7 +193,7 @@ pub fn start() -> ExitCode {
     let paths = runtime.paths();
 
     // The transcriber is the one mandatory plugin: refuse before anything is claimed.
-    if text::resolve_transcriber().is_none() {
+    let Some(transcriber) = text::resolve_transcriber() else {
         eprintln!(
             "No transcription command: set TINY_DICTATE_TRANSCRIBE or install tiny-dictate-transcribe"
         );
@@ -191,7 +203,7 @@ pub fn start() -> ExitCode {
             "critical",
         );
         return ExitCode::FAILURE;
-    }
+    };
 
     if !claim::claim(&paths) {
         // A session is running: its pill already shows what is going on, and it is the only
@@ -216,25 +228,53 @@ pub fn start() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    if let Err(error) = audio::start_pipeline(&paths) {
+    // The session directory is created before the pipeline: the encoder writes the recording
+    // into it from the first frame, so a crash costs at most what was never flushed.
+    let session = match store::Session::create(
+        &runtime.sessions_directory(),
+        Some(&transcriber),
+        SystemTime::now(),
+    ) {
+        Ok(session) => session,
+        Err(error) => {
+            eprintln!("tiny-dictate: cannot create the session directory: {error}");
+            let _ = fs::remove_dir_all(&paths.session);
+            return ExitCode::FAILURE;
+        }
+    };
+    let _ = session.save();
+
+    if let Err(error) = audio::start_pipeline(&paths, &session.audio()) {
         eprintln!("tiny-dictate: cannot start the audio pipeline: {error}");
-        let _ = fs::remove_dir_all(&paths.session);
+        discard(&paths, &session);
         return ExitCode::FAILURE;
     }
 
     // The recorder's and the encoder's pids are recorded before this fork: that is what makes
-    // the session's wait race-free.
-    match Command::new(self_executable()).arg("_session").spawn() {
-        Ok(session) => {
-            let _ = fs::write(&paths.session_pid, session.id().to_string());
+    // the session's wait race-free. The id is handed over so the session writes the metadata
+    // of the directory this command created.
+    match Command::new(self_executable())
+        .arg("_session")
+        .arg(&session.id)
+        .spawn()
+    {
+        Ok(child) => {
+            let _ = fs::write(&paths.session_pid, child.id().to_string());
             ExitCode::SUCCESS
         }
         Err(error) => {
             eprintln!("tiny-dictate: cannot fork the session: {error}");
-            let _ = fs::remove_dir_all(&paths.session);
+            discard(&paths, &session);
             ExitCode::FAILURE
         }
     }
+}
+
+/// Give up a dictation that never started: nothing was recorded, so neither the claim nor
+/// the session directory is worth keeping.
+fn discard(paths: &Paths, session: &store::Session) {
+    let _ = fs::remove_dir_all(&paths.session);
+    let _ = fs::remove_dir_all(&session.directory);
 }
 
 /// `stop`: signal the recorder, never the encoder, never the session.
@@ -302,10 +342,26 @@ pub fn toggle() -> ExitCode {
     }
 }
 
-/// `_session`: the process that owns the lifecycle, forked by `start`.
-pub fn run_session() -> ExitCode {
+/// `_session`: the process that owns the lifecycle, forked by `start` with the session id.
+pub fn run_session(id: &str) -> ExitCode {
+    if id.is_empty() {
+        eprintln!("tiny-dictate: _session needs a session id");
+        return ExitCode::FAILURE;
+    }
+
     let runtime = Runtime::from_env();
     let paths = runtime.paths();
+
+    // The transcriber is resolved now rather than at the transcription, so a session that is
+    // cancelled before it is ever transcribed still records which command it would have run.
+    let transcriber = text::resolve_transcriber();
+    let mut session = store::Session::open(
+        &runtime.sessions_directory(),
+        id,
+        transcriber.as_deref(),
+        SystemTime::now(),
+    );
+    let _ = session.save();
 
     // A new dictation ends the cancelled verdict's dwell early; the handler only flags it, and
     // installing it before anything else means the signal is never the default one, which would
@@ -323,7 +379,7 @@ pub fn run_session() -> ExitCode {
         pid: std::process::id(),
     };
 
-    let code = session_body(&paths);
+    let code = session_body(&paths, &mut session);
     drop(guard);
     code
 }
@@ -343,7 +399,7 @@ impl Drop for SessionGuard {
     }
 }
 
-fn session_body(paths: &Paths) -> ExitCode {
+fn session_body(paths: &Paths, session: &mut store::Session) -> ExitCode {
     let mut presenter = Presenter::start(paths, "recording");
 
     let mut recording_failed = false;
@@ -363,7 +419,7 @@ fn session_body(paths: &Paths) -> ExitCode {
     // The encoder exits once the recorder is gone and it has flushed its last frames. Bounded:
     // it can block in open() until the recorder opens the pipe, so never wait forever. When
     // nothing was captured there is nothing to flush, so do not wait for it at all.
-    let audio_present = file_size(&paths.audio) > 0;
+    let audio_present = file_size(&session.audio()) > 0;
     if audio_present {
         for _ in 0..100 {
             if !pidfile_lives(&paths.encoder_pid) {
@@ -383,7 +439,7 @@ fn session_body(paths: &Paths) -> ExitCode {
     // The verdict owns the last word: a cancelled dictation is neither a failure nor something
     // to transcribe, whichever moment the cancel landed in.
     if presentation::cancelled(&paths.state) {
-        return show_verdict(paths, &mut presenter);
+        return show_verdict(paths, session, &mut presenter);
     }
 
     if recording_failed {
@@ -404,44 +460,77 @@ fn session_body(paths: &Paths) -> ExitCode {
             _ => reason,
         };
 
+        session.finish_recording(SystemTime::now());
+        session.metadata.outcome = store::FAILED.to_owned();
+        session.metadata.error = Some(reason.clone());
+        let _ = session.save();
+
         // The pill goes before the notification: one thing on screen at a time.
         presenter.stop();
         text::notify(&format!("❌ Recording failed: {reason}"), 6000, "normal");
         return ExitCode::SUCCESS;
     }
 
+    // The recording is over and on disk: the metadata now carries its end, its duration and
+    // its size, and says what the session is doing next.
+    session.finish_recording(SystemTime::now());
+    session.metadata.outcome = store::TRANSCRIBING.to_owned();
+    let _ = session.save();
+
     presentation::write_state(&paths.state, "transcribing");
 
     let Some(transcriber) = text::resolve_transcriber() else {
+        session.metadata.outcome = store::FAILED.to_owned();
+        session.metadata.error = Some("Unknown error".to_owned());
+        let _ = session.save();
         presenter.stop();
         text::notify("❌ Transcription failed: Unknown error", 6000, "normal");
         return ExitCode::SUCCESS;
     };
+    session.metadata.transcriber = Some(transcriber.display().to_string());
 
     match text::transcribe(
         &transcriber,
-        &paths.audio,
-        &paths.session,
+        &session.audio(),
+        &session.directory,
         &paths.transcribe_error,
     ) {
         Ok(transcript) => {
             // A cancel that landed while the transcription was running: the text is dropped
             // rather than pasted behind the user's back.
             if presentation::cancelled(&paths.state) {
-                return show_verdict(paths, &mut presenter);
+                return show_verdict(paths, session, &mut presenter);
             }
+
+            // The text reaches the session before any clipboard write: a paste that lands
+            // wrong stays recoverable, a text that only lived in the clipboard does not.
+            let _ = fs::write(session.transcript(), &transcript);
+            session.metadata.outcome = store::TRANSCRIBED.to_owned();
+            session.metadata.error = None;
+            session.metadata.pasted = false;
+            let _ = session.save();
 
             // The live state is over once there is text: nothing is left for the pill to say.
             presenter.stop();
-            if !transcript.is_empty() && !text::paste(&transcript) {
+
+            let pasted = !transcript.is_empty() && text::paste(&transcript);
+            if !transcript.is_empty() && !pasted {
                 text::notify("❌ Could not paste the transcription", 6000, "critical");
+            }
+            if pasted {
+                session.metadata.pasted = true;
+                let _ = session.save();
             }
         }
         Err(()) => {
-            presenter.stop();
             let error = fs::read_to_string(&paths.transcribe_error)
                 .map(|text| text::format_error(&text))
                 .unwrap_or_else(|_| "Unknown error".to_owned());
+            session.metadata.outcome = store::FAILED.to_owned();
+            session.metadata.error = Some(error.clone());
+            let _ = session.save();
+
+            presenter.stop();
             text::notify(&format!("❌ Transcription failed: {error}"), 6000, "normal");
         }
     }
@@ -458,8 +547,23 @@ fn file_size(path: &Path) -> u64 {
 /// Show the verdict for as long as a notification of it used to stay on screen: the pill is
 /// already drawing the `cancelled` word `cancel` wrote, and this is the dwell before the
 /// session takes it down. A new dictation cuts it short with `SIGUSR1`; `cancel` never does.
-fn show_verdict(paths: &Paths, presenter: &mut Presenter) -> ExitCode {
+///
+/// Cancelling keeps the recording: the session is marked `cancelled`, and nothing is ever
+/// transcribed or pasted from it.
+fn show_verdict(
+    paths: &Paths,
+    session: &mut store::Session,
+    presenter: &mut Presenter,
+) -> ExitCode {
     signal_pidfile(&paths.encoder_pid, libc::SIGTERM);
+
+    // A cancel that landed while recording ends the recording here; a cancel that landed
+    // during the transcription leaves the end the transcription stage already recorded.
+    if session.metadata.ended.is_none() {
+        session.finish_recording(SystemTime::now());
+    }
+    session.metadata.outcome = store::CANCELLED.to_owned();
+    let _ = session.save();
 
     let steps = VERDICT_SECONDS * 10;
     let mut waited = 0;

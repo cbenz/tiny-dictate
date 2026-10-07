@@ -1,0 +1,53 @@
+# Sessions on disk
+
+Every dictation leaves a **session** behind: one directory per dictation under the state directory
+(`$XDG_STATE_HOME/tiny-dictate/sessions`, defaulting to `$HOME/.local/state/tiny-dictate/sessions`),
+named by the local start timestamp.
+
+| file | contents |
+|------|----------|
+| `audio.mp3` | the encoded recording, written by the encoder from the first frame |
+| `transcript.txt` | the transcript, written by the core, never by the transcriber |
+| `transcript.raw.json` | the transcriber's own answer, stored verbatim, never modified |
+| `metadata.json` | what happened to the session, rewritten atomically at each stage |
+
+`transcript.raw.json` is present when the transcriber writes one: a transcriber that leaves nothing
+in the session directory is still a valid transcriber, and the text it printed is what the core
+writes and pastes.
+
+## The metadata
+
+```json
+{
+  "id": "2026-10-07T19-05-22",
+  "started": 1759855522.12,
+  "ended": 1759855601.45,
+  "duration": 79.33,
+  "audio_bytes": 365720,
+  "outcome": "transcribed",
+  "pasted": true,
+  "transcriber": "/home/me/.local/bin/tiny-dictate-transcribe",
+  "error": null
+}
+```
+
+`started`, `ended` and `duration` are Unix epoch seconds. `ended` and `duration` are `null` while
+recording, so a session left on `recording` is one that died mid-recording. `outcome` is
+`recording`, `transcribing`, `transcribed`, `failed` or `cancelled` — the state vocabulary plus the
+terminal words. `pasted` says whether the text reached the focused window. `transcriber` is the
+resolved command, and `error` is the failure on one line, or `null`.
+
+## What survives
+
+The recording, the transcript, the raw response and the metadata survive the session process:
+nothing that matters lives only in the runtime directory, where the claim, the fifo, the waveform
+channel and the state file stay. A crash, a `kill` or a power loss costs at most what the encoder
+has not flushed yet, and leaves a session that can still be transcribed later.
+
+Cancelling keeps the recording and marks the session `cancelled`; it is never transcribed or
+pasted. Destroying a session is a separate verb, and only a deliberate one removes it.
+
+## Decisions
+
+- [ADR-0003: sessions on disk](../adr/0003-sessions-on-disk.md) keeps the recording instead of
+  removing it on the way out.

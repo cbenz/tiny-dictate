@@ -2,10 +2,11 @@
 
 ## What it is
 
-The [session directory](dictation-lifecycle.md) *is* the claim on the microphone. It is created
-with `mkdir`, which is atomic: the `mkdir` fails when the directory already exists, so two
-dictations can never run at once, whatever the two commands do. There is no lockfile to read, no pid
-to check first, and no window between the test and the take.
+The runtime directory of the dictation in flight *is* the claim on the microphone; the durable
+[session](sessions.md) under the state directory is not. The claim directory is created with
+`mkdir`, which is atomic: the `mkdir` fails when the directory already exists, so two dictations
+can never run at once, whatever the two commands do. There is no lockfile to read, no pid to check
+first, and no window between the test and the take.
 
 `claim_session` therefore has three outcomes:
 

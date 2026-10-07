@@ -8,6 +8,8 @@ by the user**. It is the only mandatory plugin — the tool cannot work without 
 The command:
 
 - receives the recorded audio file as `$1`
+- receives the session directory as `$2`, where it may leave the provider's own answer as
+  `transcript.raw.json`; a transcriber that writes nothing there is still a transcriber
 - writes the transcribed text to stdout
 - exits non-zero on failure, in which case its stderr is shown to the user as a single truncated line
   (newlines flattened, at most 180 characters)
@@ -24,9 +26,9 @@ It is resolved with `command -v` on `$TINY_DICTATE_TRANSCRIBE` when set, else on
 `tiny-dictate-transcribe` on `PATH`. An unresolvable command is reported to the user before any
 recording starts.
 
-The command is given the audio path only. The stored session directory and the audio limit are
-decisions of the next implementation — [ADR-0002](../adr/0002-transcriber-stays-an-external-command.md)
-and [ADR-0006](../adr/0006-the-limit-and-the-bar.md) — and are not part of the contract today.
+The audio file and the session directory are what the core hands over today. The audio limit
+([ADR-0006](../adr/0006-the-limit-and-the-bar.md)) is declared separately, with
+`--print-audio-limit`, and is not asked for yet.
 
 ## The reference implementation
 

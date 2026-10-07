@@ -18,9 +18,8 @@ One session process owns the whole lifecycle of a dictation. `start` forks it an
 waits for the recorder, transcribes, injects, and cleans up after itself. It is the only process
 driving the presenter, and the only writer of the [state file](pill.md).
 
-The session and everything it needs to exchange with the other commands live in a session directory
-under the runtime directory (`$XDG_RUNTIME_DIR` when set, `$XDG_STATE_HOME` or `~/.local/state`
-otherwise):
+The session and everything it needs to exchange with the other commands live in a runtime
+directory under `$XDG_RUNTIME_DIR` (falling back to `$XDG_STATE_HOME` or `~/.local/state`):
 
 | file | contents |
 |------|----------|
@@ -28,14 +27,17 @@ otherwise):
 | `arecord.pid` | the recorder |
 | `lame.pid` | the encoder |
 | `state` | the word the presenter draws: `recording`, `transcribing`, `cancelled`, `stop` |
-| `audio.mp3` | the encoded recording |
 | `audio.fifo` | the pipe between the recorder and the encoder |
 | `waveform` | the [waveform channel](pill.md) |
 | `arecord.err` | the recorder's stderr |
 | `transcribe.err` | the transcriber's stderr |
 
-The directory is removed when the session ends. It is also the [claim on the microphone](claim.md),
-which is why it is created before anything else runs.
+The recording and everything else that must outlive the session live in the durable
+[session directory](sessions.md) under the state directory, which the encoder writes from the first
+frame. Nothing that matters lives only in the runtime directory.
+
+The runtime directory is removed when the session ends. It is also the
+[claim on the microphone](claim.md), which is why it is created before anything else runs.
 
 `start` records both the encoder's and the recorder's pid **before** forking the session process.
 That is what makes the session's wait race-free: there is no window in which the session could
@@ -53,13 +55,15 @@ The session waits for the recorder to exit, then for the encoder to flush its la
 
 `arecord` captures the microphone as raw S16_LE, 16 kHz, mono. Its stream goes to the `_pump`
 process of the same binary, which forwards it into a fifo while, beside it, appending the
-[waveform lines](pill.md); `lame` reads that fifo and encodes MP3 (64 kbps, mono) into `audio.mp3`
-from the first frame: it writes progressively instead of buffering the whole recording, so a killed
-encoder leaves a file that decoders still open. The normal stop path, where the recorder dies first
-and the encoder sees end-of-file, finalises the file properly. The recorder, the pump and the
-encoder are three processes; the waveform channel is a copy of the same stream.
+[waveform lines](pill.md); `lame` reads that fifo and encodes MP3 (64 kbps, mono) into the
+session's `audio.mp3` from the first frame: it writes progressively instead of buffering the whole
+recording, so a killed encoder leaves a file that decoders still open. The normal stop path, where
+the recorder dies first and the encoder sees end-of-file, finalises the file properly. The
+recorder, the pump and the encoder are three processes; the waveform channel is a copy of the same
+stream.
 
-The pipeline exists only while a dictation runs, and its files go with the session directory.
+The pipeline exists only while a dictation runs, and its runtime files go with the runtime
+directory; the recording it produces goes to the [session](sessions.md).
 
 ## `start`, `stop`, `toggle`, `status`
 
@@ -115,5 +119,6 @@ repeatedly — see [the tests](tests.md).
 - [ADR-0001: one Rust binary](../adr/0001-single-rust-binary.md) replaces this script, the audio
   pipeline and the presenter with one process.
 - [ADR-0003: sessions on disk](../adr/0003-sessions-on-disk.md) keeps the recording instead of
-  removing the session directory on the way out.
+  removing the session directory on the way out, and writes it under the state directory — see
+  [the session](sessions.md).
 - [ADR-0008: the log](../adr/0008-the-log.md) gives the lifecycle one journal line per event.
