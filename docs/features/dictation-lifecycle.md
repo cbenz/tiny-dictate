@@ -24,12 +24,14 @@ directory under `$XDG_RUNTIME_DIR` (falling back to `$XDG_STATE_HOME` or `~/.loc
 | file | contents |
 |------|----------|
 | `session.pid` | the session process |
+| `session.id` | the durable id, so `stop`, `cancel` and `toggle` can name the session they act on |
 | `arecord.pid` | the recorder |
 | `lame.pid` | the encoder |
 | `state` | the word the presenter draws: `recording`, `transcribing`, `cancelled`, `stop` |
 | `audio.fifo` | the pipe between the recorder and the encoder |
 | `waveform` | the [waveform channel](pill.md) |
 | `arecord.err` | the recorder's stderr |
+| `lame.err` | the encoder's stderr |
 | `transcribe.err` | the transcriber's stderr |
 
 The recording and everything else that must outlive the session live in the durable
@@ -105,6 +107,37 @@ says the transcriber is missing before anything is claimed, and an `arecord` or 
 run fails the pipeline, reported on stderr.
 
 A cancelled dictation is never a failure: its verdict replaces the notification it used to be.
+
+## The journal
+
+The tool writes its own timeline to standard error, one line per event, prefixed with its name and,
+when the event concerns a session, with that session's id ([ADR-0008](../adr/0008-the-log.md)).
+`start` publishes the id in the runtime directory as `session.id`, which is how `stop`, `cancel` and
+`toggle` — each a process of its own — can name the session their line concerns. The prune and
+`session delete` concern no session and carry no id, and the source of a command — keyboard, pill
+button or command line — is not distinguished.
+
+| line | event |
+|------|-------|
+| `start: recording started`, `toggle: recording started` | a dictation claimed the microphone |
+| `stop: recorder signalled`, `toggle: recorder signalled` | the recorder was signalled |
+| `stop: transcription already in progress`, `toggle: transcription already in progress` | there was nothing to signal |
+| `stop: nothing to stop` | no dictation was running |
+| `cancel: cancelled` | the verdict was written |
+| `cancel: nothing to cancel` | no dictation was running |
+| `recording started` | the recorder and the encoder are live |
+| `recording ended duration=<s>s bytes=<n>` | the recording stage closed |
+| `recording stopped at the transcriber's audio limit` | the limit ended the recording |
+| `transcription started` | the transcriber is running |
+| `transcription ended duration=<s>s chars=<n>` | the transcriber returned, or failed |
+| `text written chars=<n>` | `transcript.txt` was written |
+| `paste succeeded`, `paste failed` | the chord was injected, or not |
+| `late cancel, text dropped` | a cancel landed while the transcription ran |
+| `failure: <error>` | a failure, with the same text the metadata's `error` holds |
+
+The encoder's and the recorder's own output is kept out of the journal: the recorder's stderr goes
+to `arecord.err`, the encoder's to `lame.err`, and the transcriber's to `transcribe.err`, which the
+failure path flattens into the one line the metadata's `error` holds and the notification shows.
 
 ## The recorder race
 

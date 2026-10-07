@@ -386,18 +386,16 @@ fn action_button(glyph: &str) -> gtk::Button {
 /// Run the tool's `verb`, as a keyboard shortcut would ask for it.
 ///
 /// The command is detached from the pill: leaving the screen must not take it down, and a command
-/// that outlives the presenter is reparented rather than left a zombie.
+/// that outlives the presenter is reparented rather than left a zombie. Its stderr stays the
+/// pill's, which is the session's: the journal does not care whether a command came from a button
+/// or from the keyboard (`docs/adr/0008-the-log.md`).
 fn run_verb(command: Option<&str>, verb: &str) {
     let Some(command) = command else {
         return;
     };
 
     let mut child = Command::new(command);
-    child
-        .arg(verb)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    child.arg(verb).stdin(Stdio::null()).stdout(Stdio::null());
     // `start_new_session` in the reference presenter: the exact Rust equivalent is `setsid`.
     // Safety: `setsid` in the child before `exec` is async-signal-safe.
     unsafe {

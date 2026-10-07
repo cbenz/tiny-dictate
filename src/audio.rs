@@ -13,6 +13,7 @@ use std::os::unix::io::FromRawFd;
 use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 
+use crate::journal;
 use crate::session::{Paths, self_executable};
 
 /// One slice is 64 S16_LE samples, 4 ms of mono audio at 16 kHz.
@@ -126,7 +127,11 @@ pub fn create_fifo(path: &Path) -> io::Result<()> {
 /// The encoder reads the fifo and writes the durable `audio.mp3` from the first frame; the
 /// pump copies the recorder's stdout into that fifo and into the waveform channel. Both pids
 /// are recorded here, synchronously, so the session can wait on them without a race.
-pub fn start_pipeline(paths: &Paths, audio: &Path) -> io::Result<()> {
+///
+/// Neither collaborator's own output reaches the journal: the recorder's stderr goes to
+/// `arecord.err` and the encoder's to `lame.err`, the files the failure path reads, and the
+/// encoder's stdout — it writes nothing there when it is given an output file — is dropped.
+pub fn start_pipeline(paths: &Paths, audio: &Path, session_id: &str) -> io::Result<()> {
     let reader = open_fifo_reader(&paths.fifo)?;
     let encoder = Command::new("lame")
         .args([
@@ -145,17 +150,21 @@ pub fn start_pipeline(paths: &Paths, audio: &Path) -> io::Result<()> {
         .args(["-S", "-"])
         .arg(audio)
         .stdin(Stdio::from(reader))
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(fs::File::create(&paths.encoder_error)?))
         .spawn()?;
     fs::write(&paths.encoder_pid, encoder.id().to_string())?;
 
     fs::File::create(&paths.waveform)?;
 
     // The pump outlives `start`, so it is a process of its own; it is handed the fifo path in
-    // its argv, which is what the suite's leftover check looks for.
+    // its argv, which is what the suite's leftover check looks for, and the session id, so a
+    // failure it logs names the dictation it belongs to.
     let mut pump = Command::new(self_executable())
         .arg("_pump")
         .arg(&paths.fifo)
         .arg(&paths.waveform)
+        .arg(session_id)
         .stdin(Stdio::piped())
         .spawn()?;
     let pump_stdin = pump
@@ -180,8 +189,18 @@ pub fn pump(arguments: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     };
 
+    // The session id is optional: an absent or empty argument is a pump that cannot name the
+    // dictation it belongs to, and a failure line without an id is better than no line.
+    let session_id = arguments
+        .get(2)
+        .map(String::as_str)
+        .filter(|id| !id.is_empty());
+
     if let Err(error) = run_pump(Path::new(fifo), Path::new(waveform)) {
-        eprintln!("tiny-dictate: the waveform pump stopped: {error}");
+        journal::log(
+            session_id,
+            &format!("failure: the waveform pump stopped: {error}"),
+        );
     }
 
     ExitCode::SUCCESS
