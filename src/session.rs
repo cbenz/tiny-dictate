@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::audio;
 use crate::claim;
@@ -181,7 +181,7 @@ pub fn start() -> ExitCode {
     let paths = runtime.paths();
 
     // The transcriber is the one mandatory plugin: refuse before anything is claimed.
-    if text::resolve_transcriber().is_none() {
+    let Some(transcriber) = text::resolve_transcriber() else {
         eprintln!(
             "No transcription command: set TINY_DICTATE_TRANSCRIBE or install tiny-dictate-transcribe"
         );
@@ -191,7 +191,13 @@ pub fn start() -> ExitCode {
             "critical",
         );
         return ExitCode::FAILURE;
-    }
+    };
+
+    // The transcriber declares its audio limit once per dictation, before the microphone is
+    // opened: the byte count becomes the duration the encoder's bitrate allows. Every failure
+    // mode is "no limit", never an error — a transcriber that declares nothing is one the user
+    // dictated to before this limit existed.
+    let limit = text::audio_limit(&transcriber);
 
     if !claim::claim(&paths) {
         // A session is running: its pill already shows what is going on, and it is the only
@@ -223,8 +229,15 @@ pub fn start() -> ExitCode {
     }
 
     // The recorder's and the encoder's pids are recorded before this fork: that is what makes
-    // the session's wait race-free.
-    match Command::new(self_executable()).arg("_session").spawn() {
+    // the session's wait race-free. The transcriber's byte limit rides along, so the session
+    // never has to ask for it again once the microphone is open.
+    let mut session = Command::new(self_executable());
+    session.arg("_session");
+    if let Some(bytes) = limit {
+        session.arg(bytes.to_string());
+    }
+
+    match session.spawn() {
         Ok(session) => {
             let _ = fs::write(&paths.session_pid, session.id().to_string());
             ExitCode::SUCCESS
@@ -303,9 +316,18 @@ pub fn toggle() -> ExitCode {
 }
 
 /// `_session`: the process that owns the lifecycle, forked by `start`.
-pub fn run_session() -> ExitCode {
+///
+/// The only argument is the transcriber's audio limit, in bytes, when it declared one.
+pub fn run_session(arguments: &[String]) -> ExitCode {
     let runtime = Runtime::from_env();
     let paths = runtime.paths();
+
+    // The limit in bytes becomes a duration at the encoder's bitrate; anything unparsable or
+    // absent is no limit, so a garbled argument can only relax the deadline, never shorten it.
+    let limit = arguments
+        .first()
+        .and_then(|bytes| bytes.parse::<u64>().ok())
+        .and_then(text::limit_from_bytes);
 
     // A new dictation ends the cancelled verdict's dwell early; the handler only flags it, and
     // installing it before anything else means the signal is never the default one, which would
@@ -323,7 +345,7 @@ pub fn run_session() -> ExitCode {
         pid: std::process::id(),
     };
 
-    let code = session_body(&paths);
+    let code = session_body(&paths, limit);
     drop(guard);
     code
 }
@@ -343,8 +365,15 @@ impl Drop for SessionGuard {
     }
 }
 
-fn session_body(paths: &Paths) -> ExitCode {
-    let mut presenter = Presenter::start(paths, "recording");
+fn session_body(paths: &Paths, limit: Option<Duration>) -> ExitCode {
+    let mut presenter = Presenter::start(paths, "recording", limit);
+
+    // The deadline is the limit counted from the moment the session takes over the recording:
+    // the recorder was started just before the fork. When it passes, the recording is stopped
+    // exactly as the shortcut's `stop` stops it — the text is transcribed and pasted, never
+    // dropped — and one stderr line says why.
+    let deadline = limit.map(|limit| Instant::now() + limit);
+    let mut limit_reached = false;
 
     let mut recording_failed = false;
     let mut encoder_failed = false;
@@ -356,6 +385,16 @@ fn session_body(paths: &Paths) -> ExitCode {
         if !pidfile_lives(&paths.encoder_pid) {
             recording_failed = true;
             break;
+        }
+        if !limit_reached && deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            limit_reached = true;
+            // The recorder is signalled, the encoder outlives it to flush the last frames: the
+            // very path `stop` takes.
+            signal_pidfile(&paths.recorder_pid, libc::SIGINT);
+            eprintln!(
+                "tiny-dictate: session {}: recording stopped at the transcriber's audio limit",
+                paths.session.display()
+            );
         }
         sleep(Duration::from_millis(100));
     }

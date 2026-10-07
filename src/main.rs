@@ -22,7 +22,7 @@ fn main() -> ExitCode {
     // installed.
     match arguments.first().map(String::as_str) {
         Some("_pump") => return audio::pump(&arguments[1..]),
-        Some("_session") => return session::run_session(),
+        Some("_session") => return session::run_session(&arguments[1..]),
         Some("_present") => return presentation::present(&arguments[1..]),
         _ => {}
     }

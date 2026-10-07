@@ -11,8 +11,8 @@ These pages describe the tool as it works today. The decisions taken during desi
 
 ## What a dictation does
 
-1. `start`, or `toggle` from idle, claims the microphone, checks that the microphone is not muted,
-   and forks a session process.
+1. `start`, or `toggle` from idle, resolves the transcriber, asks it for its audio limit, claims the
+   microphone, checks that the microphone is not muted, and forks a session process.
 2. The recorder captures the microphone, the encoder writes MP3 from the first frame, and the
    session publishes the input waveform for the pill to draw.
 3. `stop`, or `toggle` while recording, stops the recorder; the encoder flushes its last frames.
@@ -50,6 +50,12 @@ the command, so two shortcuts pressed at once cannot interleave. `status` takes 
 The core has no transcription backend of its own: one command carries it. It is resolved with
 `command -v` on `$TINY_DICTATE_TRANSCRIBE` when set and on `tiny-dictate-transcribe` otherwise, and
 reported to the user before any recording starts when it cannot be resolved.
+
+The command may declare the largest audio file it accepts: `--print-audio-limit` prints that byte
+count, anything else means no limit, and the probe is asked once per dictation before the microphone
+is opened. The byte count becomes a maximum duration at the encoder's 64 kbit/s, at which the
+recording stops as if the shortcut had been pressed. With no declared limit there is no limit and no
+bar (see [features/transcriber.md](features/transcriber.md)).
 
 | surface | variable | default name | specification |
 |---------|----------|--------------|---------------|
