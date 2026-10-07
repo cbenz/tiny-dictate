@@ -11,8 +11,9 @@ keypress:
 Writing both is what makes the paste land wherever the user is typing, and it leaves the text
 available on both selections if the injected keypress misses.
 
-`wl-copy` and `wl-paste` must both be on `PATH`. Their absence is reported before anything runs, like
-any other missing dependency.
+`wl-copy` is looked up by the command that offers the text, not before anything runs: the dependency
+checks live in the commands that need them, so `history` and `transcribe --print` run on a machine
+without a clipboard tool, and a missing one costs the paste, never the recording.
 
 ## The injected keypress
 

@@ -137,6 +137,17 @@ button or command line — is not distinguished.
 | `late cancel, text dropped` | a cancel landed while the transcription ran |
 | `failure: <error>` | a failure; a session's failure carries the same text the metadata's `error` holds |
 
+The rescue surface and the prune write the same shape, with the session id when they name one and
+none when they do not:
+
+| line | event |
+|------|-------|
+| `<id>: transcript copied to the clipboard`, `<id>: could not copy the transcript to the clipboard` | `transcribe` offered the rescued text on the clipboard, or could not |
+| `<id>: failure: <error>` | a rescue transcription failed; the text is the metadata's `error` |
+| `pruned <n> sessions` | the prune removed sessions beyond `keep`; concerns no session |
+| `session deleted` | `session delete` destroyed one session; concerns none by the time it is gone |
+| `unknown session: <id>` | an id no kept session answers to |
+
 The encoder's and the recorder's own output is kept out of the journal: the recorder's stderr goes
 to `arecord.err`, the encoder's to `lame.err`, and the transcriber's to `transcribe.err`, which the
 failure path flattens into the one line the metadata's `error` holds and the notification shows.

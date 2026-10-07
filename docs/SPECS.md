@@ -77,9 +77,24 @@ start costs the pill only: the dictation goes on without one (see
 [features/pill.md](features/pill.md)).
 
 The presenter is the one seam the tests keep. The session spawns the binary's own `_present` mode —
-`tiny-dictate _present <state file> <pid> <waveform file> <self command> [limit seconds]` — and
-`TINY_DICTATE_PRESENT_COMMAND` names another command instead. It is internal, never documented in
-the README.
+`tiny-dictate _present <state file> <pid> <waveform file> <self command> [limit seconds] [color]` —
+and `TINY_DICTATE_PRESENT_COMMAND` names another command instead. It is internal, never documented
+in the README.
+
+## Configuration
+
+`$XDG_CONFIG_HOME/tiny-dictate/config.toml`, `$HOME/.config/tiny-dictate/config.toml` by default.
+Optional, every key defaulted: `keep = 10` (the number of past sessions retained),
+`color = "#e4e4e7"` (the pill's waveform) and `clipboard_seconds = 60` (the clipboard lease). A
+missing, unreadable, malformed file or an unknown key falls back to the defaults, silently and per
+key, and never blocks a dictation. Secrets are environment-only — the transcriber's key included —
+so nothing in the repository ever holds one
+([features/configuration.md](features/configuration.md), [ADR-0010](adr/0010-configuration.md)).
+
+After a dictation whose text was pasted, the sessions beyond `keep` are removed, oldest first. A
+dictation that failed or was cancelled prunes nothing, a crashed run prunes nothing, and the
+session being recorded is never removed ([features/configuration.md](features/configuration.md),
+[ADR-0005](adr/0005-prune.md)).
 
 ## Invariants
 
@@ -111,5 +126,6 @@ These hold whatever implementation runs them, and a port is expected to keep the
 - [The pill and the waveform channel](features/pill.md)
 - [The transcriber command](features/transcriber.md)
 - [The clipboard and the paste](features/clipboard.md)
+- [The configuration file](features/configuration.md)
 - [The automation](features/automation.md)
 - [The tests](features/tests.md)

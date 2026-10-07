@@ -88,8 +88,9 @@ The process seam is the primary one: the states written to the state file, the e
 was asked to draw, the lifecycle of the processes and the exit codes are all observable there. A few
 pure functions the seam cannot see are unit-tested instead: the pill's frame computation (state,
 waveform, limit and elapsed time in, what to draw out, including the three bands of the progress
-bar), and, for the rescue surface, reading the metadata back, resolving a `<id|last>` argument and
-cutting a history summary on a word boundary. The prune selection is planned for its own slice.
+bar), the prune selection (a list of sessions in, the ones to remove out, sharing one listing with
+`history` and `last`), and, for the rescue surface, reading the metadata back, resolving a
+`<id|last>` argument and cutting a history summary on a word boundary.
 
 ## Decisions
 

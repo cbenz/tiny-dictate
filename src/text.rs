@@ -135,10 +135,11 @@ pub fn notify(message: &str, expire_ms: u32, urgency: &str) {
 
 /// Offer the text on both selections, the way a normal dictation does, and report whether the
 /// CLIPBOARD selection took it. Every clipboard write in the tool goes through here, so the lease
-/// has exactly one place to replace.
-pub fn copy_to_clipboard(value: &str) -> bool {
-    let clipboard = clipboard_write(value, false);
-    let _ = clipboard_write(value, true);
+/// has exactly one place to replace. `clipboard_seconds` is the lease's duration, read from the
+/// configuration.
+pub fn copy_to_clipboard(value: &str, clipboard_seconds: u64) -> bool {
+    let clipboard = clipboard_write(value, false, clipboard_seconds);
+    let _ = clipboard_write(value, true, clipboard_seconds);
 
     clipboard
 }
@@ -147,8 +148,12 @@ pub fn copy_to_clipboard(value: &str) -> bool {
 ///
 /// Wayland has no API to insert text into another client, so the text is copied and the chord
 /// pressed. The chord carries no Enter: the text is inserted, never submitted.
-pub fn paste(value: &str) -> bool {
-    copy_to_clipboard(value);
+///
+/// `clipboard_seconds` is the lease's duration, read from the configuration; the lease itself
+/// ([ADR-0007](../docs/adr/0007-the-clipboard-lease.md)) is what will wrap the offer in
+/// `timeout <clipboard_seconds>`.
+pub fn paste(value: &str, clipboard_seconds: u64) -> bool {
+    copy_to_clipboard(value, clipboard_seconds);
 
     if !ydotool(&["key", "42:1"]) {
         return false;
@@ -164,7 +169,7 @@ pub fn paste(value: &str) -> bool {
     inserted
 }
 
-fn clipboard_write(value: &str, primary: bool) -> bool {
+fn clipboard_write(value: &str, primary: bool, _clipboard_seconds: u64) -> bool {
     let mut child = Command::new("wl-copy");
     if primary {
         child.arg("--primary");

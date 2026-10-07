@@ -27,6 +27,36 @@ pub const TRANSCRIPT_FILE: &str = "transcript.txt";
 /// The metadata, rewritten atomically at each stage.
 pub const METADATA_FILE: &str = "metadata.json";
 
+/// Which sessions to remove: the oldest beyond the newest `keep`, oldest first.
+///
+/// `ids` is the sessions directory as `session_ids` lists it, newest first; `current` is the
+/// dictation that has just been pasted: it is counted among the sessions — it is one of them —
+/// but it is never removed, even when the limit has been reached. The result is oldest first,
+/// the order the removals happen in.
+pub fn sessions_to_prune(ids: &[String], keep: usize, current: &str) -> Vec<String> {
+    // Everything past the newest `keep` is old enough to go; reversed, that is oldest first.
+    let mut candidates: Vec<String> = ids.iter().skip(keep).rev().cloned().collect();
+    candidates.retain(|id| id != current);
+
+    candidates
+}
+
+/// Remove the oldest sessions beyond `keep` from the sessions directory.
+///
+/// Returns the ids that were removed, oldest first; directory entries that are not session
+/// directories are left alone. A missing or unreadable directory removes nothing. The listing is
+/// `session_ids`, the same one `history` and `resolve_id` read, so the two agree on what the
+/// newest session is.
+pub fn prune_sessions(sessions: &Path, keep: usize, current: &str) -> Vec<String> {
+    let removed = sessions_to_prune(&session_ids(sessions), keep, current);
+
+    for id in &removed {
+        let _ = fs::remove_dir_all(sessions.join(id));
+    }
+
+    removed
+}
+
 /// What became of one session, as it is written to `metadata.json`.
 ///
 /// `started`, `ended` and `duration` are Unix epoch seconds; the fractional part is kept, so
@@ -410,6 +440,10 @@ fn json_string(value: &str) -> String {
 mod tests {
     use super::*;
 
+    fn ids(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
     #[test]
     fn metadata_survives_a_write_and_a_read_back() {
         let metadata = Metadata {
@@ -486,6 +520,47 @@ mod tests {
         );
         assert_eq!(resolve_id(&root, "nope"), None);
         assert_eq!(resolve_id(&root, "../escape"), None);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_prune_removes_the_oldest_beyond_the_number_kept() {
+        // `session_ids` order: newest first, so `d` is the dictation just pasted and `a` the
+        // oldest.
+        let sessions = ids(&["d", "c", "b", "a"]);
+
+        assert_eq!(sessions_to_prune(&sessions, 2, "d"), ids(&["a", "b"]));
+        assert_eq!(sessions_to_prune(&sessions, 3, "d"), ids(&["a"]));
+        assert_eq!(sessions_to_prune(&sessions, 4, "d"), Vec::<String>::new());
+        assert_eq!(sessions_to_prune(&[], 2, "d"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_session_being_recorded_is_never_pruned() {
+        let sessions = ids(&["d", "c", "b", "a"]);
+
+        // Even when it is among the oldest, the session just recorded is kept: it is the
+        // one whose text was pasted a moment ago.
+        assert_eq!(sessions_to_prune(&sessions, 2, "a"), ids(&["b"]));
+        assert_eq!(sessions_to_prune(&sessions, 0, "d"), ids(&["a", "b", "c"]));
+    }
+
+    #[test]
+    fn the_prune_and_last_share_one_notion_of_newest() {
+        let root = std::env::temp_dir().join(format!("td-store-newest-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for id in ["2026-10-07T19-05-22", "2026-10-07T19-06-00"] {
+            fs::create_dir_all(root.join(id)).expect("a session directory");
+        }
+
+        let listed = session_ids(&root);
+        let newest = resolve_id(&root, "last").expect("the newest session");
+
+        // `history` reads `session_ids` in order, `last` is its first entry, and the prune never
+        // removes that entry: one listing, one notion of newest.
+        assert_eq!(listed.first().map(String::as_str), Some(newest.as_str()));
+        assert!(!sessions_to_prune(&listed, 1, &newest).contains(&newest));
 
         let _ = fs::remove_dir_all(&root);
     }

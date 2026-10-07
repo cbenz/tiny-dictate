@@ -14,6 +14,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::audio;
 use crate::claim;
+use crate::config::{self, Config};
 use crate::journal;
 use crate::presentation::{self, Presenter};
 use crate::store;
@@ -404,6 +405,10 @@ pub fn transcribe_session(target: &str, print: bool) -> ExitCode {
     let runtime = Runtime::from_env();
     let sessions = runtime.sessions_directory();
 
+    // The configuration is read here too: the rescue offers the text on the same clipboard
+    // lease a live dictation uses, so it takes the same duration from the same file.
+    let config = config::load();
+
     let Some(id) = store::resolve_id(&sessions, target) else {
         return unknown_session(target);
     };
@@ -453,7 +458,7 @@ pub fn transcribe_session(target: &str, print: bool) -> ExitCode {
                 return ExitCode::SUCCESS;
             }
 
-            if text::copy_to_clipboard(&transcript) {
+            if text::copy_to_clipboard(&transcript, config.clipboard_seconds) {
                 journal::log(Some(&session.id), "transcript copied to the clipboard");
                 ExitCode::SUCCESS
             } else {
@@ -619,6 +624,10 @@ pub fn run_session(id: &str, arguments: &[String]) -> ExitCode {
         SystemTime::now(),
     );
     let _ = session.save();
+
+    // The configuration is read once, here in the session that needs all of it: the pill's
+    // colour and the prune's `keep` now, the clipboard lease's duration when it lands.
+    let config = config::load();
     // A new dictation ends the cancelled verdict's dwell early; the handler only flags it, and
     // installing it before anything else means the signal is never the default one, which would
     // kill the session.
@@ -635,7 +644,13 @@ pub fn run_session(id: &str, arguments: &[String]) -> ExitCode {
         pid: std::process::id(),
     };
 
-    let code = session_body(&paths, &mut session, limit);
+    let code = session_body(
+        &paths,
+        &mut session,
+        limit,
+        &config,
+        &runtime.sessions_directory(),
+    );
     drop(guard);
     code
 }
@@ -655,8 +670,14 @@ impl Drop for SessionGuard {
     }
 }
 
-fn session_body(paths: &Paths, session: &mut store::Session, limit: Option<Duration>) -> ExitCode {
-    let mut presenter = Presenter::start(paths, "recording", limit);
+fn session_body(
+    paths: &Paths,
+    session: &mut store::Session,
+    limit: Option<Duration>,
+    config: &Config,
+    sessions: &Path,
+) -> ExitCode {
+    let mut presenter = Presenter::start(paths, "recording", limit, &config.color);
 
     // The deadline is the limit counted from the moment the session takes over the recording:
     // the recorder was started just before the fork. When it passes, the recording is stopped
@@ -813,7 +834,8 @@ fn session_body(paths: &Paths, session: &mut store::Session, limit: Option<Durat
             // The live state is over once there is text: nothing is left for the pill to say.
             presenter.stop();
 
-            let pasted = !transcript.is_empty() && text::paste(&transcript);
+            let pasted =
+                !transcript.is_empty() && text::paste(&transcript, config.clipboard_seconds);
             if transcript.is_empty() {
                 journal::log(
                     Some(&session.id),
@@ -828,6 +850,14 @@ fn session_body(paths: &Paths, session: &mut store::Session, limit: Option<Durat
             if pasted {
                 session.metadata.pasted = true;
                 let _ = session.save();
+
+                // Bounding the directory belongs to a dictation that reached the user: a
+                // failure or a cancel prunes nothing (ADR-0005). The prune concerns no session,
+                // so its line carries none.
+                let removed = store::prune_sessions(sessions, config.keep, &session.id);
+                if !removed.is_empty() {
+                    journal::log(None, &format!("pruned {} sessions", removed.len()));
+                }
             }
         }
         Err(()) => {

@@ -77,11 +77,21 @@ pasted. Destroying a session is a separate verb, and only a deliberate one remov
 that already has a transcript can be transcribed again: the new transcript and the new raw response
 replace the old ones.
 
+## Keeping the directory bounded
+
+After a dictation whose text was pasted, the sessions beyond `keep` are removed, oldest first
+([ADR-0005](../adr/0005-prune.md)). The count includes the session just recorded, which is never one
+of the removed ones. A dictation that failed or was cancelled prunes nothing, and a crashed run
+prunes nothing: the directory is bounded at the only moment when something reached the user. `keep`
+comes from the [configuration file](configuration.md), 10 by default.
+
 ## Decisions
 
 - [ADR-0003: sessions on disk](../adr/0003-sessions-on-disk.md) keeps the recording instead of
   removing it on the way out.
 - [ADR-0004: cancelling versus destroying](../adr/0004-cancelling-versus-destroying.md) makes
   `session delete` the only verb that destroys a session.
+- [ADR-0005: prune the oldest sessions after a pasted dictation](../adr/0005-prune.md) bounds the
+  directory without a timer or a daemon.
 - [ADR-0011: the command line](../adr/0011-command-line.md) adds `history`, `transcribe` and
   `session delete`, and moves the dependency checks into the commands that need them.
