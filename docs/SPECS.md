@@ -18,8 +18,9 @@ These pages describe the tool as it works today. The decisions taken during desi
 3. `stop`, or `toggle` while recording, stops the recorder; the encoder flushes its last frames.
 4. The session runs the transcriber command on the audio file and shows `transcribing` while it
    runs. A cancel that lands during the transcription drops the text.
-5. The session copies the text to both clipboard selections, injects it into the focused window with
-   `ydotool Shift+Insert`, and removes its session directory.
+5. The session writes `transcript.txt` into the session directory, copies the text to both
+   clipboard selections, injects it into the focused window with `ydotool Shift+Insert`, and
+   removes its runtime directory: the [session](features/sessions.md) stays on disk.
 
 A dictation is batch: the whole utterance is recorded, then transcribed once. Streaming
 transcription is out of scope — it is a different contract (long-lived process, incremental text,
@@ -69,8 +70,8 @@ the README.
 
 These hold whatever implementation runs them, and a port is expected to keep them:
 
-- One dictation at a time. The session directory is the claim on the microphone, and creating it
-  with `mkdir` is atomic.
+- One dictation at a time. The runtime claim directory is the claim on the microphone, and
+  creating it with `mkdir` is atomic; the durable [session](features/sessions.md) is not the claim.
 - The recorder's pid is recorded before the session process is forked: the session can never
   believe the recorder finished when it has not started.
 - `stop` and `cancel` signal the recorder, never the session. The session owns the lifecycle.
@@ -88,6 +89,7 @@ These hold whatever implementation runs them, and a port is expected to keep the
 
 ## Features
 
+- [Sessions on disk](features/sessions.md)
 - [The dictation lifecycle](features/dictation-lifecycle.md)
 - [The claim](features/claim.md)
 - [Cancelling and the verdict](features/cancel-and-verdict.md)

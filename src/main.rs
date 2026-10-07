@@ -12,6 +12,7 @@ mod cli;
 mod pill;
 mod presentation;
 mod session;
+mod store;
 mod text;
 
 fn main() -> ExitCode {
@@ -22,7 +23,9 @@ fn main() -> ExitCode {
     // installed.
     match arguments.first().map(String::as_str) {
         Some("_pump") => return audio::pump(&arguments[1..]),
-        Some("_session") => return session::run_session(),
+        Some("_session") => {
+            return session::run_session(arguments.get(1).map(String::as_str).unwrap_or(""));
+        }
         Some("_present") => return presentation::present(&arguments[1..]),
         _ => {}
     }

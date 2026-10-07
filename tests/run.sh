@@ -42,8 +42,12 @@ export WAYLAND_DISPLAY="td-test-no-wayland"
 BIN="$WORK/bin"
 RUN="$WORK/run"
 HOME_DIR="$WORK/home"
-mkdir -p "$BIN" "$RUN" "$HOME_DIR"
-export WORK BIN RUN HOME_DIR
+# The durable sessions live under the state directory. Pointing it at the work directory
+# keeps a run hermetic: reset_run wipes it like the runtime directory.
+STATE_HOME="$WORK/state"
+mkdir -p "$BIN" "$RUN" "$HOME_DIR" "$STATE_HOME"
+export WORK BIN RUN HOME_DIR STATE_HOME
+export XDG_STATE_HOME="$STATE_HOME"
 
 FAILURES=0
 CURRENT_TEST=""
@@ -98,7 +102,10 @@ STUB
 
 cat > "$BIN/transcribe" <<'STUB'
 #!/usr/bin/env bash
-# Stand-in for the user-provided transcription command: audio file as $1, text on stdout.
+# Stand-in for the user-provided transcription command: the audio file as $1, the durable
+# session directory as $2, the text on stdout. Writing nothing into the session directory is
+# valid; TRANSCRIBE_RAW makes it leave a raw response behind, as the reference one does, and
+# TRANSCRIBE_TEXT changes the text it prints.
 cp "${1:?}" "$WORK/transcribe-received" 2>/dev/null
 wc -c < "$WORK/transcribe-received" > "$WORK/transcribe-size"
 [ -n "${TRANSCRIBE_SLEEP:-}" ] && sleep "$TRANSCRIBE_SLEEP"
@@ -106,7 +113,10 @@ if [ -n "${TRANSCRIBE_FAIL:-}" ]; then
     printf 'groq: Error code: 401 - invalid api key\n' >&2
     exit 1
 fi
-printf 'text transcribed'
+if [ -n "${TRANSCRIBE_RAW:-}" ]; then
+    printf '%s' '{"raw":"kept verbatim"}' > "${2:?}/transcript.raw.json"
+fi
+printf '%s' "${TRANSCRIBE_TEXT:-text transcribed}"
 STUB
 
 cat > "$BIN/llm" <<'STUB'
@@ -292,6 +302,7 @@ start_test() {
 reset_run() {
     cleanup_processes
     rm -rf "$RUN/tiny-dictate"
+    rm -rf "$STATE_HOME/tiny-dictate"
     : > "$WORK/events.log"
     : > "$WORK/ydotool.log"
     : > "$WORK/wl-copy.log"
@@ -451,6 +462,38 @@ no_waveform_channel_process() {
 }
 
 session_dir_gone() { [ ! -e "$RUN/tiny-dictate/session" ]; }
+
+# ─────────────────────── the durable session, on disk ───────────────────────
+
+sessions_dir() { printf '%s/tiny-dictate/sessions' "$STATE_HOME"; }
+
+# The one session directory of the run, when there is exactly one.
+single_session_dir() {
+    local ids count
+
+    ids="$(ls -1 "$(sessions_dir)" 2>/dev/null)"
+    count="$(printf '%s\n' "$ids" | grep -c .)"
+    [ "$count" -eq 1 ] || return 1
+    printf '%s/%s' "$(sessions_dir)" "$ids"
+}
+
+# One field of a session's metadata, raw JSON: `"transcribed"`, `true`, `null`, `1759855522.5`.
+metadata_value() { # metadata_value <session directory> <key>
+    awk -v key="\"$2\":" '$1 == key { value = $2; sub(/,$/, "", value); print value; exit }' \
+        "$1/metadata.json"
+}
+
+# Kill the whole run the way a crash would: the session process first, then the pipeline and
+# the pill. SIGKILL, so nothing gets a chance to tidy up after itself.
+kill_run() {
+    local pid
+
+    pid="$(cat "$RUN/tiny-dictate/session/session.pid" 2>/dev/null)"
+    [ -n "$pid" ] && kill -9 "$pid" 2>/dev/null
+    pkill -9 -f "$RUN/tiny-dictate/session/audio.fifo" 2>/dev/null
+    cleanup_processes
+    sleep 0.1
+}
 
 # ─────────────────────────── tests ───────────────────────────
 
@@ -663,6 +706,129 @@ test_toggle_during_transcription() {
     check "no presentation left behind" presenter_left
 }
 
+# A completed dictation leaves its session under the state directory: the audio the encoder
+# wrote, the transcript the core wrote, and the metadata saying what happened to it.
+test_session_on_disk() {
+    start_test "a completed dictation leaves its session on disk"
+    td start
+    sleep 0.4
+    td stop
+    check "session finishes" wait_idle
+
+    local dir
+    dir="$(single_session_dir)"
+    check "exactly one session was left" test -n "$dir"
+    check "audio.mp3 is there and not empty" test -s "$dir/audio.mp3"
+    check "the core wrote transcript.txt" [ "$(cat "$dir/transcript.txt")" = "text transcribed" ]
+    check "metadata.json is there" test -f "$dir/metadata.json"
+    check "no temporary metadata survived" [ -z "$(find "$dir" -name '*.tmp.*' -print -quit 2>/dev/null)" ]
+    check "the outcome is transcribed" [ "$(metadata_value "$dir" outcome)" = '"transcribed"' ]
+    check "the text was pasted" [ "$(metadata_value "$dir" pasted)" = "true" ]
+    check "the transcriber is recorded" [ "$(metadata_value "$dir" transcriber)" = "\"$BIN/transcribe\"" ]
+    check "no error is recorded" [ "$(metadata_value "$dir" error)" = "null" ]
+    check "audio_bytes is the file's size" bash -c '[ -n "$1" ] && [ "$1" = "$2" ]' _ \
+        "$(metadata_value "$dir" audio_bytes)" "$(stat -c%s "$dir/audio.mp3" 2>/dev/null)"
+    check "the duration is positive" awk -v d="$(metadata_value "$dir" duration)" 'BEGIN { exit !(d > 0) }'
+    check "the end is after the start" awk -v s="$(metadata_value "$dir" started)" -v e="$(metadata_value "$dir" ended)" 'BEGIN { exit !(e > s) }'
+    check "the runtime claim is removed" session_dir_gone
+    check "no leftover process" no_leftover_process
+}
+
+# The transcriber leaves the provider's own answer in the directory it is handed, and the
+# core stores it verbatim: it is never rewritten, and the transcript is the core's own file.
+test_session_raw_response() {
+    start_test "the transcriber's raw response is kept verbatim"
+    TRANSCRIBE_RAW=1 td start
+    sleep 0.4
+    td stop
+    check "session finishes" wait_idle
+
+    local dir
+    dir="$(single_session_dir)"
+    check "the raw response is left in the session" test -f "$dir/transcript.raw.json"
+    check "it is stored verbatim" [ "$(cat "$dir/transcript.raw.json")" = '{"raw":"kept verbatim"}' ]
+    check "the core still wrote the transcript" [ "$(cat "$dir/transcript.txt")" = "text transcribed" ]
+    check "the text was pasted" [ "$(pasted_text)" = "text transcribed" ]
+}
+
+# A transcriber that leaves nothing in the session directory is still a transcriber: the text
+# it printed is what the core writes and pastes.
+test_session_transcriber_writes_nothing() {
+    start_test "a transcriber that writes nothing into the session"
+    TRANSCRIBE_TEXT="text from stdout" td start
+    sleep 0.4
+    td stop
+    check "session finishes" wait_idle
+
+    local dir
+    dir="$(single_session_dir)"
+    check "no raw response was written" [ ! -e "$dir/transcript.raw.json" ]
+    check "the core wrote the text the transcriber printed" [ "$(cat "$dir/transcript.txt")" = "text from stdout" ]
+    check "the printed text is what was pasted" [ "$(pasted_text)" = "text from stdout" ]
+}
+
+# A session left on `recording` is one that died mid-recording: its metadata has no end and
+# no duration, and nothing was transcribed or pasted.
+test_session_recording_killed() {
+    start_test "a session killed mid-recording stays on recording"
+    td start
+    sleep 0.4
+
+    local dir
+    dir="$(single_session_dir)"
+    check "the metadata is written while recording" test -f "$dir/metadata.json"
+    check "the outcome is recording" [ "$(metadata_value "$dir" outcome)" = '"recording"' ]
+
+    kill_run
+
+    check "the session directory survives the kill" test -d "$dir"
+    check "the metadata still says recording" [ "$(metadata_value "$dir" outcome)" = '"recording"' ]
+    check "the recording has no end" [ "$(metadata_value "$dir" ended)" = "null" ]
+    check "the recording has no duration" [ "$(metadata_value "$dir" duration)" = "null" ]
+    check "no transcript was written" [ ! -e "$dir/transcript.txt" ]
+}
+
+# The recorder writes the audio from the first frame, so killing the whole run costs at most
+# what has not been written: the bytes already flushed are still on disk afterwards.
+test_session_audio_survives_kill() {
+    start_test "the audio survives killing the whole run"
+    td start
+    sleep 0.4
+
+    local dir before
+    dir="$(single_session_dir)"
+    cp "$dir/audio.mp3" "$WORK/audio-before-kill"
+    before="$(stat -c%s "$WORK/audio-before-kill" 2>/dev/null || echo 0)"
+    check "the recording reached disk before the kill (was $before bytes)" test "$before" -gt 0
+
+    kill_run
+    head -c "$before" "$dir/audio.mp3" > "$WORK/audio-after-kill"
+
+    check "the file is still there" test -s "$dir/audio.mp3"
+    check "the flushed audio is still there, byte for byte" cmp -s "$WORK/audio-before-kill" "$WORK/audio-after-kill"
+    check "the transcriber can still read it" bash -c "\"$BIN/transcribe\" \"$dir/audio.mp3\" \"$dir\" >/dev/null 2>&1"
+}
+
+# Cancelling drops the text, never the recording: the session keeps its audio and is marked
+# cancelled, and nothing is transcribed or pasted.
+test_session_cancelled_keeps_recording() {
+    start_test "a cancelled dictation keeps its recording"
+    td start
+    sleep 0.4
+    td cancel
+    check "the pill shows the verdict" wait_for_event '^PRESENT state=cancelled'
+    check "session finishes" wait_idle
+
+    local dir
+    dir="$(single_session_dir)"
+    check "the recording is kept" test -s "$dir/audio.mp3"
+    check "the outcome is cancelled" [ "$(metadata_value "$dir" outcome)" = '"cancelled"' ]
+    check "nothing was transcribed" [ ! -e "$dir/transcript.txt" ]
+    check "nothing was pasted" [ -z "$(pasted_text)" ]
+    check "the runtime claim is removed" session_dir_gone
+    check "no leftover process" no_leftover_process
+}
+
 # The reported bug: `start` wrote the recorder PID from a subshell that raced with
 # the worker, so the worker could believe recording was over and transcribe an empty
 # file. Run the same scenario many times and count the failures.
@@ -737,6 +903,12 @@ run_test test_chain_after_cancel
 run_test test_cancel_during_transcription
 run_test test_second_start_refused
 run_test test_toggle_during_transcription
+run_test test_session_on_disk
+run_test test_session_raw_response
+run_test test_session_transcriber_writes_nothing
+run_test test_session_recording_killed
+run_test test_session_audio_survives_kill
+run_test test_session_cancelled_keeps_recording
 run_test test_race_loop
 if [ -n "$OLD_SCRIPT" ] && [ -z "$ONLY" ]; then
     test_race_loop_old
