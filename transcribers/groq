@@ -2,7 +2,7 @@
 #
 # Reference tiny-dictate transcription plugin: Groq Whisper.
 #
-# Contract (see AGENTS.md):
+# Contract (see docs/features/transcriber.md):
 #   $1      path to the recorded audio file
 #   stdout  the transcribed text
 #   exit 0  on success; any other status means failure and stderr is shown to the user
@@ -11,7 +11,7 @@
 # or point TINY_DICTATE_TRANSCRIBE at it. Copy it, or wrap it to fetch the key from wherever you
 # keep it:
 #
-#   GROQ_API_KEY="$(my-key-helper 'Groq API key')" exec src/transcribers/groq "$@"
+#   GROQ_API_KEY="$(my-key-helper 'Groq API key')" exec transcribers/groq "$@"
 #
 #   GROQ_API_KEY       required
 #   GROQ_WHISPER_MODEL defaults to whisper-large-v3 (whisper-large-v3-turbo is faster
