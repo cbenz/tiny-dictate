@@ -595,6 +595,24 @@ test_cancel() {
     check "session directory removed" session_dir_gone
 }
 
+test_chain_after_cancel() {
+    start_test "a new dictation starts before the cancelled verdict is over"
+    td start
+    sleep 0.3
+    td cancel
+    check "the pill shows the verdict" wait_for_event '^PRESENT state=cancelled'
+    # No waiting for the pill to leave: the next dictation asks for the microphone now.
+    td toggle 2> "$WORK/chain.err"
+    check "the new dictation is recording" [ "$(td status)" = "working" ]
+    check "no busy message" [ ! -s "$WORK/chain.err" ]
+    td cancel
+    check "session finishes" wait_idle
+    check "the cancelled recording is never transcribed" [ -z "$(pasted_text)" ]
+    check "no presentation left behind" presenter_left
+    check "no leftover process" no_leftover_process
+    check "session directory removed" session_dir_gone
+}
+
 test_cancel_during_transcription() {
     start_test "cancel while transcribing"
     TRANSCRIBE_SLEEP=1 td start
@@ -707,6 +725,7 @@ run_test test_no_transcribe_command
 run_test test_no_presenter
 run_test test_default_commands
 run_test test_cancel
+run_test test_chain_after_cancel
 run_test test_cancel_during_transcription
 run_test test_second_start_refused
 run_test test_toggle_during_transcription

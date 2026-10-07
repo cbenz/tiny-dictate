@@ -57,6 +57,9 @@ NOTIFY_APP_NAME="tiny-dictate"
 # How long a verdict stays on screen before the session takes the pill down. It is the
 # timeout the cancellation notification used to have.
 VERDICT_SECONDS=1
+# Set by the SIGUSR1 trap when a new dictation asks for the microphone while the verdict is still
+# on screen: the dwell is cut short rather than making the user wait for a screen they have read.
+VERDICT_INTERRUPTED=0
 notify_event() {
     local message="$1"
     local timeout="${2:-6000}"
@@ -86,10 +89,20 @@ cancelled() {
 }
 
 # Show the verdict for as long as a notification of it used to stay on screen. The pill is
-# already drawing it: this is the dwell, before the session takes it down.
+# already drawing it: this is the dwell, before the session takes it down. A new dictation cuts
+# it short with SIGUSR1 (see end_cancelled_session): the verdict has been read, what the user is
+# asking for is the microphone.
 show_verdict() {
+    local waited=0
+    local steps=$((VERDICT_SECONDS * 10))
+
     kill_from_pidfile "$ENCODER_PIDFILE" -TERM
-    sleep "$VERDICT_SECONDS"
+
+    while [ "$waited" -lt "$steps" ] && [ "$VERDICT_INTERRUPTED" -eq 0 ]; do
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+
     stop_presenter
 }
 
@@ -264,6 +277,13 @@ kill_from_pidfile() {
 claim_session() {
     mkdir "$SESSION_DIR" 2>/dev/null && return 0
 
+    # A cancelled session is only holding the claim to keep its verdict on screen. Ask it to
+    # wrap up instead of making the next dictation wait out a screen the user has read: a
+    # session that is transcribing is left alone, its text is not a courtesy.
+    if cancelled; then
+        end_cancelled_session
+    fi
+
     # A stale directory (session killed by a signal, crash…) can be reclaimed, but
     # never while a session or a recorder process is still alive.
     if session_active || recording_active; then
@@ -272,6 +292,27 @@ claim_session() {
 
     rm -rf "$SESSION_DIR"
     mkdir "$SESSION_DIR" 2>/dev/null
+}
+
+# End a cancelled session's dwell. The verdict has been drawn, the recorder is already stopped,
+# and the only thing left is a countdown: the session is asked to finish it now, drops its pill
+# and removes its own directory, and the claim is free for the next dictation. SIGUSR1 is that
+# "the user is asking for the microphone again" -- it is sent to a session that has already been
+# cancelled, never by `cancel` and never to a session that is recording or transcribing. The
+# wait is bounded, like every wait here: a wedged session is just reclaimed below.
+end_cancelled_session() {
+    local pid
+    local i
+
+    pid="$(cat "$SESSION_PIDFILE" 2>/dev/null)"
+    [ -n "$pid" ] || return 0
+
+    kill -USR1 "$pid" 2>/dev/null || return 0
+
+    for i in {1..40}; do
+        session_active || return 0
+        sleep 0.05
+    done
 }
 
 microphone_is_muted() {
@@ -335,6 +376,10 @@ session() {
     # This runs in a subshell: do not inherit the caller's EXIT trap.
     trap - EXIT
     trap session_cleanup EXIT
+
+    # A new dictation ends the cancelled verdict's dwell early; see show_verdict. Set before
+    # anything else, so the signal is never the default one, which kills the session.
+    trap 'VERDICT_INTERRUPTED=1' USR1
 
     # $BASHPID, not $$: inside a subshell $$ still expands to the pid of the
     # `tiny-dictate start` process, which exits right after forking us. The presenter
@@ -491,7 +536,7 @@ start() {
 stop() {
     if recording_active; then
         kill_from_pidfile "$RECORDER_PIDFILE" -INT
-    elif session_active; then
+    elif session_active && ! cancelled; then
         # No notification here: the session's pill already shows "Transcribing", and it
         # is the only writer of the screen.
         printf 'Transcription already in progress\n' >&2
@@ -526,9 +571,10 @@ cancel() {
 toggle() {
     if recording_active; then
         stop
-    elif session_active; then
+    elif session_active && ! cancelled; then
         printf 'Transcription already in progress\n' >&2
     else
+        # Nothing running, or only the cancelled verdict's dwell: start a new dictation.
         start
     fi
 }
