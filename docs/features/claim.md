@@ -25,7 +25,7 @@ the only writer of the screen.
 ## The command lock
 
 A command is not a dictation, and the claim does not cover it. `start`, `stop`, `cancel` and `toggle`
-each take a second, short-lived lock — a `command.lock` directory in the state directory — that is
+each take a second, short-lived lock — a `command.lock` directory in the runtime directory — that is
 released when the command exits, including on failure. Two shortcuts pressed at the same time cannot
 interleave their process handling.
 

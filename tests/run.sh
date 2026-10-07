@@ -924,6 +924,33 @@ test_second_start_refused() {
     check "no presentation left behind" presenter_left
 }
 
+# The command lock: `start`, `stop`, `cancel` and `toggle` take it for the duration of the command,
+# so two shortcuts pressed at once cannot interleave. A live owner refuses the next command; a lock
+# left behind by a dead one is reclaimed. `status` takes no lock.
+test_command_lock() {
+    start_test "the command lock refuses a second command and reclaims a stale one"
+    local lock="$RUN/tiny-dictate/command.lock"
+
+    # A live owner: the command is refused before the claim, and nothing of the dictation is touched.
+    mkdir -p "$RUN/tiny-dictate" "$lock"
+    printf '%s' "$$" > "$lock/pid"
+    td start 2> "$WORK/locked.err"
+    check "the refused command exits non-zero" [ "$?" -ne 0 ]
+    check "the refusal is notified" \
+        grep -q 'already handling another command' "$WORK/events.log"
+    check "nothing was claimed" [ ! -e "$RUN/tiny-dictate/session" ]
+    check "status is still idle" [ "$(td status)" = "idle" ]
+
+    # A stale lock: its owner is gone, so the next command removes it and takes it.
+    printf '%s' '999999999' > "$lock/pid"
+    td start
+    check "the stale lock is reclaimed and the dictation starts" [ "$(td status)" = "working" ]
+    check "the lock is released on the way out" [ ! -e "$lock" ]
+    td cancel
+    check "session finishes" wait_idle
+    check "no leftover process" no_leftover_process
+}
+
 test_toggle_during_transcription() {
     start_test "toggle while transcribing"
     TRANSCRIBE_SLEEP=1 td start
@@ -1735,6 +1762,7 @@ run_test test_cancel
 run_test test_chain_after_cancel
 run_test test_cancel_during_transcription
 run_test test_second_start_refused
+run_test test_command_lock
 run_test test_toggle_during_transcription
 run_test test_session_on_disk
 run_test test_session_raw_response

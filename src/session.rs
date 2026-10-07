@@ -150,6 +150,71 @@ impl Paths {
     }
 }
 
+/// The exclusive command lock: `start`, `stop`, `cancel` and `toggle` take it for the duration
+/// of the command, so two shortcuts pressed at once cannot interleave. `status` takes none.
+///
+/// The lock is the `command.lock` directory in the runtime directory, created with `mkdir`: the
+/// same atomicity the claim uses, with no window between the test and the take. It is released
+/// when the guard drops — the shell's `EXIT` trap, as far as it goes: a command killed by a
+/// signal leaves the directory behind, and the next one reclaims it once the pid it holds is gone.
+struct CommandLock {
+    directory: PathBuf,
+}
+
+impl CommandLock {
+    /// Take the lock, reclaiming a directory whose owner no longer lives. `None` when a live
+    /// command holds it.
+    fn take(runtime: &Runtime) -> Option<Self> {
+        let _ = fs::create_dir_all(runtime.directory());
+        let directory = runtime.directory().join("command.lock");
+
+        if Self::create(&directory) {
+            return Some(Self { directory });
+        }
+
+        // Only a readable, dead pid proves the lock stale: a directory whose owner file is not
+        // there yet may be another command between its `mkdir` and its write.
+        if pid_in(&directory.join("pid")).is_some_and(|pid| !process_alive(pid)) {
+            let _ = fs::remove_dir_all(&directory);
+            if Self::create(&directory) {
+                return Some(Self { directory });
+            }
+        }
+
+        None
+    }
+
+    /// `mkdir` the lock and record this process as its owner.
+    fn create(directory: &Path) -> bool {
+        if fs::create_dir(directory).is_err() {
+            return false;
+        }
+
+        // A pidfile that cannot be written still leaves a lock this process holds: the next
+        // command then waits for it rather than reclaiming a live one.
+        let _ = fs::write(directory.join("pid"), std::process::id().to_string());
+        true
+    }
+}
+
+impl Drop for CommandLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.directory);
+    }
+}
+
+/// Refuse a command while another one holds the lock: the notification says so, and the non-zero
+/// exit is what a shortcut needs to see that nothing happened.
+fn busy_with_another_command() -> ExitCode {
+    log::line(None, "failure: already handling another command");
+    text::notify(
+        "⏳ tiny-dictate is already handling another command",
+        1200,
+        "normal",
+    );
+    ExitCode::FAILURE
+}
+
 /// The durable id of the dictation in flight, as `start` published it in the runtime directory.
 ///
 /// `stop`, `cancel` and `toggle` are processes of their own: this file is how they can name the
@@ -207,8 +272,13 @@ pub fn signal_pidfile(pidfile: &Path, signal: libc::c_int) {
     }
 }
 
-/// `start`: claim the microphone, start the pipeline, fork the session process, exit.
+/// `start`: take the command lock, claim the microphone, start the pipeline, fork the session
+/// process, exit.
 pub fn start() -> ExitCode {
+    let Some(_lock) = CommandLock::take(&Runtime::from_env()) else {
+        return busy_with_another_command();
+    };
+
     start_command("start")
 }
 
@@ -510,8 +580,12 @@ fn unknown_session(target: &str) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// `stop`: signal the recorder, never the encoder, never the session.
+/// `stop`: take the command lock, then signal the recorder, never the encoder, never the session.
 pub fn stop() -> ExitCode {
+    let Some(_lock) = CommandLock::take(&Runtime::from_env()) else {
+        return busy_with_another_command();
+    };
+
     stop_command("stop")
 }
 
@@ -539,8 +613,18 @@ fn stop_command(command: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `cancel`: write the verdict, signal the recorder, never the session.
+/// `cancel`: take the command lock, then write the verdict and signal the recorder, never the
+/// session.
 pub fn cancel() -> ExitCode {
+    let Some(_lock) = CommandLock::take(&Runtime::from_env()) else {
+        return busy_with_another_command();
+    };
+
+    cancel_command()
+}
+
+/// The cancel path, under the lock its caller holds.
+fn cancel_command() -> ExitCode {
     let runtime = Runtime::from_env();
     let paths = runtime.paths();
 
@@ -575,8 +659,18 @@ pub fn cancel() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `toggle`: stop when recording, report a transcription in flight, start otherwise.
+/// `toggle`: take the command lock, then stop when recording, report a transcription in flight,
+/// start otherwise.
 pub fn toggle() -> ExitCode {
+    let Some(_lock) = CommandLock::take(&Runtime::from_env()) else {
+        return busy_with_another_command();
+    };
+
+    toggle_command()
+}
+
+/// The toggle path, under the lock its caller holds.
+fn toggle_command() -> ExitCode {
     let runtime = Runtime::from_env();
     let paths = runtime.paths();
 
