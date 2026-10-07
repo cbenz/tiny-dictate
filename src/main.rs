@@ -9,6 +9,7 @@ use std::process::ExitCode;
 mod audio;
 mod claim;
 mod cli;
+mod pill;
 mod presentation;
 mod session;
 mod text;

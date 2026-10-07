@@ -99,12 +99,22 @@ fn spawn(paths: &Paths) -> Option<Child> {
         .arg(own_pid)
         .arg(&paths.waveform)
         .arg(&self_command)
+        // The cairo renderer puts the window on screen in about a tenth of a second instead of a
+        // third: the one reason the pill is drawn by this binary. It is set on this child only,
+        // never by the pill for itself and never for the interactive modes.
+        .env("GSK_RENDERER", "cairo")
         .spawn()
         .ok()
 }
 
-/// `_present`: the pill itself. Ticket #8 draws it; until then the mode exists, so the session's
-/// default presenter is a valid command that costs the dictation nothing.
-pub fn present(_arguments: &[String]) -> ExitCode {
-    ExitCode::SUCCESS
+/// `_present`: the pill itself. The arguments are parsed here, so a wrong invocation fails
+/// without a display; everything past them is the GTK adapter.
+pub fn present(arguments: &[String]) -> ExitCode {
+    match crate::pill::Options::parse(arguments) {
+        Ok(options) => crate::pill::run(options),
+        Err(message) => {
+            eprintln!("{message}");
+            ExitCode::from(2)
+        }
+    }
 }
