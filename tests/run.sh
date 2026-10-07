@@ -121,7 +121,9 @@ if [ -n "${TRANSCRIBE_FAIL:-}" ]; then
     printf 'groq: Error code: 401 - invalid api key\n' >&2
     exit 1
 fi
-if [ -n "${TRANSCRIBE_RAW:-}" ]; then
+if [ -n "${TRANSCRIBE_RAW_TEXT:-}" ]; then
+    printf '%s' "$TRANSCRIBE_RAW_TEXT" > "${2:?}/transcript.raw.json"
+elif [ -n "${TRANSCRIBE_RAW:-}" ]; then
     printf '%s' '{"raw":"kept verbatim"}' > "${2:?}/transcript.raw.json"
 fi
 printf '%s' "${TRANSCRIBE_TEXT:-text transcribed}"
@@ -499,6 +501,14 @@ single_session_dir() {
     [ "$count" -eq 1 ] || return 1
     printf '%s/%s' "$(sessions_dir)" "$ids"
 }
+
+# How many sessions are kept: the count of directories under the sessions root.
+session_count() { ls -1 "$(sessions_dir)" 2>/dev/null | grep -c .; }
+
+# The newest and the oldest session id: the ids are timestamps, so sorting their names sorts
+# them in time, and the newest is the last.
+newest_session_id() { ls -1 "$(sessions_dir)" 2>/dev/null | sort | tail -1; }
+oldest_session_id() { ls -1 "$(sessions_dir)" 2>/dev/null | sort | head -1; }
 
 # One field of a session's metadata, raw JSON: `"transcribed"`, `true`, `null`, `1759855522.5`.
 metadata_value() { # metadata_value <session directory> <key>
@@ -888,6 +898,197 @@ test_session_cancelled_keeps_recording() {
     check "no leftover process" no_leftover_process
 }
 
+# ──────────────────── the rescue surface: history, transcribe, session delete ────────────────────
+
+# `history` lists the kept sessions newest first, and each line carries the id, the duration,
+# the outcome and the first words of the transcript or the error.
+test_history_lists_sessions_newest_first() {
+    start_test "history lists the sessions newest first with their fields"
+    # The first dictation fails at the transcriber, the second succeeds: both the transcript
+    # and the error are on the lines, each on its own session.
+    TRANSCRIBE_FAIL=1 td start
+    sleep 0.4
+    td stop
+    check "the failed session finishes" wait_idle
+
+    TRANSCRIBE_TEXT="second text" td start
+    sleep 0.4
+    td stop
+    check "the transcribed session finishes" wait_idle
+
+    check "both dictations left a session" [ "$(session_count)" -eq 2 ]
+
+    local newest oldest lines first last
+    newest="$(newest_session_id)"
+    oldest="$(oldest_session_id)"
+    lines="$(td history)"
+    check "history prints one line per session" [ "$(printf '%s\n' "$lines" | grep -c .)" -eq 2 ]
+    first="$(printf '%s\n' "$lines" | head -1)"
+    last="$(printf '%s\n' "$lines" | tail -1)"
+
+    check "the newest session is first" bash -c '[[ "$1" == "$2 "* ]]' _ "$first" "$newest"
+    check "the oldest session is last" bash -c '[[ "$1" == "$2 "* ]]' _ "$last" "$oldest"
+    check "the newest line carries its outcome" bash -c '[[ "$1" == *" transcribed "* ]]' _ "$first"
+    check "the newest line carries the first words of the transcript" bash -c '[[ "$1" == *" second text" ]]' _ "$first"
+    check "the newest line carries a duration" bash -c '[[ "$1" =~ [0-9]+\.[0-9]s ]]' _ "$first"
+    check "the oldest line carries its outcome" bash -c '[[ "$1" == *" failed "* ]]' _ "$last"
+    check "the oldest line carries the error" bash -c '[[ "$1" == *"groq: Error code: 401 - invalid api key" ]]' _ "$last"
+
+    # The failed session is what the rescue surface exists for: transcribe it again with the
+    # transcriber working, and the text lands in the session that had none.
+    TRANSCRIBE_TEXT="rescued text" td transcribe "$oldest" > /dev/null 2>&1
+    check "transcribing the failed session by id succeeds" [ "$?" -eq 0 ]
+    check "it now holds the text" [ "$(cat "$(sessions_dir)/$oldest/transcript.txt")" = "rescued text" ]
+    check "its outcome became transcribed" [ "$(metadata_value "$(sessions_dir)/$oldest" outcome)" = '"transcribed"' ]
+}
+
+# `transcribe last` re-runs the transcriber on the newest session, rewrites the transcript and
+# the raw response, copies the text to the clipboard and says so.
+test_transcribe_copies_and_rewrites() {
+    start_test "transcribe re-runs the transcriber, rewrites the session and copies the text"
+    TRANSCRIBE_TEXT="first text" TRANSCRIBE_RAW_TEXT='{"raw":"first"}' td start
+    sleep 0.4
+    td stop
+    check "session finishes" wait_idle
+
+    local dir id
+    dir="$(single_session_dir)"
+    id="$(basename "$dir")"
+    rm -f "$WORK/clipboard"
+
+    TRANSCRIBE_TEXT="second text" TRANSCRIBE_RAW_TEXT='{"raw":"second"}' \
+        td transcribe last 2> "$WORK/transcribe.err"
+    check "transcribe succeeds" [ "$?" -eq 0 ]
+    check "the transcript is overwritten" [ "$(cat "$dir/transcript.txt")" = "second text" ]
+    check "the raw response is overwritten" [ "$(cat "$dir/transcript.raw.json")" = '{"raw":"second"}' ]
+    check "the text is on the clipboard" [ "$(pasted_text)" = "second text" ]
+    check "the command says the text is on the clipboard" \
+        grep -q "^tiny-dictate: session $id: transcript copied to the clipboard$" "$WORK/transcribe.err"
+    check "the metadata says transcribed" [ "$(metadata_value "$dir" outcome)" = '"transcribed"' ]
+    check "no error is recorded" [ "$(metadata_value "$dir" error)" = "null" ]
+    check "the transcriber is recorded" [ "$(metadata_value "$dir" transcriber)" = "\"$BIN/transcribe\"" ]
+    check "no leftover process" no_leftover_process
+}
+
+# `transcribe --print` writes the text to standard output instead of the clipboard.
+test_transcribe_print() {
+    start_test "transcribe --print writes the text to stdout instead of the clipboard"
+    TRANSCRIBE_TEXT="first text" td start
+    sleep 0.4
+    td stop
+    check "session finishes" wait_idle
+
+    local dir out
+    dir="$(single_session_dir)"
+    rm -f "$WORK/clipboard"
+
+    out="$(TRANSCRIBE_TEXT="printed text" td transcribe last --print 2> "$WORK/print.err")"
+    check "the text is on stdout" [ "$out" = "printed text" ]
+    check "the transcript is rewritten" [ "$(cat "$dir/transcript.txt")" = "printed text" ]
+    check "nothing was copied to the clipboard" [ ! -e "$WORK/clipboard" ]
+    check "nothing claims the clipboard" bash -c '! grep -q clipboard "$1"' _ "$WORK/print.err"
+}
+
+# `session delete` removes exactly one session and leaves the others alone.
+test_session_delete_removes_one() {
+    start_test "session delete removes exactly one session"
+    TRANSCRIBE_TEXT="first text" td start
+    sleep 0.4
+    td stop
+    check "the first session finishes" wait_idle
+
+    local first_dir
+    first_dir="$(single_session_dir)"
+
+    TRANSCRIBE_TEXT="second text" td start
+    sleep 0.4
+    td stop
+    check "the second session finishes" wait_idle
+
+    check "two sessions were kept" [ "$(session_count)" -eq 2 ]
+    local newest
+    newest="$(newest_session_id)"
+    check "the newest is the second dictation" [ "$newest" != "$(basename "$first_dir")" ]
+
+    td session delete last 2> "$WORK/delete.err"
+    check "session delete succeeds" [ "$?" -eq 0 ]
+    check "one session is left" [ "$(session_count)" -eq 1 ]
+    check "the newest session is gone" [ ! -e "$(sessions_dir)/$newest" ]
+    check "the other session is untouched" test -d "$first_dir"
+    check "the deletion is logged without an id" \
+        grep -q '^tiny-dictate: session deleted$' "$WORK/delete.err"
+
+    # The id form deletes a named session, the way `last` deletes the newest.
+    td session delete "$(basename "$first_dir")" 2> "$WORK/delete-id.err"
+    check "deleting by id succeeds" [ "$?" -eq 0 ]
+    check "the sessions directory is empty" [ "$(session_count)" -eq 0 ]
+}
+
+# An unknown id is an error on stderr, exit non-zero, and nothing is removed or written.
+test_unknown_session_id() {
+    start_test "an unknown session id is reported and changes nothing"
+    TRANSCRIBE_TEXT="kept text" td start
+    sleep 0.4
+    td stop
+    check "session finishes" wait_idle
+
+    local dir
+    dir="$(single_session_dir)"
+
+    td transcribe does-not-exist 2> "$WORK/unknown-transcribe.err"
+    check "transcribe exits non-zero" [ "$?" -ne 0 ]
+    check "transcribe reports the unknown id" \
+        grep -q 'unknown session: does-not-exist' "$WORK/unknown-transcribe.err"
+
+    td session delete does-not-exist 2> "$WORK/unknown-delete.err"
+    check "session delete exits non-zero" [ "$?" -ne 0 ]
+    check "session delete reports the unknown id" \
+        grep -q 'unknown session: does-not-exist' "$WORK/unknown-delete.err"
+
+    check "the session is still there" test -d "$dir"
+    check "the transcript is untouched" [ "$(cat "$dir/transcript.txt")" = "kept text" ]
+}
+
+# `history` and `transcribe` need neither the encoder nor the clipboard tools: the dependency
+# checks live in the commands that use them, so the rescue surface runs on a bare machine.
+test_rescue_without_encoder_or_clipboard() {
+    start_test "history and transcribe run without the encoder or the clipboard tools"
+    TRANSCRIBE_TEXT="rescued text" td start
+    sleep 0.4
+    td stop
+    check "session finishes" wait_idle
+
+    # A PATH with what the stubs themselves need, and none of the tools a dictation uses.
+    local bare="$WORK/bare-bin" tool path
+    rm -rf "$bare"
+    mkdir -p "$bare"
+    for tool in bash env cp wc sleep cat dd tee date stat awk grep sed ls; do
+        path="$(command -v "$tool")" && ln -sf "$path" "$bare/$tool"
+    done
+
+    check "the bare PATH has no arecord" bash -c '! PATH="$1" command -v arecord >/dev/null 2>&1' _ "$bare"
+    check "the bare PATH has no lame" bash -c '! PATH="$1" command -v lame >/dev/null 2>&1' _ "$bare"
+    check "the bare PATH has no wl-copy" bash -c '! PATH="$1" command -v wl-copy >/dev/null 2>&1' _ "$bare"
+    check "the bare PATH has no ydotool" bash -c '! PATH="$1" command -v ydotool >/dev/null 2>&1' _ "$bare"
+
+    local bare_env=(PATH="$bare" TINY_DICTATE_TRANSCRIBE="$BIN/transcribe" TRANSCRIBE_TEXT="rescued text" \
+        XDG_RUNTIME_DIR="$RUN" HOME="$HOME_DIR")
+    local out
+
+    out="$(env "${bare_env[@]}" "$SCRIPT" history)"
+    check "history runs without the tools" [ "$(printf '%s\n' "$out" | grep -c .)" -eq 1 ]
+    check "history still shows the transcript" bash -c '[[ "$1" == *"rescued text" ]]' _ "$out"
+
+    out="$(env "${bare_env[@]}" "$SCRIPT" transcribe last --print)"
+    check "transcribe --print runs without the tools" [ "$out" = "rescued text" ]
+
+    out="$(env "${bare_env[@]}" "$SCRIPT" status)"
+    check "status runs without the tools" [ "$out" = "idle" ]
+
+    env "${bare_env[@]}" "$SCRIPT" help > "$WORK/bare-help.out"
+    check "help runs without the tools" grep -q 'Usage: tiny-dictate' "$WORK/bare-help.out"
+}
+
 # The reported bug: `start` wrote the recorder PID from a subshell that raced with
 # the worker, so the worker could believe recording was over and transcribe an empty
 # file. Run the same scenario many times and count the failures.
@@ -970,6 +1171,12 @@ run_test test_session_transcriber_writes_nothing
 run_test test_session_recording_killed
 run_test test_session_audio_survives_kill
 run_test test_session_cancelled_keeps_recording
+run_test test_history_lists_sessions_newest_first
+run_test test_transcribe_copies_and_rewrites
+run_test test_transcribe_print
+run_test test_session_delete_removes_one
+run_test test_unknown_session_id
+run_test test_rescue_without_encoder_or_clipboard
 run_test test_race_loop
 if [ -n "$OLD_SCRIPT" ] && [ -z "$ONLY" ]; then
     test_race_loop_old

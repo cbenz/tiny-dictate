@@ -11,7 +11,7 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// The outcome vocabulary, shared with the state the pill draws.
 pub const RECORDING: &str = "recording";
@@ -45,6 +45,25 @@ pub struct Metadata {
 }
 
 impl Metadata {
+    /// Read back the metadata the tool wrote. A missing or unparsable field is `None`: a reader
+    /// shows what it can rather than refusing a directory a human edited.
+    pub fn from_json(json: &str) -> Option<Self> {
+        Some(Self {
+            id: json_field(json, "id").and_then(json_decode_string)?,
+            started: json_field(json, "started").and_then(json_number)?,
+            ended: json_field(json, "ended").and_then(json_number),
+            duration: json_field(json, "duration").and_then(json_number),
+            audio_bytes: json_field(json, "audio_bytes")
+                .and_then(json_number)
+                .map(|bytes| bytes.max(0.0) as u64)
+                .unwrap_or(0),
+            outcome: json_field(json, "outcome").and_then(json_decode_string)?,
+            pasted: json_field(json, "pasted") == Some("true"),
+            transcriber: json_field(json, "transcriber").and_then(json_decode_string),
+            error: json_field(json, "error").and_then(json_decode_string),
+        })
+    }
+
     /// The metadata as JSON, one field per line: a reader never has to guess the shape.
     fn to_json(&self) -> String {
         let id = json_string(&self.id);
@@ -114,6 +133,22 @@ impl Session {
         Self::new(id.to_owned(), sessions.join(id), transcriber, started_at)
     }
 
+    /// Read a kept session back from disk, metadata included: the durable trace is the file,
+    /// not what a fresh process could reconstruct.
+    pub fn load(sessions: &Path, id: &str) -> Option<Self> {
+        let directory = sessions.join(id);
+        let json = fs::read_to_string(directory.join(METADATA_FILE)).ok()?;
+        let metadata = Metadata::from_json(&json)?;
+        let started_at = UNIX_EPOCH + Duration::from_secs_f64(metadata.started.max(0.0));
+
+        Some(Self {
+            id: metadata.id.clone(),
+            directory,
+            started_at,
+            metadata,
+        })
+    }
+
     fn new(
         id: String,
         directory: PathBuf,
@@ -170,6 +205,140 @@ impl Session {
         fs::write(&temporary, self.metadata.to_json())?;
         fs::rename(&temporary, &path)
     }
+}
+
+/// The kept session ids, newest first: the directory names, which are start timestamps, sorted
+/// descending. A symlink or a plain file under the sessions root is not a session.
+pub fn session_ids(sessions: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(sessions) else {
+        return Vec::new();
+    };
+
+    let mut ids: Vec<String> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    ids.sort_unstable_by(|left, right| right.cmp(left));
+    ids
+}
+
+/// The id a `<id|last>` argument names, or `None` when no kept session answers to it. `last` is
+/// the newest session; anything else must be one of the ids on disk, so a path can never name a
+/// session that is not one.
+pub fn resolve_id(sessions: &Path, target: &str) -> Option<String> {
+    let ids = session_ids(sessions);
+    if target == "last" {
+        return ids.into_iter().next();
+    }
+
+    ids.into_iter().find(|id| id == target)
+}
+
+/// The first words of a transcript, or of an error, on a history line.
+pub fn first_words(text: &str, limit: usize) -> String {
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() <= limit {
+        return collapsed;
+    }
+
+    // Take `limit` characters; when the cut would land inside a word, back up to the end of the
+    // last complete one, so a history line never ends in half a word.
+    let end = collapsed
+        .char_indices()
+        .nth(limit)
+        .map_or(collapsed.len(), |(index, _)| index);
+    let cut = if collapsed[end..].starts_with(' ') {
+        end
+    } else {
+        collapsed[..end].rfind(' ').unwrap_or(end)
+    };
+
+    format!("{}…", &collapsed[..cut])
+}
+
+/// The raw value of a top-level key in the metadata JSON. The tool writes one field per line and
+/// is the only writer, but the key is matched wherever it appears and whatever follows it, so a
+/// reformatted file still reads.
+fn json_field<'a>(json: &'a str, key: &str) -> Option<&'a str> {
+    let needle = format!("\"{key}\"");
+    let mut from = 0;
+
+    while let Some(offset) = json[from..].find(&needle) {
+        let index = from + offset;
+        let previous = json[..index].chars().next_back();
+        // A key is a JSON object member: it follows `{`, `,` or whitespace. Anything else is a
+        // key name that happens to live inside a string value, which is not what is meant.
+        if matches!(
+            previous,
+            None | Some('{') | Some(',') | Some(' ') | Some('\n') | Some('\r') | Some('\t')
+        ) && let Some(rest) = json[index + needle.len()..].trim_start().strip_prefix(':')
+        {
+            return Some(json_token(rest.trim_start()));
+        }
+        from = index + needle.len();
+    }
+
+    None
+}
+
+/// The value token at the start of `text`: a quoted string with its quotes, or the run of
+/// characters up to the next structural one.
+fn json_token(text: &str) -> &str {
+    let mut characters = text.char_indices();
+
+    if let Some((_, '"')) = characters.next() {
+        let mut escaped = false;
+        for (index, character) in characters {
+            match character {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => return &text[..index + 1],
+                _ => {}
+            }
+        }
+        return text;
+    }
+
+    let end = text.find([',', '}', '\n']).unwrap_or(text.len());
+    text[..end].trim_end()
+}
+
+/// Decode a JSON string token, or `None` when it is not one.
+fn json_decode_string(token: &str) -> Option<String> {
+    let inner = token.strip_prefix('"')?.strip_suffix('"')?;
+    let mut out = String::with_capacity(inner.len());
+    let mut characters = inner.chars();
+
+    while let Some(character) = characters.next() {
+        if character != '\\' {
+            out.push(character);
+            continue;
+        }
+
+        match characters.next()? {
+            '"' => out.push('"'),
+            '\\' => out.push('\\'),
+            '/' => out.push('/'),
+            'b' => out.push('\u{8}'),
+            'f' => out.push('\u{c}'),
+            'n' => out.push('\n'),
+            'r' => out.push('\r'),
+            't' => out.push('\t'),
+            'u' => {
+                let hex: String = characters.by_ref().take(4).collect();
+                out.push(char::from_u32(u32::from_str_radix(&hex, 16).ok()?)?);
+            }
+            other => out.push(other),
+        }
+    }
+
+    Some(out)
+}
+
+/// A JSON number, or `None` when the token is `null` or anything else.
+fn json_number(token: &str) -> Option<f64> {
+    token.trim().parse::<f64>().ok()
 }
 
 /// The local start timestamp an id is made of: `2026-10-07T19-05-22`, sortable newest last.
@@ -235,4 +404,89 @@ fn json_string(value: &str) -> String {
 
     out.push('"');
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn metadata_survives_a_write_and_a_read_back() {
+        let metadata = Metadata {
+            id: "2026-10-07T19-05-22".to_owned(),
+            started: 1759855522.12,
+            ended: Some(1759855601.45),
+            duration: Some(79.33),
+            audio_bytes: 365_720,
+            outcome: TRANSCRIBED.to_owned(),
+            pasted: true,
+            transcriber: Some("/home/me/.local/bin/tiny-dictate-transcribe".to_owned()),
+            error: None,
+        };
+
+        let parsed = Metadata::from_json(&metadata.to_json()).expect("the metadata reads back");
+
+        assert_eq!(parsed.id, metadata.id);
+        assert_eq!(parsed.started, metadata.started);
+        assert_eq!(parsed.ended, metadata.ended);
+        assert_eq!(parsed.duration, metadata.duration);
+        assert_eq!(parsed.audio_bytes, metadata.audio_bytes);
+        assert_eq!(parsed.outcome, metadata.outcome);
+        assert!(parsed.pasted);
+        assert_eq!(parsed.transcriber, metadata.transcriber);
+        assert_eq!(parsed.error, None);
+    }
+
+    #[test]
+    fn an_error_with_quotes_and_newlines_reads_back_verbatim() {
+        let metadata = Metadata {
+            id: "2026-10-07T19-05-22".to_owned(),
+            started: 0.0,
+            ended: None,
+            duration: None,
+            audio_bytes: 0,
+            outcome: FAILED.to_owned(),
+            pasted: false,
+            transcriber: None,
+            error: Some("groq: \"invalid\" key\nretry".to_owned()),
+        };
+
+        let parsed = Metadata::from_json(&metadata.to_json()).expect("the metadata reads back");
+
+        assert_eq!(
+            parsed.error.as_deref(),
+            Some("groq: \"invalid\" key\nretry")
+        );
+        assert_eq!(parsed.ended, None);
+        assert_eq!(parsed.transcriber, None);
+    }
+
+    #[test]
+    fn first_words_flattens_and_cuts_on_a_word_boundary() {
+        assert_eq!(first_words("  hello\n\tworld ", 60), "hello world");
+        assert_eq!(first_words("one two three", 7), "one two…");
+        assert_eq!(first_words("one two three", 13), "one two three");
+    }
+
+    #[test]
+    fn a_session_id_resolves_to_the_newest_or_an_exact_name() {
+        let root = std::env::temp_dir().join(format!("td-store-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("2026-10-07T19-05-22")).expect("a session directory");
+        fs::create_dir_all(root.join("2026-10-07T19-06-00")).expect("a session directory");
+
+        assert_eq!(session_ids(&root)[0], "2026-10-07T19-06-00");
+        assert_eq!(
+            resolve_id(&root, "last").as_deref(),
+            Some("2026-10-07T19-06-00")
+        );
+        assert_eq!(
+            resolve_id(&root, "2026-10-07T19-05-22").as_deref(),
+            Some("2026-10-07T19-05-22")
+        );
+        assert_eq!(resolve_id(&root, "nope"), None);
+        assert_eq!(resolve_id(&root, "../escape"), None);
+
+        let _ = fs::remove_dir_all(&root);
+    }
 }

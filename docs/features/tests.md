@@ -65,6 +65,14 @@ presenter was asked to draw, the lifecycle of the processes, the exit codes.
 - cancel while transcribing, and the text being dropped
 - a second start refused while recording
 - toggle while transcribing
+- `history` lists the sessions newest first, with the id, the duration, the outcome and the first
+  words of the transcript or the error
+- `transcribe last` re-runs the transcriber, rewrites the transcript and the raw response, and
+  copies the text to the clipboard, saying so
+- `transcribe --print` writes the text to stdout and touches no clipboard
+- `session delete` removes exactly one session and leaves the others
+- an unknown id is reported and removes or writes nothing
+- `history` and `transcribe` run with the encoder and the clipboard tools removed from `PATH`
 - the recorder race run `RACE_ITERATIONS` times, optionally against another implementation
 
 ## The suite is the port's acceptance criterion
@@ -73,16 +81,18 @@ The suite stays green and unchanged from before the port to Rust to after it, th
 the place of the script. It is the safety net that makes the port boring, and it is why the tests are
 not to be rewritten in Rust.
 
-Two things the process seam cannot see are planned as focused Rust unit tests: the prune selection (a
-list of sessions in, the ones to remove out) and the pill's frame computation (state, waveform, limit
-and elapsed time in, what to draw out, including the three bands of the progress bar). Both are pure
-functions. Nothing else is unit-tested: the rest is observable from outside, and the fewer seams
-across the codebase the better.
+The process seam is the primary one: the states written to the state file, the events the presenter
+was asked to draw, the lifecycle of the processes and the exit codes are all observable there. A few
+pure functions the seam cannot see are unit-tested instead: the pill's frame computation (state,
+waveform, limit and elapsed time in, what to draw out, including the three bands of the progress
+bar), and, for the rescue surface, reading the metadata back, resolving a `<id|last>` argument and
+cutting a history summary on a word boundary. The prune selection is planned for its own slice.
 
 ## Decisions
 
 - [ADR-0001: one Rust binary](../adr/0001-single-rust-binary.md) is the port this suite is the
   acceptance criterion for.
 - [ADR-0005: prune](../adr/0005-prune.md) and
-  [ADR-0006: the limit and the bar](../adr/0006-the-limit-and-the-bar.md) are the two pure functions
-  the port unit-tests; everything else stays observable through this suite.
+  [ADR-0006: the limit and the bar](../adr/0006-the-limit-and-the-bar.md) keep the pure functions —
+  the prune selection and the pill's frame computation — out of the process seam, where the rescue
+  surface's summary cutting and metadata read-back also live.

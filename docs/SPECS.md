@@ -32,11 +32,14 @@ partials that get revised, key injection while speaking), not an extension of th
 Usage: tiny-dictate <command>
 
 Commands:
-  start   Start recording
-  stop    Stop recording and transcribe
-  cancel  Cancel recording
-  toggle  Start if idle, stop if recording
-  status  Show status (idle or working)
+  start                           Start recording
+  stop                            Stop recording and transcribe
+  cancel                          Cancel recording
+  toggle                          Start if idle, stop if recording
+  status                          Show status (idle or working)
+  history                         List the kept sessions, newest first
+  transcribe <id|last> [--print]  Transcribe a session again, to the clipboard or to stdout
+  session delete <id|last>        Remove exactly one session
 ```
 
 `status` queries only: it never perturbs a live session. It prints `idle` or `working`, and the
@@ -45,6 +48,12 @@ Commands:
 At most one command is accepted per invocation; an unknown argument prints the usage and exits
 non-zero. `start`, `stop`, `cancel` and `toggle` take an exclusive command lock for the duration of
 the command, so two shortcuts pressed at once cannot interleave. `status` takes no lock.
+
+The rescue surface reads the kept [sessions](features/sessions.md): `history` lists them,
+`transcribe` runs the transcriber again on one, and `session delete` is the only verb that destroys
+one. Each of them is given an id, with `last` meaning the newest session. Dependency checks live in
+the commands that need them, so `history` and `transcribe` run on a machine without the encoder or
+the clipboard tools.
 
 ## Plugins
 

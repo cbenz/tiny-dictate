@@ -32,6 +32,9 @@ nothing is submitted. When the injection fails, the session notifies `❌ Could 
 transcription` with critical urgency; the text is still on both selections, so it can be pasted by
 hand.
 
+`transcribe` writes through the same path: it offers the rescued text on both selections and says so
+on stderr, or writes it to stdout with `--print`, which touches no clipboard at all.
+
 ## Decisions
 
 - [ADR-0007: the clipboard lease](../adr/0007-the-clipboard-lease.md) keeps the transcript on the

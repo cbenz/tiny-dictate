@@ -37,6 +37,34 @@ recording, so a session left on `recording` is one that died mid-recording. `out
 terminal words. `pasted` says whether the text reached the focused window. `transcriber` is the
 resolved command, and `error` is the failure on one line, or `null`.
 
+## The rescue surface
+
+Three commands read and write the sessions directory, and none of them touches the microphone, the
+encoder or the pill:
+
+- `tiny-dictate history` lists the kept sessions, newest first, one line per session:
+
+  ```text
+  <id>  <duration>  <outcome>  <summary>
+  ```
+
+  the duration in seconds with one decimal, `-` when the session died mid-recording; the outcome in
+the vocabulary above; and the summary, which is the error when there is one, else the first words of
+the transcript, else `-`. The line is plain text on stdout, and `history` reads nothing but the
+sessions directory.
+- `tiny-dictate transcribe <id|last> [--print]` runs the transcriber command again on the session's
+  `audio.mp3`, with the same contract a live dictation uses: `$1` the audio, `$2` the session
+directory, the text on stdout, the error on stderr. It rewrites `transcript.txt` and the session's
+metadata (`outcome`, `error`, `transcriber`), and a transcriber that writes `transcript.raw.json`
+overwrites the previous one -- that file is the transcriber's, the core never rewrites its bytes. By
+default it offers the text on the clipboard, through the same write path a normal dictation uses,
+and says so on stderr; `--print` writes it to stdout instead, and needs no clipboard tool at all.
+- `tiny-dictate session delete <id|last>` removes exactly one session directory. It is the only verb
+  that destroys a recording; cancelling never does.
+
+`last` is the newest session. An id that no kept session answers to is reported on stderr, exits
+non-zero, and removes or writes nothing.
+
 ## What survives
 
 The recording, the transcript, the raw response and the metadata survive the session process:
@@ -45,9 +73,15 @@ channel and the state file stay. A crash, a `kill` or a power loss costs at most
 has not flushed yet, and leaves a session that can still be transcribed later.
 
 Cancelling keeps the recording and marks the session `cancelled`; it is never transcribed or
-pasted. Destroying a session is a separate verb, and only a deliberate one removes it.
+pasted. Destroying a session is a separate verb, and only a deliberate one removes it. A session
+that already has a transcript can be transcribed again: the new transcript and the new raw response
+replace the old ones.
 
 ## Decisions
 
 - [ADR-0003: sessions on disk](../adr/0003-sessions-on-disk.md) keeps the recording instead of
   removing it on the way out.
+- [ADR-0004: cancelling versus destroying](../adr/0004-cancelling-versus-destroying.md) makes
+  `session delete` the only verb that destroys a session.
+- [ADR-0011: the command line](../adr/0011-command-line.md) adds `history`, `transcribe` and
+  `session delete`, and moves the dependency checks into the commands that need them.
