@@ -63,6 +63,6 @@ pub fn parse(arguments: &[String]) -> Result<Command, Error> {
         parsed = Some(command);
     }
 
-    // Invoked with no verb, the tool shows its usage and succeeds, as `src/tiny-dictate` does.
+    // Invoked with no verb, the tool shows its usage and succeeds.
     Ok(parsed.unwrap_or(Command::Help))
 }

@@ -39,9 +39,8 @@ extern "C" fn interrupt_verdict(_signal: libc::c_int) {
 /// directory the session owns, the pidfiles the commands read liveness from, the fifo, the
 /// waveform channel and the state file the pill draws.
 ///
-/// The location follows the convention `src/tiny-dictate` documents:
-/// `$XDG_RUNTIME_DIR`, falling back to `$XDG_STATE_HOME`, falling back to
-/// `$HOME/.local/state`, then `tiny-dictate/`.
+/// The location is the documented one: `$XDG_RUNTIME_DIR`, falling back to
+/// `$XDG_STATE_HOME`, falling back to `$HOME/.local/state`, then `tiny-dictate/`.
 pub struct Runtime {
     directory: PathBuf,
 }
