@@ -133,7 +133,7 @@ cat > "$BIN/present" <<'STUB'
 state_file="$1"
 owner="$2"
 waveform_file="$3"
-printf 'PRESENT start owner=%s file=%s waveform=%s caller=%s\n' "$owner" "$state_file" "$waveform_file" "$PPID" >> "$WORK/events.log"
+printf 'PRESENT start owner=%s file=%s waveform=%s caller=%s command=%s\n' "$owner" "$state_file" "$waveform_file" "$PPID" "${4:-}" >> "$WORK/events.log"
 state=""
 while :; do
     if ! current="$(cat "$state_file" 2>/dev/null)"; then
@@ -341,6 +341,12 @@ presenter_got_waveform_file() {
     grep -q "^PRESENT start .*waveform=$(waveform_file) " "$WORK/events.log"
 }
 
+# The pill is handed the command that re-invokes the tool as $4, so the buttons it draws (the cross
+# and the check of the reference presenter) end a dictation through the path the keyboard uses.
+presenter_got_command() {
+    grep -q "^PRESENT start .*command=$(readlink -f "$SCRIPT")$" "$WORK/events.log"
+}
+
 # The recorder the core recorded, checked for liveness: the waveform channel is beside the voice
 # path, so nothing that happens in it may end a recording that is still going on.
 recorder_alive() {
@@ -471,6 +477,7 @@ test_waveform_channel() {
     td start
     sleep 0.4
     check "the pill is given the waveform file" presenter_got_waveform_file
+    check "the pill is given the command to run" presenter_got_command
     check "the waveform file is a series of slices" waveform_file_is_a_slice_series
     td stop
     check "session finishes" wait_idle

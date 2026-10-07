@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Layer-shell pill showing what tiny-dictate is doing.
 
-Usage: layer-shell <state-file> <owner-pid> [waveform-file]
+Usage: layer-shell <state-file> <owner-pid> [waveform-file] [command]
 
 Draws one pill anchored to the bottom of the screen and reads the state file on
 every tick. It exits when the state file disappears, when it holds "stop", or when
@@ -16,6 +16,15 @@ rather than a history that scrolls. It normalizes each window against the level
 of the voice around it, because the shape of the voice is what it is there to
 show. An unreadable channel is not an error: the spinner stands in.
 
+The pill ends on two buttons: a cross on the left cancels the dictation, a check
+on the right stops it and transcribes it. The presenter is given the command that
+re-invokes the tool as its fourth argument and runs it -- cancel, stop -- so
+clicking with the mouse does what the keyboard does: the session still writes the
+verdict and still stops the recorder. Each button is drawn only where it means
+something: the cross while the dictation is live (recording and transcribing, the
+two states where cancelling drops something), the check only while recording.
+Neither is drawn by a presenter given no command.
+
 The waveform is white, and TINY_DICTATE_PRESENT_COLOR takes any #rgb or #rrggbb
 the user's theme is written in.
 
@@ -27,6 +36,7 @@ from __future__ import annotations
 
 import glob
 import os
+import subprocess
 import sys
 
 
@@ -135,13 +145,26 @@ window { background-color: transparent; }
     background-color: rgba(24, 24, 27, 0.88);
     border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 999px;
-    padding: 8px 18px;
+    padding: 5px 7px;
 }
 .pill label { color: #fafafa; font-size: 14px; }
 .spinner { font-family: monospace; font-size: 16px; }
 .pill.recording .spinner { color: %(waveform)s; }
 .pill.transcribing .spinner { color: #fbbf24; }
 .pill.cancelled label { color: #d4d4d8; }
+/* The theme's button, minus the box: a glyph in a circle, nested in the end of the pill. */
+.pill .action {
+    min-width: 26px;
+    min-height: 26px;
+    padding: 0;
+    border: none;
+    border-radius: 999px;
+    background: none;
+    box-shadow: none;
+    color: #a1a1aa;
+    font-size: 13px;
+}
+.pill .action:hover { color: #fafafa; background-color: rgba(255, 255, 255, 0.14); }
 """
 
 
@@ -186,10 +209,12 @@ def configured_color() -> tuple[float, float, float]:
 
 
 class Pill:
-    def __init__(self, state_file: str, owner_pid: int, waveform_file: str) -> None:
+    def __init__(self, state_file: str, owner_pid: int, waveform_file: str,
+                 command: str = "") -> None:
         self.state_file = state_file
         self.owner_pid = owner_pid
         self.waveform_file = waveform_file
+        self.command = command
         self.state = ""
         self.frame = 0
         self.waveform: list[tuple[int, int]] = [(0, 0)] * SLICES
@@ -223,9 +248,13 @@ class Pill:
         self.meter.set_visible(False)
         self.label = Gtk.Label(label="")
         self.label.set_visible(False)
+        self.cancel = self._action("✕", "cancel")
+        self.confirm = self._action("✓", "stop")
+        self.pill.append(self.cancel)
         self.pill.append(self.spinner)
         self.pill.append(self.meter)
         self.pill.append(self.label)
+        self.pill.append(self.confirm)
         self.window.set_child(self.pill)
 
         self._load_css()
@@ -351,10 +380,45 @@ class Pill:
         live = STATES.get(self.state, ("", False))[1]
         self.meter.set_visible(drawn)
         self.spinner.set_visible(not drawn and live)
+        # One button per function, drawn only where the function means something: cancelling drops
+        # the recording or the transcript, so it is offered in both live states, while stopping has
+        # nothing left to do once the transcription is running.
+        self.cancel.set_visible(live and bool(self.command))
+        self.confirm.set_visible(self.state == "recording" and bool(self.command))
         if drawn:
             self.meter.queue_draw()
 
         return GLib.SOURCE_CONTINUE
+
+    def _action(self, glyph: str, verb: str) -> Gtk.Button:
+        """One end of the pill: a glyph that runs the tool with the given verb on click."""
+        button = Gtk.Button(label=glyph)
+        button.add_css_class("action")
+        button.set_valign(Gtk.Align.CENTER)
+        button.set_visible(False)
+        button.connect("clicked", lambda _button: self._run(verb))
+        return button
+
+    def _run(self, verb: str) -> None:
+        """Ask for the tool's `verb`, as a keyboard shortcut would ask for it.
+
+        Writing a verdict here would not do anything -- the recorder is stopped by the command,
+        not by the state -- so the state file stays the session's alone. The command is detached
+        from the pill: leaving the screen must not take it down.
+        """
+        if not self.command:
+            return
+
+        try:
+            subprocess.Popen(
+                [self.command, verb],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError as error:
+            print(f"cannot run {self.command} {verb}: {error}", file=sys.stderr)
 
     def run(self) -> None:
         self.loop.run()
@@ -369,12 +433,13 @@ def main() -> int:
         print("layer-shell is not supported by this compositor", file=sys.stderr)
         return 1
 
-    if len(sys.argv) not in (3, 4):
+    if len(sys.argv) not in (3, 4, 5):
         print(__doc__.strip(), file=sys.stderr)
         return 2
 
-    waveform_file = sys.argv[3] if len(sys.argv) == 4 else ""
-    Pill(sys.argv[1], int(sys.argv[2]), waveform_file).run()
+    waveform_file = sys.argv[3] if len(sys.argv) >= 4 else ""
+    command = sys.argv[4] if len(sys.argv) == 5 else ""
+    Pill(sys.argv[1], int(sys.argv[2]), waveform_file, command).run()
     return 0
 
 

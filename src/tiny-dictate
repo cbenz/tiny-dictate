@@ -96,9 +96,17 @@ show_verdict() {
 # One presenter per dictation, never replaced: changing state is a write to the file it
 # watches. The session is the only writer of that file, so the presenter is the only writer
 # of the screen, and no frame of it can land after it is gone.
+#
+# The presenter is handed the command that re-invokes this tool as a fourth argument, so a pill
+# that offers a cancel affordance (a button, a swipe, a click) can ask for what the keyboard
+# shortcut asks for. It is given the command rather than left to guess it, and it runs it rather
+# than writing the verdict into the state file: the session owns that file, and a verdict on its
+# own would leave the recorder running. Resolved to its real path, so the command works wherever
+# the presenter is started from, including a symlink on PATH.
+SELF_COMMAND="$(readlink -f "$0")"
 start_presenter() {
     write_presenter_state "$1"
-    "$PRESENTER" "$PRESENTER_STATE_FILE" "$BASHPID" "$WAVEFORM_FILE" &
+    "$PRESENTER" "$PRESENTER_STATE_FILE" "$BASHPID" "$WAVEFORM_FILE" "$SELF_COMMAND" &
     PRESENTER_PID=$!
 }
 
