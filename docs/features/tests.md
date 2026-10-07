@@ -66,6 +66,9 @@ presenter was asked to draw, the lifecycle of the processes, the exit codes.
 - a second start refused while recording
 - toggle while transcribing
 - the recorder race run `RACE_ITERATIONS` times, optionally against another implementation
+- the journal: one line per stage of a dictation, each line carrying the session id it concerns and
+  none when it concerns no session, the failure line agreeing with the metadata and the
+  notification, and the encoder's and the recorder's chatter kept out
 
 ## The suite is the port's acceptance criterion
 

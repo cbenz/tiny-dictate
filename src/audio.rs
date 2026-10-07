@@ -13,6 +13,7 @@ use std::os::unix::io::FromRawFd;
 use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 
+use crate::journal;
 use crate::session::{Paths, self_executable};
 
 /// One slice is 64 S16_LE samples, 4 ms of mono audio at 16 kHz.
@@ -126,8 +127,12 @@ pub fn create_fifo(path: &Path) -> io::Result<()> {
 /// The encoder reads the fifo and writes the durable `audio.mp3` from the first frame; the
 /// pump copies the recorder's stdout into that fifo and into the waveform channel. Both pids
 /// are recorded here, synchronously, so the session can wait on them without a race.
-pub fn start_pipeline(paths: &Paths, audio: &Path) -> io::Result<()> {
-    let reader = open_fifo_reader(&paths.fifo)?;
+///
+/// Neither collaborator's own output reaches the journal: the recorder's stderr goes to
+/// `arecord.err` and the encoder's to `lame.err`, the files the failure path reads, and the
+/// encoder's stdout — it writes nothing there when it is given an output file — is dropped.
+pub fn start_pipeline(paths: &Paths, audio: &Path, session_id: &str) -> io::Result<()> {
+    let reader = open_fifo(&paths.fifo, libc::O_RDONLY)?;
     let encoder = Command::new("lame")
         .args([
             "-r",
@@ -145,17 +150,21 @@ pub fn start_pipeline(paths: &Paths, audio: &Path) -> io::Result<()> {
         .args(["-S", "-"])
         .arg(audio)
         .stdin(Stdio::from(reader))
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(fs::File::create(&paths.encoder_error)?))
         .spawn()?;
     fs::write(&paths.encoder_pid, encoder.id().to_string())?;
 
     fs::File::create(&paths.waveform)?;
 
     // The pump outlives `start`, so it is a process of its own; it is handed the fifo path in
-    // its argv, which is what the suite's leftover check looks for.
+    // its argv, which is what the suite's leftover check looks for, and the session id, so a
+    // failure it logs names the dictation it belongs to.
     let mut pump = Command::new(self_executable())
         .arg("_pump")
         .arg(&paths.fifo)
         .arg(&paths.waveform)
+        .arg(session_id)
         .stdin(Stdio::piped())
         .spawn()?;
     let pump_stdin = pump
@@ -180,17 +189,30 @@ pub fn pump(arguments: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     };
 
+    // The session id is optional: an absent or empty argument is a pump that cannot name the
+    // dictation it belongs to, and a failure line without an id is better than no line.
+    let session_id = arguments
+        .get(2)
+        .map(String::as_str)
+        .filter(|id| !id.is_empty());
+
     if let Err(error) = run_pump(Path::new(fifo), Path::new(waveform)) {
-        eprintln!("tiny-dictate: the waveform pump stopped: {error}");
+        journal::log(
+            session_id,
+            &format!("failure: the waveform pump stopped: {error}"),
+        );
     }
 
     ExitCode::SUCCESS
 }
 
 fn run_pump(fifo: &Path, waveform: &Path) -> io::Result<()> {
-    // Opening for writing blocks until the encoder has the read end, exactly as the shell's
-    // `tee` does; the recorder is already writing into the pipe before us either way.
-    let mut channel = fs::OpenOptions::new().write(true).open(fifo)?;
+    // Opening for writing blocks until a reader holds the fifo, and the encoder can already be
+    // gone by the time this process runs — the recorder's failure kills it. Opening without
+    // blocking turns that into an `ENXIO` the caller logs, instead of a pump that waits forever
+    // on a partner that will never come and outlives the dictation; the flag is cleared below,
+    // so the writes block the way `tee`'s do.
+    let mut channel = open_fifo(fifo, libc::O_WRONLY)?;
     let mut channel_file = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -220,24 +242,28 @@ fn run_pump(fifo: &Path, waveform: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Open the fifo's read end without blocking on a writer, then clear `O_NONBLOCK` so the
-/// encoder waits on the stream the way it does in the shell.
-fn open_fifo_reader(path: &Path) -> io::Result<fs::File> {
+/// Open one end of the fifo without blocking on the other end, then clear `O_NONBLOCK` so the
+/// stream applies the backpressure it applies in the shell.
+///
+/// The read end is opened before the encoder so the encoder never waits on a partner that has
+/// not started; the write end of a fifo with no reader fails with `ENXIO`, which is how a pump
+/// left behind by a dead encoder exits instead of blocking forever.
+fn open_fifo(path: &Path, flags: libc::c_int) -> io::Result<fs::File> {
     let path = CString::new(path.as_os_str().as_bytes())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path holds a NUL byte"))?;
 
-    // Safety: `open` with a valid C string and two plain flags.
-    let descriptor = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_NONBLOCK) };
+    // Safety: `open` with a valid C string and plain flags.
+    let descriptor = unsafe { libc::open(path.as_ptr(), flags | libc::O_NONBLOCK) };
     if descriptor < 0 {
         return Err(io::Error::last_os_error());
     }
 
     // Safety: a descriptor we just opened.
-    let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFL) };
-    if flags >= 0 {
+    let current = unsafe { libc::fcntl(descriptor, libc::F_GETFL) };
+    if current >= 0 {
         // Safety: same descriptor, clearing one flag.
         unsafe {
-            libc::fcntl(descriptor, libc::F_SETFL, flags & !libc::O_NONBLOCK);
+            libc::fcntl(descriptor, libc::F_SETFL, current & !libc::O_NONBLOCK);
         }
     }
 

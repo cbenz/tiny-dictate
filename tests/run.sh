@@ -59,6 +59,9 @@ REAL_ARECORD="$(command -v arecord)"
 
 cat > "$BIN/arecord" <<STUB
 #!/usr/bin/env bash
+# Real arecord banners on stderr. The tool must keep the recorder's chatter out of the journal, so
+# the stub says something the suite can look for while the dictation runs.
+printf 'arecord: stub chatter\n' >&2
 if [ -n "\${ARECORD_FAIL:-}" ]; then
     printf 'arecord: main:7226: audio open error: Device or resource busy\n' >&2
     exit 1
@@ -78,6 +81,9 @@ STUB
 cat > "$BIN/lame" <<'STUB'
 #!/usr/bin/env bash
 out="${*: -1}"
+# Real lame banners on stderr. The tool must keep the encoder's chatter out of the journal, so the
+# stub says something the suite can look for while the dictation runs.
+printf 'LAME 3.100 64bits (http://lame.sf.net)\n' >&2
 # Real lame encodes as fast as it reads and the recorder above is not clocked, so a plain
 # copy would fill /tmp and keep the recorder blocked in write() forever. Write a plausible
 # amount slowly (like a real recording), then drain and discard the rest until the recorder
@@ -315,7 +321,7 @@ reset_run() {
     : > "$WORK/ydotool.log"
     : > "$WORK/wl-copy.log"
     rm -f "$WORK/transcribe-size" "$WORK/transcribe-received" "$WORK/clipboard" \
-        "$WORK/arecord-report" "$WORK/lame-report"
+        "$WORK/arecord-report" "$WORK/lame-report" "$WORK/journal.err"
 }
 
 cleanup_processes() {
@@ -486,6 +492,77 @@ no_waveform_channel_process() {
 
 session_dir_gone() { [ ! -e "$RUN/tiny-dictate/session" ]; }
 
+# ─────────────────────── the journal, on stderr ───────────────────────
+
+# The journal of one dictation: the tool's own lines, written to stderr
+# (`docs/adr/0008-the-log.md`). The tests redirect a command's stderr into this file, and the
+# session process inherits the descriptor, so the whole timeline lands here.
+JOURNAL="$WORK/journal.err"
+
+journal_has() { grep -Eq "$1" "$JOURNAL"; }
+journal_lacks() { ! grep -Eq "$1" "$JOURNAL"; }
+
+# Every line is the tool's own: a collaborator whose output reached the journal writes a line the
+# tool's prefix does not open.
+journal_holds_only_tool_lines() {
+    [ -s "$JOURNAL" ] || return 1
+    ! grep -qv '^tiny-dictate: ' "$JOURNAL"
+}
+
+# One event, named by the session it concerns.
+journal_line_names_session() { # journal_line_names_session <session id> <event>
+    grep -Eq "^tiny-dictate: $1: $2\$" "$JOURNAL"
+}
+
+# Every line of a dictation names its session: everything a dictation logs concerns it.
+journal_every_line_names_session() { # journal_every_line_names_session <session id>
+    [ -s "$JOURNAL" ] || return 1
+    ! grep -Evq "^tiny-dictate: $1: " "$JOURNAL"
+}
+
+# A line that concerns no session carries no id. The id is the local start timestamp, so its
+# absence from every line of a file is what "carries none" means.
+journal_no_line_names_a_session() { # journal_no_line_names_a_session <file>
+    [ -s "$1" ] || return 1
+    ! grep -Eq '^tiny-dictate: [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}:' "$1"
+}
+
+# The text of the failure line is the error the metadata holds: the journal and the durable
+# trace agree on what went wrong (`docs/features/dictation-lifecycle.md`).
+journal_failure_matches_metadata() { # journal_failure_matches_metadata <session dir> <session id>
+    local expected
+
+    expected="$(metadata_error "$1")"
+    expected="${expected#\"}"
+    expected="${expected%\"}"
+
+    [ -n "$expected" ] && [ "$expected" != "null" ] &&
+        grep -qF "tiny-dictate: $2: failure: $expected" "$JOURNAL"
+}
+
+# The stages of a dictation appear in the order they happened: the journal is a timeline, not a
+# bag of lines.
+journal_stages_in_order() { # journal_stages_in_order <session id>
+    local id="$1"
+    local previous=0 line
+
+    while IFS= read -r stage; do
+        line="$(grep -n -m1 -F "tiny-dictate: $id: $stage" "$JOURNAL" | cut -d: -f1)"
+        [ -n "$line" ] && [ "$line" -gt "$previous" ] || return 1
+        previous="$line"
+    done <<STAGES
+start: recording started
+recording started
+stop: recorder signalled
+recording ended duration=
+transcription started
+transcription ended duration=
+text written chars=
+paste succeeded
+STAGES
+    return 0
+}
+
 # ─────────────────────── the durable session, on disk ───────────────────────
 
 sessions_dir() { printf '%s/tiny-dictate/sessions' "$STATE_HOME"; }
@@ -504,6 +581,12 @@ single_session_dir() {
 metadata_value() { # metadata_value <session directory> <key>
     awk -v key="\"$2\":" '$1 == key { value = $2; sub(/,$/, "", value); print value; exit }' \
         "$1/metadata.json"
+}
+
+# The `error` field as raw JSON: `null`, or the quoted one-line message. Unlike metadata_value,
+# it keeps a value that holds spaces, which is every real error.
+metadata_error() { # metadata_error <session directory>
+    sed -n 's/^  "error": //p' "$1/metadata.json"
 }
 
 # Kill the whole run the way a crash would: the session process first, then the pipeline and
@@ -632,6 +715,7 @@ test_recorder_failure() {
     check "the pill never claimed to transcribe" pill_never_transcribed
     check "the notification waited for the pill to go" pill_gone_before_notification
     check "every notification expires on its own" notifications_expire
+    check "no waveform channel left behind" no_waveform_channel_process
     check "no presentation left behind" presenter_left
     check "no leftover process" no_leftover_process
     check "session directory removed" session_dir_gone
@@ -705,6 +789,10 @@ test_cancel() {
     check "session directory removed" session_dir_gone
 }
 
+# `toggle` started a new dictation instead of refusing it: the journal line proves the command
+# ran, and the refusal itself is absent from what it wrote to stderr.
+chain_has_no_busy_message() { ! grep -q 'already busy' "$WORK/chain.err"; }
+
 test_chain_after_cancel() {
     start_test "a new dictation starts before the cancelled verdict is over"
     td start
@@ -714,7 +802,11 @@ test_chain_after_cancel() {
     # No waiting for the pill to leave: the next dictation asks for the microphone now.
     td toggle 2> "$WORK/chain.err"
     check "the new dictation is recording" [ "$(td status)" = "working" ]
-    check "no busy message" [ ! -s "$WORK/chain.err" ]
+    # The journal now writes the command's line to stderr, so empty stderr is no longer what "no
+    # busy message" means: the refusal itself is.
+    check "no busy message" chain_has_no_busy_message
+    check "the toggle was logged rather than refused" \
+        grep -Eq '^tiny-dictate: .*: toggle: recording started$' "$WORK/chain.err"
     td cancel
     check "session finishes" wait_idle
     check "the cancelled recording is never transcribed" [ -z "$(pasted_text)" ]
@@ -916,6 +1008,157 @@ race_loop() {
     printf '%s' "$failures"
 }
 
+# A dictation writes one line per stage: the commands with the effect they had, the recording's
+# start and end with its duration and bytes, the transcription's start and end with its duration
+# and the size of the text, the text being written, and the paste.
+test_journal_timeline() {
+    start_test "a dictation's journal is its timeline"
+    # Both commands append: the session process writes to the same file through a descriptor it
+    # inherited from `start`, so a truncating `2>` would leave the process that opened first
+    # writing at a stale offset, over the lines the other appended.
+    td start 2>> "$JOURNAL"
+    sleep 0.4
+    td stop 2>> "$JOURNAL"
+    check "session finishes" wait_idle
+    check "transcription pasted" [ "$(pasted_text)" = "text transcribed" ]
+
+    local id
+    id="$(basename "$(single_session_dir)")"
+
+    check "the start command names its effect" journal_line_names_session "$id" 'start: recording started'
+    check "the recording's start is logged" journal_line_names_session "$id" 'recording started'
+    check "the stop command names its effect" journal_line_names_session "$id" 'stop: recorder signalled'
+    check "the recording's end carries duration and bytes" \
+        journal_line_names_session "$id" 'recording ended duration=[0-9.]+s bytes=[0-9]+'
+    check "the transcription's start is logged" journal_line_names_session "$id" 'transcription started'
+    check "the transcription's end carries duration and text size" \
+        journal_line_names_session "$id" 'transcription ended duration=[0-9.]+s chars=16'
+    check "the text being written is logged" journal_line_names_session "$id" 'text written chars=16'
+    check "the paste's success is logged" journal_line_names_session "$id" 'paste succeeded'
+    check "the stages are in order" journal_stages_in_order "$id"
+    check "every line names the session" journal_every_line_names_session "$id"
+    check "no collaborator wrote into the journal" journal_holds_only_tool_lines
+}
+
+# A line carries a session id only when the event concerns a session: the commands that find no
+# dictation name none, and neither does a `start` refused before any session exists.
+test_journal_nameless_lines() {
+    start_test "a line carries a session id only when the event concerns a session"
+
+    td cancel >/dev/null 2> "$WORK/nameless-cancel.err"
+    check "cancel says there was nothing to cancel" \
+        grep -q '^tiny-dictate: cancel: nothing to cancel$' "$WORK/nameless-cancel.err"
+    check "the cancel line carries no id" journal_no_line_names_a_session "$WORK/nameless-cancel.err"
+
+    td stop 2> "$WORK/nameless-stop.err"
+    check "stop says there was nothing to stop" \
+        grep -q '^tiny-dictate: stop: nothing to stop$' "$WORK/nameless-stop.err"
+    check "the stop line carries no id" journal_no_line_names_a_session "$WORK/nameless-stop.err"
+
+    TINY_DICTATE_TRANSCRIBE=does-not-exist td start 2> "$WORK/nameless-start.err"
+    check "the refused start is logged as a failure" \
+        grep -q '^tiny-dictate: failure: No transcription command' "$WORK/nameless-start.err"
+    check "the failure line carries no id" journal_no_line_names_a_session "$WORK/nameless-start.err"
+}
+
+# A failure is one line, and the line is the same error the session's metadata holds: the journal
+# and the durable trace agree on what went wrong.
+test_journal_failure() {
+    start_test "a transcription failure is one line, the same the metadata and the notification keep"
+    TRANSCRIBE_SLEEP=0.3 TRANSCRIBE_FAIL=1 td start 2>> "$JOURNAL"
+    sleep 0.3
+    td stop 2>> "$JOURNAL"
+    check "session finishes" wait_idle
+
+    local dir id error
+    dir="$(single_session_dir)"
+    id="$(basename "$dir")"
+    error='groq: Error code: 401 - invalid api key'
+
+    check "the failure names the session" journal_line_names_session "$id" "failure: $error"
+    check "the line is the metadata's error" journal_failure_matches_metadata "$dir" "$id"
+    check "the metadata keeps the transcriber's stderr on one line" \
+        [ "$(metadata_error "$dir")" = "\"$error\"" ]
+    check "the notification shows the same error" grep -q "Transcription failed: $error" "$WORK/events.log"
+    check "nothing was pasted" [ -z "$(pasted_text)" ]
+}
+
+# The recorder failing is a failure line too, carrying the session it concerns.
+test_journal_recording_failure() {
+    start_test "a recording failure is a failure line naming the session"
+    ARECORD_FAIL=1 td start 2>> "$JOURNAL"
+    check "session finishes" wait_idle
+
+    local dir id
+    dir="$(single_session_dir)"
+    id="$(basename "$dir")"
+
+    check "the failure names the session" \
+        grep -Eq "^tiny-dictate: $id: failure: (no audio was captured|the audio encoder)" "$JOURNAL"
+    check "the line is the metadata's error" journal_failure_matches_metadata "$dir" "$id"
+    check "the notification carries the same reason" grep -q 'Recording failed:' "$WORK/events.log"
+    check "nothing was pasted" [ -z "$(pasted_text)" ]
+}
+
+# `toggle` names the effect it had under its own name, not the verb it delegated to.
+test_journal_toggle() {
+    start_test "toggle logs the effect it had"
+    td toggle 2>> "$JOURNAL"
+    sleep 0.3
+
+    local id
+    id="$(basename "$(single_session_dir)")"
+    check "toggle says it started a recording" journal_line_names_session "$id" 'toggle: recording started'
+    check "the start path never ran under its own name" journal_lacks "^tiny-dictate: $id: start: "
+
+    td toggle 2>> "$JOURNAL"
+    check "session finishes" wait_idle
+    check "toggle says it signalled the recorder" journal_line_names_session "$id" 'toggle: recorder signalled'
+    check "the recording ran to its end" \
+        journal_line_names_session "$id" 'recording ended duration=[0-9.]+s bytes=[0-9]+'
+    check "the stop path never ran under its own name" journal_lacks "^tiny-dictate: $id: stop: "
+}
+
+# A cancel that lands while the transcription runs drops the text, and the journal says so: the
+# transcription ended, and the text never reached the session.
+test_journal_late_cancel() {
+    start_test "a late cancel is logged as the text being dropped"
+    TRANSCRIBE_SLEEP=1 td start 2>> "$JOURNAL"
+    sleep 0.3
+    td stop 2>> "$JOURNAL"
+    sleep 0.2
+    td cancel 2>> "$JOURNAL"
+    check "session finishes" wait_idle
+
+    local id
+    id="$(basename "$(single_session_dir)")"
+    check "the cancel is logged" journal_line_names_session "$id" 'cancel: cancelled'
+    check "the finished transcription is logged" \
+        journal_line_names_session "$id" 'transcription ended duration=[0-9.]+s chars=[0-9]+'
+    check "the late cancel is logged as the text being dropped" \
+        journal_line_names_session "$id" 'late cancel, text dropped'
+    check "the text was never written" journal_lacks 'text written'
+    check "nothing was pasted" [ -z "$(pasted_text)" ]
+}
+
+# The journal is the tool's own timeline: the encoder's and the recorder's own output is kept out
+# of it, in the files the failure path reads -- `arecord.err` and `lame.err`.
+test_journal_no_collaborator_chatter() {
+    start_test "the encoder's and the recorder's chatter stays out of the journal"
+    td start 2>> "$JOURNAL"
+    sleep 0.4
+    check "the encoder's chatter went to lame.err" \
+        grep -q 'LAME' "$RUN/tiny-dictate/session/lame.err"
+    check "the recorder's chatter went to arecord.err" \
+        grep -q 'arecord: stub chatter' "$RUN/tiny-dictate/session/arecord.err"
+    td stop 2>> "$JOURNAL"
+    check "session finishes" wait_idle
+    check "transcription pasted" [ "$(pasted_text)" = "text transcribed" ]
+    check "the dictation wrote its own lines" journal_holds_only_tool_lines
+    check "the encoder's banner is not in the journal" journal_lacks 'LAME'
+    check "the recorder's banner is not in the journal" journal_lacks 'arecord'
+}
+
 test_race_loop() {
     start_test "race loop x$RACE_ITERATIONS (new implementation)"
     local failures
@@ -970,6 +1213,13 @@ run_test test_session_transcriber_writes_nothing
 run_test test_session_recording_killed
 run_test test_session_audio_survives_kill
 run_test test_session_cancelled_keeps_recording
+run_test test_journal_timeline
+run_test test_journal_nameless_lines
+run_test test_journal_failure
+run_test test_journal_recording_failure
+run_test test_journal_toggle
+run_test test_journal_late_cancel
+run_test test_journal_no_collaborator_chatter
 run_test test_race_loop
 if [ -n "$OLD_SCRIPT" ] && [ -z "$ONLY" ]; then
     test_race_loop_old

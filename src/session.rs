@@ -14,6 +14,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::audio;
 use crate::claim;
+use crate::journal;
 use crate::presentation::{self, Presenter};
 use crate::store;
 use crate::text;
@@ -115,12 +116,17 @@ pub struct Paths {
     pub encoder_pid: PathBuf,
     /// The word the presenter draws.
     pub state: PathBuf,
+    /// The durable id of the dictation in flight, so the commands that run in a process of
+    /// their own can name the session their journal line concerns.
+    pub session_id: PathBuf,
     /// The pipe between the recorder's copy and the encoder.
     pub fifo: PathBuf,
     /// The waveform channel.
     pub waveform: PathBuf,
     /// The recorder's stderr.
     pub recorder_error: PathBuf,
+    /// The encoder's stderr.
+    pub encoder_error: PathBuf,
     /// The transcriber's stderr.
     pub transcribe_error: PathBuf,
 }
@@ -132,12 +138,29 @@ impl Paths {
             recorder_pid: session.join("arecord.pid"),
             encoder_pid: session.join("lame.pid"),
             state: session.join("state"),
+            session_id: session.join("session.id"),
             fifo: session.join("audio.fifo"),
             waveform: session.join("waveform"),
             recorder_error: session.join("arecord.err"),
+            encoder_error: session.join("lame.err"),
             transcribe_error: session.join("transcribe.err"),
             session,
         }
+    }
+}
+
+/// The durable id of the dictation in flight, as `start` published it in the runtime directory.
+///
+/// `stop`, `cancel` and `toggle` are processes of their own: this file is how they can name the
+/// session their line concerns. Nothing there is a session that concerns none.
+fn current_session_id(paths: &Paths) -> Option<String> {
+    let id = fs::read_to_string(&paths.session_id).ok()?;
+    let id = id.trim();
+
+    if id.is_empty() {
+        None
+    } else {
+        Some(id.to_owned())
     }
 }
 
@@ -185,17 +208,28 @@ pub fn signal_pidfile(pidfile: &Path, signal: libc::c_int) {
 
 /// `start`: claim the microphone, start the pipeline, fork the session process, exit.
 pub fn start() -> ExitCode {
+    start_command("start")
+}
+
+/// The start path of a command. The `command` is the name the user ran — `start`, or `toggle`
+/// when it decided to start — so the journal names what was asked for rather than what it
+/// delegated to.
+fn start_command(command: &str) -> ExitCode {
     let runtime = Runtime::from_env();
     if let Err(error) = fs::create_dir_all(runtime.directory()) {
-        eprintln!("tiny-dictate: cannot create the runtime directory: {error}");
+        journal::log(
+            None,
+            &format!("failure: cannot create the runtime directory: {error}"),
+        );
         return ExitCode::FAILURE;
     }
     let paths = runtime.paths();
 
     // The transcriber is the one mandatory plugin: refuse before anything is claimed.
     let Some(transcriber) = text::resolve_transcriber() else {
-        eprintln!(
-            "No transcription command: set TINY_DICTATE_TRANSCRIBE or install tiny-dictate-transcribe"
+        journal::log(
+            None,
+            "failure: No transcription command. Set TINY_DICTATE_TRANSCRIBE or install tiny-dictate-transcribe",
         );
         text::notify(
             "❌ No transcription command. Set TINY_DICTATE_TRANSCRIBE or install tiny-dictate-transcribe",
@@ -213,12 +247,16 @@ pub fn start() -> ExitCode {
 
     if !claim::claim(&paths) {
         // A session is running: its pill already shows what is going on, and it is the only
-        // writer of the screen.
-        eprintln!("tiny-dictate is already busy");
+        // writer of the screen. The line names the session it collided with.
+        journal::log(
+            current_session_id(&paths).as_deref(),
+            "failure: already busy",
+        );
         return ExitCode::FAILURE;
     }
 
     if muted() {
+        journal::log(None, "failure: the microphone is muted");
         text::notify(
             "🎙️ Microphone is muted. Unmute it before dictating.",
             4500,
@@ -229,6 +267,7 @@ pub fn start() -> ExitCode {
     }
 
     if audio::create_fifo(&paths.fifo).is_err() {
+        journal::log(None, "failure: cannot create the audio pipe");
         text::notify("❌ Cannot create the audio pipe", 6000, "normal");
         let _ = fs::remove_dir_all(&paths.session);
         return ExitCode::FAILURE;
@@ -243,18 +282,32 @@ pub fn start() -> ExitCode {
     ) {
         Ok(session) => session,
         Err(error) => {
-            eprintln!("tiny-dictate: cannot create the session directory: {error}");
+            journal::log(
+                None,
+                &format!("failure: cannot create the session directory: {error}"),
+            );
             let _ = fs::remove_dir_all(&paths.session);
             return ExitCode::FAILURE;
         }
     };
     let _ = session.save();
+    // The id is published before the pipeline: the commands that run beside this dictation read
+    // it to name the session their lines concern.
+    let _ = fs::write(&paths.session_id, &session.id);
 
-    if let Err(error) = audio::start_pipeline(&paths, &session.audio()) {
-        eprintln!("tiny-dictate: cannot start the audio pipeline: {error}");
+    if let Err(error) = audio::start_pipeline(&paths, &session.audio(), &session.id) {
+        journal::log(
+            Some(&session.id),
+            &format!("failure: cannot start the audio pipeline: {error}"),
+        );
         discard(&paths, &session);
         return ExitCode::FAILURE;
     }
+
+    // The recording is live: the recorder and the encoder are running, and the timeline can say
+    // so before the session process takes over.
+    journal::log(Some(&session.id), &format!("{command}: recording started"));
+    journal::log(Some(&session.id), "recording started");
 
     // The recorder's and the encoder's pids are recorded before this fork: that is what makes
     // the session's wait race-free. The id is handed over so the session writes the metadata
@@ -272,7 +325,10 @@ pub fn start() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("tiny-dictate: cannot fork the session: {error}");
+            journal::log(
+                Some(&session.id),
+                &format!("failure: cannot fork the session: {error}"),
+            );
             discard(&paths, &session);
             ExitCode::FAILURE
         }
@@ -288,15 +344,28 @@ fn discard(paths: &Paths, session: &store::Session) {
 
 /// `stop`: signal the recorder, never the encoder, never the session.
 pub fn stop() -> ExitCode {
+    stop_command("stop")
+}
+
+/// The stop path of a command; `command` names what the user ran.
+fn stop_command(command: &str) -> ExitCode {
     let runtime = Runtime::from_env();
     let paths = runtime.paths();
+    let id = current_session_id(&paths);
 
     if pidfile_lives(&paths.recorder_pid) {
+        journal::log(id.as_deref(), &format!("{command}: recorder signalled"));
         signal_pidfile(&paths.recorder_pid, libc::SIGINT);
     } else if pidfile_lives(&paths.session_pid) && !presentation::cancelled(&paths.state) {
         // The pill already shows "Transcribing"; there is nothing to signal. A cancelled
         // session is not transcribing anything the user still wants.
+        journal::log(
+            id.as_deref(),
+            &format!("{command}: transcription already in progress"),
+        );
         eprintln!("Transcription already in progress");
+    } else {
+        journal::log(id.as_deref(), &format!("{command}: nothing to stop"));
     }
 
     ExitCode::SUCCESS
@@ -311,9 +380,12 @@ pub fn cancel() -> ExitCode {
     let session = pidfile_lives(&paths.session_pid);
 
     if !recording && !session {
+        journal::log(None, "cancel: nothing to cancel");
         println!("No recording in progress");
         return ExitCode::SUCCESS;
     }
+
+    journal::log(current_session_id(&paths).as_deref(), "cancel: cancelled");
 
     // A verdict is a state like any other: writing it is what shows it, so it is written
     // before anything is signalled. The session reads it and shows it rather than reporting
@@ -341,13 +413,17 @@ pub fn toggle() -> ExitCode {
     let paths = runtime.paths();
 
     if pidfile_lives(&paths.recorder_pid) {
-        stop()
+        stop_command("toggle")
     } else if pidfile_lives(&paths.session_pid) && !presentation::cancelled(&paths.state) {
+        journal::log(
+            current_session_id(&paths).as_deref(),
+            "toggle: transcription already in progress",
+        );
         eprintln!("Transcription already in progress");
         ExitCode::SUCCESS
     } else {
         // Nothing running, or only the cancelled verdict's dwell: start a new dictation.
-        start()
+        start_command("toggle")
     }
 }
 
@@ -442,9 +518,9 @@ fn session_body(paths: &Paths, session: &mut store::Session, limit: Option<Durat
             // The recorder is signalled, the encoder outlives it to flush the last frames: the
             // very path `stop` takes.
             signal_pidfile(&paths.recorder_pid, libc::SIGINT);
-            eprintln!(
-                "tiny-dictate: session {}: recording stopped at the transcriber's audio limit",
-                paths.session.display()
+            journal::log(
+                Some(&session.id),
+                "recording stopped at the transcriber's audio limit",
             );
         }
         sleep(Duration::from_millis(100));
@@ -487,17 +563,26 @@ fn session_body(paths: &Paths, session: &mut store::Session, limit: Option<Durat
         } else {
             "no audio was captured".to_owned()
         };
-        let reason = match fs::read_to_string(&paths.recorder_error) {
+        // The detail comes from the collaborator that failed: the recorder never captured a
+        // byte, or the encoder stopped under a live recorder. Both were kept out of the
+        // journal and read back here, so the failure line carries what the user can act on.
+        let detail = if audio_present {
+            &paths.encoder_error
+        } else {
+            &paths.recorder_error
+        };
+        let reason = match fs::read_to_string(detail) {
             Ok(error) if !error.trim().is_empty() => {
                 format!("{reason} ({})", text::format_error(&error))
             }
             _ => reason,
         };
 
-        session.finish_recording(SystemTime::now());
+        end_recording(session);
         session.metadata.outcome = store::FAILED.to_owned();
         session.metadata.error = Some(reason.clone());
         let _ = session.save();
+        journal::log(Some(&session.id), &format!("failure: {reason}"));
 
         // The pill goes before the notification: one thing on screen at a time.
         presenter.stop();
@@ -507,7 +592,7 @@ fn session_body(paths: &Paths, session: &mut store::Session, limit: Option<Durat
 
     // The recording is over and on disk: the metadata now carries its end, its duration and
     // its size, and says what the session is doing next.
-    session.finish_recording(SystemTime::now());
+    end_recording(session);
     session.metadata.outcome = store::TRANSCRIBING.to_owned();
     let _ = session.save();
 
@@ -517,11 +602,15 @@ fn session_body(paths: &Paths, session: &mut store::Session, limit: Option<Durat
         session.metadata.outcome = store::FAILED.to_owned();
         session.metadata.error = Some("Unknown error".to_owned());
         let _ = session.save();
+        journal::log(Some(&session.id), "failure: Unknown error");
         presenter.stop();
         text::notify("❌ Transcription failed: Unknown error", 6000, "normal");
         return ExitCode::SUCCESS;
     };
     session.metadata.transcriber = Some(transcriber.display().to_string());
+
+    journal::log(Some(&session.id), "transcription started");
+    let started_transcribing = Instant::now();
 
     match text::transcribe(
         &transcriber,
@@ -530,15 +619,29 @@ fn session_body(paths: &Paths, session: &mut store::Session, limit: Option<Durat
         &paths.transcribe_error,
     ) {
         Ok(transcript) => {
+            let characters = transcript.chars().count();
+            journal::log(
+                Some(&session.id),
+                &format!(
+                    "transcription ended duration={:.2}s chars={characters}",
+                    started_transcribing.elapsed().as_secs_f64()
+                ),
+            );
+
             // A cancel that landed while the transcription was running: the text is dropped
             // rather than pasted behind the user's back.
             if presentation::cancelled(&paths.state) {
+                journal::log(Some(&session.id), "late cancel, text dropped");
                 return show_verdict(paths, session, &mut presenter);
             }
 
             // The text reaches the session before any clipboard write: a paste that lands
             // wrong stays recoverable, a text that only lived in the clipboard does not.
             let _ = fs::write(session.transcript(), &transcript);
+            journal::log(
+                Some(&session.id),
+                &format!("text written chars={characters}"),
+            );
             session.metadata.outcome = store::TRANSCRIBED.to_owned();
             session.metadata.error = None;
             session.metadata.pasted = false;
@@ -548,7 +651,15 @@ fn session_body(paths: &Paths, session: &mut store::Session, limit: Option<Durat
             presenter.stop();
 
             let pasted = !transcript.is_empty() && text::paste(&transcript);
-            if !transcript.is_empty() && !pasted {
+            if transcript.is_empty() {
+                journal::log(
+                    Some(&session.id),
+                    "paste failed: the transcription is empty",
+                );
+            } else if pasted {
+                journal::log(Some(&session.id), "paste succeeded");
+            } else {
+                journal::log(Some(&session.id), "paste failed");
                 text::notify("❌ Could not paste the transcription", 6000, "critical");
             }
             if pasted {
@@ -557,12 +668,20 @@ fn session_body(paths: &Paths, session: &mut store::Session, limit: Option<Durat
             }
         }
         Err(()) => {
+            journal::log(
+                Some(&session.id),
+                &format!(
+                    "transcription ended duration={:.2}s chars=0",
+                    started_transcribing.elapsed().as_secs_f64()
+                ),
+            );
             let error = fs::read_to_string(&paths.transcribe_error)
                 .map(|text| text::format_error(&text))
                 .unwrap_or_else(|_| "Unknown error".to_owned());
             session.metadata.outcome = store::FAILED.to_owned();
             session.metadata.error = Some(error.clone());
             let _ = session.save();
+            journal::log(Some(&session.id), &format!("failure: {error}"));
 
             presenter.stop();
             text::notify(&format!("❌ Transcription failed: {error}"), 6000, "normal");
@@ -570,6 +689,23 @@ fn session_body(paths: &Paths, session: &mut store::Session, limit: Option<Durat
     }
 
     ExitCode::SUCCESS
+}
+
+/// Close the recording stage and journal it: the duration it lasted and the bytes it produced.
+///
+/// One line per stage, and the recording stage ends in exactly one place per path — the failure
+/// path, the normal path, and the cancel that lands before either — so the line appears once
+/// and only when the recording actually ended.
+fn end_recording(session: &mut store::Session) {
+    session.finish_recording(SystemTime::now());
+    journal::log(
+        Some(&session.id),
+        &format!(
+            "recording ended duration={:.2}s bytes={}",
+            session.metadata.duration.unwrap_or(0.0),
+            session.metadata.audio_bytes
+        ),
+    );
 }
 
 fn file_size(path: &Path) -> u64 {
@@ -594,7 +730,7 @@ fn show_verdict(
     // A cancel that landed while recording ends the recording here; a cancel that landed
     // during the transcription leaves the end the transcription stage already recorded.
     if session.metadata.ended.is_none() {
-        session.finish_recording(SystemTime::now());
+        end_recording(session);
     }
     session.metadata.outcome = store::CANCELLED.to_owned();
     let _ = session.save();
