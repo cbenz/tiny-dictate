@@ -46,13 +46,8 @@ fn main() -> ExitCode {
         }
         cli::Command::Start => session::start(),
         cli::Command::Stop => session::stop(),
+        cli::Command::Cancel => session::cancel(),
         cli::Command::Toggle => session::toggle(),
-        command => {
-            // The verbs the tickets that follow port; refusing loudly beats a silent success
-            // that would pretend a dictation happened.
-            eprintln!("tiny-dictate: {} is not implemented yet", command.verb());
-            ExitCode::FAILURE
-        }
     }
 }
 

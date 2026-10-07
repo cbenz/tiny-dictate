@@ -8,6 +8,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -15,6 +16,24 @@ use crate::audio;
 use crate::claim;
 use crate::presentation::{self, Presenter};
 use crate::text;
+
+/// How long a verdict stays on screen before the session takes the pill down: the timeout the
+/// cancellation notification used to have.
+const VERDICT_SECONDS: u64 = 1;
+
+/// The dwell is cut short in ten steps, so a new dictation waits at most one step for the
+/// microphone.
+const DWELL_STEP: Duration = Duration::from_millis(100);
+
+/// Set by the `SIGUSR1` handler while the verdict is on screen: a new dictation asking for the
+/// microphone cuts the dwell short.
+static VERDICT_INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+/// The `SIGUSR1` handler: the only thing it does is flag the interrupt, which is
+/// async-signal-safe.
+extern "C" fn interrupt_verdict(_signal: libc::c_int) {
+    VERDICT_INTERRUPTED.store(true, Ordering::Relaxed);
+}
 
 /// The runtime directory, where the ephemeral side of a dictation lives: the claim
 /// directory the session owns, the pidfiles the commands read liveness from, the fifo, the
@@ -137,13 +156,19 @@ pub fn pidfile_lives(pidfile: &Path) -> bool {
     pid_in(pidfile).map(process_alive).unwrap_or(false)
 }
 
-/// Signal the process a pidfile names. The pidfile is deliberately not removed.
+/// Signal the process a pidfile names, when it lives. The pidfile is deliberately not removed:
+/// the session reads it to tell whether the recorder is still alive.
 pub fn signal_pidfile(pidfile: &Path, signal: libc::c_int) {
-    if let Some(pid) = pid_in(pidfile) {
-        // Safety: `kill` with a valid signal number is as safe as the shell's `kill`.
-        unsafe {
-            libc::kill(pid as libc::pid_t, signal);
-        }
+    if !pidfile_lives(pidfile) {
+        return;
+    }
+    let Some(pid) = pid_in(pidfile) else {
+        return;
+    };
+
+    // Safety: `kill` with a valid signal number is as safe as the shell's `kill`.
+    unsafe {
+        libc::kill(pid as libc::pid_t, signal);
     }
 }
 
@@ -220,11 +245,45 @@ pub fn stop() -> ExitCode {
 
     if pidfile_lives(&paths.recorder_pid) {
         signal_pidfile(&paths.recorder_pid, libc::SIGINT);
-    } else if pidfile_lives(&paths.session_pid) {
-        // The pill already shows "Transcribing"; there is nothing to signal.
+    } else if pidfile_lives(&paths.session_pid) && !presentation::cancelled(&paths.state) {
+        // The pill already shows "Transcribing"; there is nothing to signal. A cancelled
+        // session is not transcribing anything the user still wants.
         eprintln!("Transcription already in progress");
     }
 
+    ExitCode::SUCCESS
+}
+
+/// `cancel`: write the verdict, signal the recorder, never the session.
+pub fn cancel() -> ExitCode {
+    let runtime = Runtime::from_env();
+    let paths = runtime.paths();
+
+    let recording = pidfile_lives(&paths.recorder_pid);
+    let session = pidfile_lives(&paths.session_pid);
+
+    if !recording && !session {
+        println!("No recording in progress");
+        return ExitCode::SUCCESS;
+    }
+
+    // A verdict is a state like any other: writing it is what shows it, so it is written
+    // before anything is signalled. The session reads it and shows it rather than reporting
+    // the failure of a recording that was cut short.
+    presentation::write_state(&paths.state, presentation::CANCELLED);
+
+    // Stop the recorder, never the encoder: the encoder outlives it to flush the last frames.
+    signal_pidfile(&paths.recorder_pid, libc::SIGINT);
+
+    if session {
+        // And never the session either: it is the one showing the verdict, waiting out the
+        // dwell, and removing its own directory.
+        return ExitCode::SUCCESS;
+    }
+
+    // No session left to do any of that: only its leftovers are here.
+    signal_pidfile(&paths.encoder_pid, libc::SIGTERM);
+    let _ = fs::remove_dir_all(&paths.session);
     ExitCode::SUCCESS
 }
 
@@ -235,10 +294,11 @@ pub fn toggle() -> ExitCode {
 
     if pidfile_lives(&paths.recorder_pid) {
         stop()
-    } else if pidfile_lives(&paths.session_pid) {
+    } else if pidfile_lives(&paths.session_pid) && !presentation::cancelled(&paths.state) {
         eprintln!("Transcription already in progress");
         ExitCode::SUCCESS
     } else {
+        // Nothing running, or only the cancelled verdict's dwell: start a new dictation.
         start()
     }
 }
@@ -247,6 +307,18 @@ pub fn toggle() -> ExitCode {
 pub fn run_session() -> ExitCode {
     let runtime = Runtime::from_env();
     let paths = runtime.paths();
+
+    // A new dictation ends the cancelled verdict's dwell early; the handler only flags it, and
+    // installing it before anything else means the signal is never the default one, which would
+    // kill the session.
+    // Safety: `signal` with a valid handler; the handler only stores into an atomic.
+    unsafe {
+        libc::signal(
+            libc::SIGUSR1,
+            interrupt_verdict as *const () as libc::sighandler_t,
+        );
+    }
+
     let guard = SessionGuard {
         paths: paths.clone(),
         pid: std::process::id(),
@@ -309,6 +381,12 @@ fn session_body(paths: &Paths) -> ExitCode {
         recording_failed = true;
     }
 
+    // The verdict owns the last word: a cancelled dictation is neither a failure nor something
+    // to transcribe, whichever moment the cancel landed in.
+    if presentation::cancelled(&paths.state) {
+        return show_verdict(paths, &mut presenter);
+    }
+
     if recording_failed {
         signal_pidfile(&paths.recorder_pid, libc::SIGINT);
         signal_pidfile(&paths.encoder_pid, libc::SIGTERM);
@@ -348,6 +426,12 @@ fn session_body(paths: &Paths) -> ExitCode {
         &paths.transcribe_error,
     ) {
         Ok(transcript) => {
+            // A cancel that landed while the transcription was running: the text is dropped
+            // rather than pasted behind the user's back.
+            if presentation::cancelled(&paths.state) {
+                return show_verdict(paths, &mut presenter);
+            }
+
             // The live state is over once there is text: nothing is left for the pill to say.
             presenter.stop();
             if !transcript.is_empty() && !text::paste(&transcript) {
@@ -370,6 +454,23 @@ fn file_size(path: &Path) -> u64 {
     fs::metadata(path)
         .map(|metadata| metadata.len())
         .unwrap_or(0)
+}
+
+/// Show the verdict for as long as a notification of it used to stay on screen: the pill is
+/// already drawing the `cancelled` word `cancel` wrote, and this is the dwell before the
+/// session takes it down. A new dictation cuts it short with `SIGUSR1`; `cancel` never does.
+fn show_verdict(paths: &Paths, presenter: &mut Presenter) -> ExitCode {
+    signal_pidfile(&paths.encoder_pid, libc::SIGTERM);
+
+    let steps = VERDICT_SECONDS * 10;
+    let mut waited = 0;
+    while waited < steps && !VERDICT_INTERRUPTED.load(Ordering::Relaxed) {
+        sleep(DWELL_STEP);
+        waited += 1;
+    }
+
+    presenter.stop();
+    ExitCode::SUCCESS
 }
 
 /// Whether the default source is muted. Best effort, like the shell: an unreadable probe means

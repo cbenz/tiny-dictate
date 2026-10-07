@@ -22,20 +22,6 @@ pub enum Command {
     Help,
 }
 
-impl Command {
-    /// The verb, as the user typed it.
-    pub fn verb(self) -> &'static str {
-        match self {
-            Self::Start => "start",
-            Self::Stop => "stop",
-            Self::Cancel => "cancel",
-            Self::Toggle => "toggle",
-            Self::Status => "status",
-            Self::Help => "--help",
-        }
-    }
-}
-
 /// Why a command line cannot be run.
 #[derive(Debug)]
 pub enum Error {
