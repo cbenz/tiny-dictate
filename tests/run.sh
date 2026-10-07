@@ -1278,6 +1278,34 @@ test_rescue_without_encoder_or_clipboard() {
     check "help runs without the tools" grep -q 'Usage: tiny-dictate' "$WORK/bare-help.out"
 }
 
+# The command line's own contract, which the spec keeps in `tests/run.sh` rather than a second
+# Rust suite: an unknown verb prints the usage on stderr and exits non-zero, the verbs that only
+# query exit zero, and a pidfile whose process is gone reads as idle.
+test_command_line() {
+    start_test "an unknown verb fails with the usage; the query verbs exit zero"
+
+    td dictate > "$WORK/unknown.out" 2> "$WORK/unknown.err"
+    check "an unknown verb exits non-zero" [ "$?" -ne 0 ]
+    check "an unknown verb writes nothing to stdout" [ ! -s "$WORK/unknown.out" ]
+    check "the usage is printed on stderr" \
+        grep -q 'Usage: tiny-dictate <command>' "$WORK/unknown.err"
+
+    td status > "$WORK/status.out"
+    check "status exits zero" [ "$?" -eq 0 ]
+    check "status is idle with no dictation" [ "$(cat "$WORK/status.out")" = "idle" ]
+
+    # A pidfile whose process is gone reads as idle, not as working: liveness is the process, not
+    # the file.
+    mkdir -p "$RUN/tiny-dictate/session"
+    printf '%s' '999999999' > "$RUN/tiny-dictate/session/arecord.pid"
+    check "a stale pidfile reads as idle" [ "$(td status)" = "idle" ]
+
+    td help > "$WORK/help.out"
+    check "help exits zero" [ "$?" -eq 0 ]
+    check "help prints the usage on stdout" \
+        grep -q 'Usage: tiny-dictate <command>' "$WORK/help.out"
+}
+
 # ─────────────── the configuration file and the prune ───────────────
 
 # The number of sessions kept comes from the configuration: after a dictation whose text was
@@ -1783,6 +1811,7 @@ run_test test_transcribe_print
 run_test test_session_delete_removes_one
 run_test test_unknown_session_id
 run_test test_rescue_without_encoder_or_clipboard
+run_test test_command_line
 run_test test_prune_keeps_the_limit
 run_test test_prune_not_after_failure
 run_test test_prune_not_after_cancel
