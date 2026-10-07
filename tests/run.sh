@@ -106,6 +106,14 @@ cat > "$BIN/transcribe" <<'STUB'
 # session directory as $2, the text on stdout. Writing nothing into the session directory is
 # valid; TRANSCRIBE_RAW makes it leave a raw response behind, as the reference one does, and
 # TRANSCRIBE_TEXT changes the text it prints.
+# The audio-limit probe is answered from TRANSCRIBE_LIMIT (a byte count on stdout, exit 0);
+# an absent or empty value prints nothing, which the tool reads as no limit, and
+# TRANSCRIBE_LIMIT_FAIL makes the probe fail instead.
+if [ "${1:-}" = "--print-audio-limit" ]; then
+    [ -n "${TRANSCRIBE_LIMIT_FAIL:-}" ] && exit 1
+    [ -n "${TRANSCRIBE_LIMIT:-}" ] && printf '%s\n' "$TRANSCRIBE_LIMIT"
+    exit 0
+fi
 cp "${1:?}" "$WORK/transcribe-received" 2>/dev/null
 wc -c < "$WORK/transcribe-received" > "$WORK/transcribe-size"
 [ -n "${TRANSCRIBE_SLEEP:-}" ] && sleep "$TRANSCRIBE_SLEEP"
@@ -150,7 +158,7 @@ cat > "$BIN/present" <<'STUB'
 state_file="$1"
 owner="$2"
 waveform_file="$3"
-printf 'PRESENT start owner=%s file=%s waveform=%s caller=%s command=%s\n' "$owner" "$state_file" "$waveform_file" "$PPID" "${4:-}" >> "$WORK/events.log"
+printf 'PRESENT start owner=%s file=%s waveform=%s caller=%s limit=%s command=%s\n' "$owner" "$state_file" "$waveform_file" "$PPID" "${5:-}" "${4:-}" >> "$WORK/events.log"
 state=""
 while :; do
     if ! current="$(cat "$state_file" 2>/dev/null)"; then
@@ -361,6 +369,21 @@ presenter_got_command() {
     grep -q "^PRESENT start .*command=$(readlink -f "$SCRIPT")$" "$WORK/events.log"
 }
 
+# The pill is handed the limit in seconds as $5 when the transcriber declared one, and an empty
+# argument otherwise: the presenter draws the bar from it, so both sides are asserted here.
+presenter_got_limit() {
+    grep -q "^PRESENT start .*limit=$1 command=" "$WORK/events.log"
+}
+
+presenter_got_no_limit() {
+    grep -q "^PRESENT start .*limit= command=" "$WORK/events.log"
+}
+
+# The transcriber declared no limit, so nothing stopped the recording before the shortcut did.
+limit_never_enforced() {
+    ! grep -q 'audio limit' "$WORK/no-limit.err"
+}
+
 # The recorder the core recorded, checked for liveness: the waveform channel is beside the voice
 # path, so nothing that happens in it may end a recording that is still going on.
 recorder_alive() {
@@ -529,6 +552,42 @@ test_waveform_channel() {
     check "session finishes" wait_idle
     check "transcription pasted" [ "$(pasted_text)" = "text transcribed" ]
     check "no waveform channel process left behind" no_waveform_channel_process
+    check "session directory removed" session_dir_gone
+}
+
+# The transcriber declares the largest audio file it accepts; the recording then stops on its
+# own at the duration the encoder's 64 kbit/s makes of that byte count, and the text is
+# transcribed and pasted exactly as if the shortcut had been pressed.
+test_audio_limit() {
+    start_test "the transcriber's audio limit ends the recording by itself"
+    # 8000 bytes at 8000 bytes per second (64 kbit/s) is one second. The transcription takes a
+    # moment so the pill has time to be seen leaving the recording state, as in the normal flow.
+    TRANSCRIBE_LIMIT=8000 TRANSCRIBE_SLEEP=0.3 td start 2> "$WORK/limit.err"
+    check "session finishes by itself" wait_idle
+    check "transcription pasted" [ "$(pasted_text)" = "text transcribed" ]
+    check "audio given to the transcriber is not empty (was $(audio_size) bytes)" \
+        [ "$(audio_size)" -gt 0 ] 2>/dev/null
+    check "the pill is handed the limit in seconds" presenter_got_limit 1
+    check "the pill showed recording then transcribing" pill_showed_both_states
+    check "the log says why the recording stopped" grep -q 'audio limit' "$WORK/limit.err"
+    check "no presentation left behind" presenter_left
+    check "no leftover process" no_leftover_process
+    check "session directory removed" session_dir_gone
+}
+
+# A transcriber that does not answer the probe declares no limit: the dictation is otherwise
+# unchanged, and the pill is handed no limit so it draws no bar.
+test_no_audio_limit() {
+    start_test "a transcriber that declares no limit"
+    TRANSCRIBE_LIMIT_FAIL=1 td start 2> "$WORK/no-limit.err"
+    sleep 0.3
+    check "the pill is handed no limit" presenter_got_no_limit
+    td stop
+    check "session finishes" wait_idle
+    check "transcription pasted" [ "$(pasted_text)" = "text transcribed" ]
+    check "no limit was enforced" limit_never_enforced
+    check "no presentation left behind" presenter_left
+    check "no leftover process" no_leftover_process
     check "session directory removed" session_dir_gone
 }
 
@@ -891,6 +950,8 @@ run_test() {
 
 run_test test_normal_flow
 run_test test_waveform_channel
+run_test test_audio_limit
+run_test test_no_audio_limit
 run_test test_broken_meter
 run_test test_stop_immediately
 run_test test_recorder_failure

@@ -17,8 +17,13 @@ The session hands it:
 - `$4`: the command that re-invokes the tool, so the pill's buttons run what the keyboard shortcut
   runs (optional; a pill given no command draws no buttons)
 
-The pill also accepts an optional `$5`, the recording's limit in seconds, and draws the progress bar
-for it; no caller passes one yet. The limit is the transcriber slice's business.
+`$5` is the recording's limit in seconds, and is empty when the transcriber declared none (see
+[the audio limit](transcriber.md)). From it the pill draws a progress bar under the meter: 3 px high,
+on the meter's width, plain colour until 80 % of the limit has elapsed, amber from 80 to 95, red
+above. The elapsed time is the pill's own monotonic clock, started when it first reads `recording` —
+the session publishes no timer tick. The bar is absent when there is no limit, and it leaves the
+screen with the meter once the state is no longer `recording`
+([ADR-0006](../adr/0006-the-limit-and-the-bar.md)).
 
 It leaves on its own when the state file disappears, when it reads `stop`, or when the process it was
 given is gone. Three ways out, so a killed dictation cannot leave a pill frozen on screen. A screen

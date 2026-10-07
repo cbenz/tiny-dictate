@@ -20,7 +20,9 @@ use gtk4::glib::{self, ControlFlow};
 use gtk4::prelude::*;
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 
-use frame::{Frame, METER_HEIGHT_PX, METER_WIDTH_PX, Pill, Reading, SPINNER, Slice, State};
+use frame::{
+    Band, Bar, Frame, METER_HEIGHT_PX, METER_WIDTH_PX, Pill, Reading, SPINNER, Slice, State,
+};
 
 /// One tick per frame: the cadence the waveform channel is published at, and what bounds how long
 /// a pill can outlive its session.
@@ -30,6 +32,11 @@ const BAR_WIDTH_PX: f64 = 2.0;
 const BAR_STEP_PX: f64 = 4.5;
 /// Clears the bar that usually sits at the bottom of the screen.
 const MARGIN_PX: i32 = 64;
+/// The progress bar's height, under the meter and on the meter's width.
+const BAR_HEIGHT_PX: i32 = 3;
+/// The amber and red of the bar's last two bands; the plain band is the pill's own colour.
+const BAR_AMBER: (f32, f32, f32) = (251.0 / 255.0, 191.0 / 255.0, 36.0 / 255.0);
+const BAR_RED: (f32, f32, f32) = (239.0 / 255.0, 68.0 / 255.0, 68.0 / 255.0);
 /// Enough of the waveform channel to hold whole lines whatever the cadence is.
 const LEVEL_TAIL_BYTES: u64 = 4096;
 
@@ -186,9 +193,41 @@ pub fn run(options: Options) -> ExitCode {
         let _ = cr.stroke();
     });
 
+    // The progress bar sits under the meter, on the meter's width: a filled rectangle whose
+    // colour is the band the elapsed fraction falls in. It is absent when the transcriber
+    // declared no limit, and it leaves the screen with the meter once the recording is over.
+    let bar_area = gtk::DrawingArea::new();
+    bar_area.set_size_request(METER_WIDTH_PX as i32, BAR_HEIGHT_PX);
+    bar_area.set_visible(false);
+    let bar_value = Rc::new(RefCell::new(None::<Bar>));
+    let drawn_bar = Rc::clone(&bar_value);
+    bar_area.set_draw_func(move |_area, cr, width, height| {
+        let Some(bar) = *drawn_bar.borrow() else {
+            return;
+        };
+        let (red, green, blue) = match bar.band {
+            Band::Plain => (color.red, color.green, color.blue),
+            Band::Amber => BAR_AMBER,
+            Band::Red => BAR_RED,
+        };
+        cr.set_source_rgb(f64::from(red), f64::from(green), f64::from(blue));
+        cr.rectangle(
+            0.0,
+            0.0,
+            f64::from(width) * f64::from(bar.fraction),
+            f64::from(height),
+        );
+        let _ = cr.fill();
+    });
+
+    // The bar is drawn under the meter, so the two share a vertical box on the meter's width.
+    let gauge = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    gauge.append(&meter);
+    gauge.append(&bar_area);
+
     pill.append(&cancel);
     pill.append(&spinner);
-    pill.append(&meter);
+    pill.append(&gauge);
     pill.append(&label);
     pill.append(&confirm);
     window.set_child(Some(&pill));
@@ -272,7 +311,8 @@ pub fn run(options: Options) -> ExitCode {
             let (frame, next) = pill_state.borrow().advance(&reading);
 
             apply(
-                &frame, &next, previous, &spinner, &meter, &label, &cancel, &confirm, &pill, &bars,
+                &frame, &next, previous, &spinner, &meter, &bar_area, &bar_value, &label, &cancel,
+                &confirm, &pill, &bars,
             );
             *pill_state.borrow_mut() = next;
 
@@ -292,6 +332,8 @@ fn apply(
     previous: Option<State>,
     spinner: &gtk::Label,
     meter: &gtk::DrawingArea,
+    bar_area: &gtk::DrawingArea,
+    bar_value: &Rc<RefCell<Option<Bar>>>,
     label: &gtk::Label,
     cancel: &gtk::Button,
     confirm: &gtk::Button,
@@ -314,6 +356,14 @@ fn apply(
     if meter_drawn {
         *bars.borrow_mut() = frame.bars.clone();
         meter.queue_draw();
+    }
+
+    // The bar leaves the screen with the meter: `frame.bar` is `None` once the state is no longer
+    // recording, and when no limit was declared.
+    bar_area.set_visible(frame.bar.is_some());
+    if let Some(bar) = frame.bar {
+        *bar_value.borrow_mut() = Some(bar);
+        bar_area.queue_draw();
     }
 
     // Classes are never removed: the pill carries every state it has ever been in.

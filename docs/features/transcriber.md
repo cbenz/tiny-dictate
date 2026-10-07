@@ -26,14 +26,29 @@ It is resolved with `command -v` on `$TINY_DICTATE_TRANSCRIBE` when set, else on
 `tiny-dictate-transcribe` on `PATH`. An unresolvable command is reported to the user before any
 recording starts.
 
-The audio file and the session directory are what the core hands over today. The audio limit
-([ADR-0006](../adr/0006-the-limit-and-the-bar.md)) is declared separately, with
-`--print-audio-limit`, and is not asked for yet.
+## The audio limit
+
+A transcriber that caps the audio it accepts declares that cap, so a dictation can never run past it.
+It answers `--print-audio-limit` with the largest audio file it accepts, in **bytes**, on stdout and
+exits 0. Anything else — an unsupported flag, empty output, an unparsable number, a non-zero status —
+means **no limit**.
+
+The probe is asked once per dictation, before the microphone is opened, and every failure is read as
+"no limit" rather than an error: a transcriber that declares nothing is one the user dictated to
+before this existed, and gets no ceiling they did not ask for.
+
+The byte count becomes a maximum duration from the encoder's bitrate: the encoder runs
+`lame … -b 64`, i.e. 64 kbit/s, i.e. 8000 bytes per second, so the limit in seconds is `bytes / 8000`.
+At that duration the recording stops exactly as if the shortcut had been pressed — the text is
+transcribed and pasted, never dropped — and one line on stderr says the limit is why. The limit is
+passed to the pill, which draws the progress bar from its own monotonic clock; with no limit there is
+no bar ([ADR-0006](../adr/0006-the-limit-and-the-bar.md)).
 
 ## The reference implementation
 
 `transcribers/groq` is the reference transcriber (Groq Whisper), shipped with the tool and installed
-under the default name `tiny-dictate-transcribe`. It reads its configuration from the environment:
+under the default name `tiny-dictate-transcribe`. It declares `--print-audio-limit` as 25 000 000
+bytes, Groq's free-tier upload ceiling. It reads its configuration from the environment:
 
 - `GROQ_API_KEY` — required, created at <https://console.groq.com/keys>
 - `GROQ_WHISPER_MODEL` — defaults to `whisper-large-v3`; `whisper-large-v3-turbo` is faster and

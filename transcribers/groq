@@ -7,6 +7,9 @@
 #   stdout  the transcribed text
 #   exit 0  on success; any other status means failure and stderr is shown to the user
 #
+# The probe `--print-audio-limit` prints the largest audio file this transcriber accepts, in
+# bytes, and exits 0. Anything else on the command line is an audio file to transcribe.
+#
 # This is the transcriber shipped with the tool: install it as `tiny-dictate-transcribe` on PATH,
 # or point TINY_DICTATE_TRANSCRIBE at it. Copy it, or wrap it to fetch the key from wherever you
 # keep it:
@@ -33,6 +36,13 @@
 set -euo pipefail
 
 API_URL="https://api.groq.com/openai/v1/audio/transcriptions"
+
+# Groq's free tier rejects uploads above 25 MB, so that is what the tool can dictate to: the
+# recording stops by itself at the duration 25_000_000 bytes buys at 64 kbit/s, around 52 min.
+if [ "${1:-}" = "--print-audio-limit" ]; then
+    printf '25000000\n'
+    exit 0
+fi
 
 audio_file="${1:-}"
 

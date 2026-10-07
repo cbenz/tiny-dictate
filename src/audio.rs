@@ -22,6 +22,13 @@ pub const SLICE_BYTES: usize = SLICE_SAMPLES * 2;
 /// A waveform line holds 24 slices, 96 ms of audio, renewed ten times a second.
 pub const SLICES_PER_LINE: usize = 24;
 
+/// The encoder's MP3 bitrate: `lame … -b 64`, i.e. 64 kbit/s. Eight bits to the byte, so the
+/// encoder writes 8000 bytes per second and a transcriber's byte limit is that many seconds of
+/// audio.
+pub const BITRATE_KBPS: u64 = 64;
+/// The bytes one second of the encoded recording costs at that bitrate.
+pub const BYTES_PER_SECOND: u64 = BITRATE_KBPS * 1000 / 8;
+
 /// Cut a raw S16_LE mono stream into waveform lines.
 ///
 /// Each slice is reduced to its lowest and highest sample, and 24 slices make one line of 48
@@ -133,10 +140,9 @@ pub fn start_pipeline(paths: &Paths, audio: &Path) -> io::Result<()> {
             "-m",
             "m",
             "-b",
-            "64",
-            "-S",
-            "-",
         ])
+        .arg(BITRATE_KBPS.to_string())
+        .args(["-S", "-"])
         .arg(audio)
         .stdin(Stdio::from(reader))
         .spawn()?;

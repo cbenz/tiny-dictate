@@ -8,6 +8,8 @@ use std::process::{Command, Stdio};
 use std::thread::sleep;
 use std::time::Duration;
 
+use crate::audio;
+
 /// The largest error shown to the user, in characters.
 const ERROR_LIMIT: usize = 180;
 /// How long a key is held in the synthesised chord, when the environment names no delay.
@@ -40,6 +42,45 @@ fn is_executable(path: &Path) -> bool {
     fs::metadata(path)
         .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
         .unwrap_or(false)
+}
+
+/// Ask the transcriber for the largest audio file it accepts, in bytes.
+///
+/// The probe is `--print-audio-limit`. Every failure mode means "no limit" — an unsupported flag
+/// (a non-zero status), empty output, an unparsable number, a command that cannot be run — so a
+/// transcriber that declares nothing gets no ceiling the user did not ask for. The probe runs
+/// once per dictation, before the microphone is opened, and its stderr is swallowed: a
+/// transcriber that does not know the flag must not chatter in the journal.
+pub fn audio_limit(command: &Path) -> Option<u64> {
+    let output = Command::new(command)
+        .arg("--print-audio-limit")
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    parse_limit_bytes(&output.stdout)
+}
+
+/// The byte count a probe printed, or `None` when it is empty or not a number.
+fn parse_limit_bytes(stdout: &[u8]) -> Option<u64> {
+    String::from_utf8_lossy(stdout).trim().parse::<u64>().ok()
+}
+
+/// The longest recording a byte limit allows, from the encoder's bitrate.
+///
+/// The encoder runs `lame … -b 64`, i.e. 64 kbit/s, i.e. 8000 bytes per second: seconds =
+/// bytes / 8000. Zero bytes is no limit at all, not a recording of no length.
+pub fn limit_from_bytes(bytes: u64) -> Option<Duration> {
+    if bytes == 0 {
+        return None;
+    }
+
+    Some(Duration::from_secs_f64(
+        bytes as f64 / audio::BYTES_PER_SECOND as f64,
+    ))
 }
 
 /// Run the transcriber: the audio file as `$1`, the session directory as `$2`, the text on
@@ -180,5 +221,26 @@ mod tests {
         // 120 x, one space for the flattened newline, then 59 y: the 180th character.
         assert_eq!(message, format!("{} {}", "x".repeat(120), "y".repeat(59)));
         assert_eq!(message.chars().count(), 180);
+    }
+
+    #[test]
+    fn a_byte_limit_becomes_a_duration_at_the_encoder_bitrate() {
+        // 64 kbit/s is 8000 bytes per second: 8000 bytes is one second, and Groq's 25 MB
+        // free-tier ceiling is 25_000_000 / 8000 = 3125 seconds.
+        assert_eq!(limit_from_bytes(8000), Some(Duration::from_secs(1)));
+        assert_eq!(limit_from_bytes(4000), Some(Duration::from_secs_f64(0.5)));
+        assert_eq!(
+            limit_from_bytes(25_000_000),
+            Some(Duration::from_secs_f64(3125.0))
+        );
+        assert_eq!(limit_from_bytes(0), None, "zero bytes is no limit");
+    }
+
+    #[test]
+    fn an_empty_or_unparsable_probe_is_no_limit() {
+        assert_eq!(parse_limit_bytes(b""), None);
+        assert_eq!(parse_limit_bytes(b"  \n"), None);
+        assert_eq!(parse_limit_bytes(b"not a number\n"), None);
+        assert_eq!(parse_limit_bytes(b"25000000\n"), Some(25_000_000));
     }
 }

@@ -24,7 +24,10 @@ fn main() -> ExitCode {
     match arguments.first().map(String::as_str) {
         Some("_pump") => return audio::pump(&arguments[1..]),
         Some("_session") => {
-            return session::run_session(arguments.get(1).map(String::as_str).unwrap_or(""));
+            return session::run_session(
+                arguments.get(1).map(String::as_str).unwrap_or(""),
+                &arguments[2..],
+            );
         }
         Some("_present") => return presentation::present(&arguments[1..]),
         _ => {}
