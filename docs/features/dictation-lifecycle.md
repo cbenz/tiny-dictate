@@ -133,9 +133,9 @@ button or command line — is not distinguished.
 | `transcription started` | the transcriber is running |
 | `transcription ended duration=<s>s chars=<n>` | the transcriber returned, or failed |
 | `text written chars=<n>` | `transcript.txt` was written |
-| `paste succeeded`, `paste failed` | the chord was injected, or not |
+| `paste succeeded`, `paste failed` | the chord was injected, or not; an empty transcription is never pasted and says so |
 | `late cancel, text dropped` | a cancel landed while the transcription ran |
-| `failure: <error>` | a failure, with the same text the metadata's `error` holds |
+| `failure: <error>` | a failure; a session's failure carries the same text the metadata's `error` holds |
 
 The encoder's and the recorder's own output is kept out of the journal: the recorder's stderr goes
 to `arecord.err`, the encoder's to `lame.err`, and the transcriber's to `transcribe.err`, which the
