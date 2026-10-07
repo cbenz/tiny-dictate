@@ -3,7 +3,7 @@
 # presenter, notifier and keyboard injector. No microphone, no notification daemon, no
 # layer-shell surface, no network.
 #
-#   tests/run.sh                              # tests ../src/tiny-dictate
+#   tests/run.sh                              # tests ../target/release/tiny-dictate
 #   SCRIPT=/path/to/tiny-dictate tests/run.sh
 #   OLD_SCRIPT=/path/to/other tests/run.sh    # also compare the recorder race
 #   RACE_ITERATIONS=50 tests/run.sh
@@ -13,12 +13,19 @@
 # bus address and a Wayland display that do not exist, so even a missed stub could not pop a
 # notification, draw a pill or touch the real clipboard.
 
-SCRIPT="${SCRIPT:-$(cd "$(dirname "$0")/.." && pwd)/src/tiny-dictate}"
+SCRIPT="${SCRIPT:-$(cd "$(dirname "$0")/.." && pwd)/target/release/tiny-dictate}"
 OLD_SCRIPT="${OLD_SCRIPT:-}"
 RACE_ITERATIONS="${RACE_ITERATIONS:-25}"
 ONLY="${ONLY:-}"
 DIAG="${DIAG:-}"
-TRACE="${TRACE:-}"
+
+# The suite runs the built binary rather than building it: silently compiling here would test
+# something the user did not ask for, and a stale binary would not say so.
+if [ ! -x "$SCRIPT" ]; then
+    printf 'ERROR: %s is not executable.\n' "$SCRIPT"
+    printf 'Build it first: cargo build --release\n'
+    exit 99
+fi
 
 WORK="$(mktemp -d /tmp/td-work.XXXXXX)"
 if [ -n "$DIAG" ]; then
@@ -37,11 +44,6 @@ RUN="$WORK/run"
 HOME_DIR="$WORK/home"
 mkdir -p "$BIN" "$RUN" "$HOME_DIR"
 export WORK BIN RUN HOME_DIR
-
-# The Rust binary reads TINY_DICTATE_PRESENT_COMMAND; the shell implementation still being
-# ported resolves its presenter under TINY_DICTATE_PRESENT. Both are pointed at the same stub,
-# so the suite stays a regression net for the script until #9 removes it.
-export TINY_DICTATE_PRESENT="${TINY_DICTATE_PRESENT:-$BIN/present}"
 
 FAILURES=0
 CURRENT_TEST=""
@@ -195,8 +197,10 @@ cat > "$BIN/amixer" <<'STUB'
 echo "[on]"
 STUB
 
-# A meter that dies on its first slice instead of reading it. The waveform channel is a copy of
-# the stream, so nothing downstream of `tee -p` may be able to end the recording.
+# A meter that dies on its first slice instead of reading it. The scenario is kept as a regression
+# net: the waveform channel must never be able to end a recording. The in-process slicer calls no
+# external meter any more, so this stub no longer bites; what the case still checks is the shape,
+# not the stub.
 mkdir -p "$BIN-broken-meter"
 cat > "$BIN-broken-meter/od" <<'STUB'
 #!/usr/bin/env bash
@@ -216,15 +220,9 @@ done
 # ─────────────────────────── helpers ───────────────────────────
 
 td() {
-    if [ -n "$TRACE" ]; then
-        TINY_DICTATE_TRANSCRIBE="${TINY_DICTATE_TRANSCRIBE:-$BIN/transcribe}" \
-            TINY_DICTATE_PRESENT_COMMAND="${TINY_DICTATE_PRESENT_COMMAND:-$BIN/present}" PATH="$BIN:$PATH" \
-            XDG_RUNTIME_DIR="$RUN" HOME="$HOME_DIR" bash -x "$SCRIPT" "$@" 2>>"$WORK/trace.log"
-    else
-        TINY_DICTATE_TRANSCRIBE="${TINY_DICTATE_TRANSCRIBE:-$BIN/transcribe}" \
-            TINY_DICTATE_PRESENT_COMMAND="${TINY_DICTATE_PRESENT_COMMAND:-$BIN/present}" PATH="$BIN:$PATH" \
-            XDG_RUNTIME_DIR="$RUN" HOME="$HOME_DIR" "$SCRIPT" "$@"
-    fi
+    TINY_DICTATE_TRANSCRIBE="${TINY_DICTATE_TRANSCRIBE:-$BIN/transcribe}" \
+        TINY_DICTATE_PRESENT_COMMAND="${TINY_DICTATE_PRESENT_COMMAND:-$BIN/present}" PATH="$BIN:$PATH" \
+        XDG_RUNTIME_DIR="$RUN" HOME="$HOME_DIR" "$SCRIPT" "$@"
 }
 
 # Same, without any environment override: exercises the fallback to the command names looked
@@ -492,8 +490,8 @@ test_waveform_channel() {
 }
 
 # The waveform channel is a copy, and this is what that buys: a meter that dies on its first
-# slice cannot close the pipe under the recorder. Without `tee -p` the recorder takes the SIGPIPE
-# and the dictation is lost.
+# slice cannot close the pipe under the recorder. The guarantee `tee -p` used to carry is the
+# pump's now: a failed waveform write is dropped and the stream keeps draining.
 test_broken_meter() {
     start_test "the waveform meter dies mid-recording"
     td_broken_meter start
@@ -676,10 +674,10 @@ race_loop() {
 
     for i in $(seq 1 "$iterations"); do
         reset_run
-        PATH="$BIN:$PATH" TINY_DICTATE_TRANSCRIBE="$BIN/transcribe" TINY_DICTATE_PRESENT="$BIN/present" XDG_RUNTIME_DIR="$RUN" HOME="$HOME_DIR" \
+        PATH="$BIN:$PATH" TINY_DICTATE_TRANSCRIBE="$BIN/transcribe" TINY_DICTATE_PRESENT_COMMAND="$BIN/present" XDG_RUNTIME_DIR="$RUN" HOME="$HOME_DIR" \
             "$script" start >/dev/null 2>&1
         sleep 0.05
-        PATH="$BIN:$PATH" TINY_DICTATE_TRANSCRIBE="$BIN/transcribe" TINY_DICTATE_PRESENT="$BIN/present" XDG_RUNTIME_DIR="$RUN" HOME="$HOME_DIR" \
+        PATH="$BIN:$PATH" TINY_DICTATE_TRANSCRIBE="$BIN/transcribe" TINY_DICTATE_PRESENT_COMMAND="$BIN/present" XDG_RUNTIME_DIR="$RUN" HOME="$HOME_DIR" \
             "$script" stop >/dev/null 2>&1
         for _ in $(seq 1 100); do
             [ "$(PATH="$BIN:$PATH" XDG_RUNTIME_DIR="$RUN" HOME="$HOME_DIR" "$script" status 2>/dev/null)" = "idle" ] && break
