@@ -361,6 +361,8 @@ fn start_command(command: &str) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // The stamp is written here, once: the session process carries this metadata over rather
+    // than dating the dictation from its own clock.
     let _ = session.save();
     // The id is published before the pipeline: the commands that run beside this dictation read
     // it to name the session their lines concern.
@@ -487,8 +489,9 @@ pub fn transcribe_session(target: &str, print: bool) -> ExitCode {
     };
 
     let Some(transcriber) = text::resolve_transcriber() else {
+        // The session is known here, so the failure line names it (ADR-0008).
         log::line(
-            None,
+            Some(&session.id),
             "failure: No transcription command. Set TINY_DICTATE_TRANSCRIBE or install tiny-dictate-transcribe",
         );
         return ExitCode::FAILURE;
@@ -711,13 +714,14 @@ pub fn run_session(id: &str, arguments: &[String]) -> ExitCode {
     // The transcriber is resolved now rather than at the transcription, so a session that is
     // cancelled before it is ever transcribed still records which command it would have run.
     let transcriber = text::resolve_transcriber();
+    // `start` wrote the metadata and stamped the start; this process carries it over rather than
+    // dating the dictation from its own clock, so `started` and `duration` are the recording's.
     let mut session = store::Session::open(
         &runtime.sessions_directory(),
         id,
         transcriber.as_deref(),
         SystemTime::now(),
     );
-    let _ = session.save();
 
     // The configuration is read once, here in the session that needs all of it: the pill's
     // colour and the prune's `keep` now, the clipboard lease's duration when it lands.

@@ -152,15 +152,18 @@ impl Session {
         Ok(Self::new(id, directory, transcriber, started_at))
     }
 
-    /// Reopen the session a forked session process owns, by id. The metadata is built again
-    /// from the fields the process knows; the file on disk is the previous stage's.
+    /// Reopen the session a forked session process owns, by id: the metadata `start` wrote is
+    /// the trace, so the child carries its `started` over rather than stamping one of its own.
+    /// A directory whose metadata cannot be read is rebuilt from the fields this process knows.
     pub fn open(
         sessions: &Path,
         id: &str,
         transcriber: Option<&Path>,
         started_at: SystemTime,
     ) -> Self {
-        Self::new(id.to_owned(), sessions.join(id), transcriber, started_at)
+        Self::load(sessions, id).unwrap_or_else(|| {
+            Self::new(id.to_owned(), sessions.join(id), transcriber, started_at)
+        })
     }
 
     /// Read a kept session back from disk, metadata included: the durable trace is the file,
