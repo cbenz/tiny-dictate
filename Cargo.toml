@@ -6,4 +6,8 @@ description = "Minimal voice dictation for Linux"
 publish = false
 
 [dependencies]
+# The pill links GTK and gtk4-layer-shell directly; only the `_present` mode calls `gtk::init()`, so
+# the interactive commands still exec in a few milliseconds.
+gtk4 = { version = "0.11.5", features = ["v4_22"] }
+gtk4-layer-shell = { version = "0.8.1", features = ["v1_3"] }
 libc = "0.2.190"
