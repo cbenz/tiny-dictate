@@ -12,6 +12,10 @@ use std::time::Duration;
 
 use crate::session::{Paths, self_executable};
 
+/// The word a cancellation writes into the state file: the verdict, which belongs to the
+/// cancellation and not to the session it interrupts.
+pub const CANCELLED: &str = "cancelled";
+
 /// Write one word into the state file, atomically: a reader must never see half a state, and a
 /// truncating write is not atomic while a rename is.
 pub fn write_state(state_file: &Path, word: &str) {
@@ -19,6 +23,16 @@ pub fn write_state(state_file: &Path, word: &str) {
     if fs::write(&temporary, format!("{word}\n")).is_ok() {
         let _ = fs::rename(&temporary, state_file);
     }
+}
+
+/// Whether the state file holds the cancelled verdict.
+///
+/// `cancel` writes the verdict and signals the recorder, never the session: the session reads
+/// the word off the file, so the verdict can arrive at any moment and is never missed.
+pub fn cancelled(state_file: &Path) -> bool {
+    fs::read_to_string(state_file)
+        .map(|state| state.trim() == CANCELLED)
+        .unwrap_or(false)
 }
 
 /// The one presenter of this dictation, and the state file it watches.
