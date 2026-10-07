@@ -62,8 +62,9 @@ The pipeline exists only while a dictation runs, and its files go with the sessi
 
 ## `start`, `stop`, `toggle`, `status`
 
-- `start` resolves the transcriber and the presenter, refuses to run when either is missing, claims
-  the session directory, refuses when the microphone is muted, and starts the pipeline.
+- `start` resolves the transcriber, refuses to run without one, claims the session directory,
+  refuses when the microphone is muted, and starts the pipeline. The pill is not a plugin: the
+  session spawns it, and a pill that cannot start costs the pill only.
 - `stop` signals the recorder only, never the encoder: the encoder must outlive it to flush the last
   frames. When no recording is active but a session is transcribing, it prints
   `Transcription already in progress` on stderr. It never notifies: the pill already shows
@@ -89,8 +90,8 @@ The failures that are notified:
   appended when it wrote one (newlines flattened, truncated to 180 characters).
 - `Transcription failed: <error>`, the transcriber's stderr flattened the same way.
 - `Could not paste the transcription`, when the injected `Shift+Insert` fails.
-- `No transcription command. Set TINY_DICTATE_TRANSCRIBE or install tiny-dictate-transcribe`, and
-  the same for the presenter, before any recording starts.
+- `No transcription command. Set TINY_DICTATE_TRANSCRIBE or install tiny-dictate-transcribe`,
+  before any recording starts.
 - `Cannot create the audio pipe`, and `Microphone is muted. Unmute it before dictating.` with
   critical urgency.
 - `Missing dependencies`, when `arecord`, `lame`, `ydotool`, `notify-send`, `curl`, `wl-copy` or

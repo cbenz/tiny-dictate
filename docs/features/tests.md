@@ -51,7 +51,8 @@ presenter was asked to draw, the lifecycle of the processes, the exit codes.
 - stopping immediately after starting (the reported race)
 - the recorder failing at startup, with its stderr shown to the user
 - the transcription command failing
-- no transcription command configured, and no presenter configured
+- no transcription command configured, and a presenter that cannot start (the dictation runs on
+  without a pill)
 - the fallback to the default command names on `PATH`
 - cancel while recording
 - a new dictation starting before the cancelled verdict is over

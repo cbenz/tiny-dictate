@@ -46,23 +46,23 @@ the command, so two shortcuts pressed at once cannot interleave. `status` takes 
 
 ## Plugins
 
-The core has no transcription backend of its own and draws nothing itself. Two commands carry both.
-Each is resolved with `command -v` on `$TINY_DICTATE_<NAME>` when set and on a default name
-otherwise; each is reported to the user before any recording starts when it cannot be resolved.
+The core has no transcription backend of its own: one command carries it. It is resolved with
+`command -v` on `$TINY_DICTATE_TRANSCRIBE` when set and on `tiny-dictate-transcribe` otherwise, and
+reported to the user before any recording starts when it cannot be resolved.
 
 | surface | variable | default name | specification |
 |---------|----------|--------------|---------------|
 | transcriber | `TINY_DICTATE_TRANSCRIBE` | `tiny-dictate-transcribe` | [features/transcriber.md](features/transcriber.md) |
-| presenter | `TINY_DICTATE_PRESENT` | `tiny-dictate-present` | [features/pill.md](features/pill.md) |
 
-The transcriber is the only mandatory plugin: the tool cannot work without one. A missing presenter
-is also refused before recording starts, because a dictation with no feedback on screen is a
-dictation the user cannot see.
+The transcriber is the only mandatory plugin: the tool cannot work without one. The pill is not one
+— it is built into the binary, so nothing has to be installed beside it, and a pill that cannot
+start costs the pill only: the dictation goes on without one (see
+[features/pill.md](features/pill.md)).
 
-The presenter is the one seam the Rust port keeps for its tests. The session spawns the binary's
-own `_present` mode — `tiny-dictate _present <state file> <pid> <waveform file> <self command>` — and
+The presenter is the one seam the tests keep. The session spawns the binary's own `_present` mode —
+`tiny-dictate _present <state file> <pid> <waveform file> <self command>` — and
 `TINY_DICTATE_PRESENT_COMMAND` names another command instead. It is internal, never documented in
-the README: a pill that cannot start costs the pill only, and the dictation goes on.
+the README.
 
 ## Invariants
 
