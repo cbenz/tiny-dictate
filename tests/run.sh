@@ -40,6 +40,9 @@ fi
 export DBUS_SESSION_BUS_ADDRESS="unix:path=$WORK/no-session-bus"
 export WAYLAND_DISPLAY="td-test-no-wayland"
 BIN="$WORK/bin"
+# A second stub directory: the ordinary `wl-copy` exits at once, and only the lease's own case wants
+# one that holds the offer, the way `--foreground` does.
+BIN_LEASE="$WORK/bin-lease"
 RUN="$WORK/run"
 HOME_DIR="$WORK/home"
 # The durable sessions live under the state directory. Pointing it at the work directory
@@ -197,6 +200,9 @@ cat > "$BIN/wl-copy" <<'STUB'
 #!/usr/bin/env bash
 cat > "$WORK/clipboard"
 printf '%s\n' "$*" >> "$WORK/wl-copy.log"
+# The lease wraps the offer in coreutils' `timeout`; the parent's command line is what makes the
+# wrapper observable while `timeout` itself stays the real one.
+printf '%s\n' "$(tr '\0' ' ' < "/proc/$PPID/cmdline")" >> "$WORK/wl-copy-parent.log"
 STUB
 
 cat > "$BIN/wl-paste" <<'STUB'
@@ -237,10 +243,23 @@ cat > "$BIN-broken-meter/od" <<'STUB'
 exit 1
 STUB
 
-chmod +x "$BIN"/* "$BIN-broken-meter"/*
+# A `wl-copy --foreground` stand-in: it holds the offer until it is killed, the way the real one
+# holds the selection for the lease, and its death is what takes the offer off the clipboard. Only
+# the lease's own case uses it; `cleanup_processes` reaps it.
+mkdir -p "$BIN_LEASE"
+cat > "$BIN_LEASE/wl-copy" <<'STUB'
+#!/usr/bin/env bash
+cat > "$WORK/clipboard"
+printf '%s\n' "$*" >> "$WORK/wl-copy.log"
+printf '%s\n' "$(tr '\0' ' ' < "/proc/$PPID/cmdline")" >> "$WORK/wl-copy-parent.log"
+trap 'rm -f "$WORK/clipboard"; exit 0' TERM INT
+while :; do sleep 0.05; done
+STUB
+
+chmod +x "$BIN"/* "$BIN-broken-meter"/* "$BIN_LEASE"/*
 
 # A broken stub would silently test nothing: check them before running anything.
-for stub in "$BIN"/* "$BIN-broken-meter"/*; do
+for stub in "$BIN"/* "$BIN-broken-meter"/* "$BIN_LEASE"/*; do
     if ! bash -n "$stub"; then
         printf 'ERROR: stub %s is not valid bash\n' "$stub"
         exit 99
@@ -259,6 +278,14 @@ td() {
 # up on PATH.
 td_default() {
     PATH="$BIN:$PATH" XDG_RUNTIME_DIR="$RUN" HOME="$HOME_DIR" "$SCRIPT" "$@"
+}
+
+# Same, with a `wl-copy` that holds the offer for the whole lease instead of exiting at once.
+td_lease() {
+    TINY_DICTATE_TRANSCRIBE="${TINY_DICTATE_TRANSCRIBE:-$BIN/transcribe}" \
+        TINY_DICTATE_PRESENT_COMMAND="${TINY_DICTATE_PRESENT_COMMAND:-$BIN/present}" \
+        PATH="$BIN_LEASE:$BIN:$PATH" \
+        XDG_RUNTIME_DIR="$RUN" HOME="$HOME_DIR" "$SCRIPT" "$@"
 }
 
 # Same as td, with a waveform meter that dies instead of reading the stream.
@@ -327,12 +354,16 @@ reset_run() {
     : > "$WORK/events.log"
     : > "$WORK/ydotool.log"
     : > "$WORK/wl-copy.log"
+    : > "$WORK/wl-copy-parent.log"
     rm -f "$WORK/transcribe-size" "$WORK/transcribe-received" "$WORK/clipboard" \
         "$WORK/arecord-report" "$WORK/lame-report" "$WORK/journal.err"
 }
 
 cleanup_processes() {
     pkill -f "$WORK/bin/" 2>/dev/null
+    # The lease's blocking stub holds the selection until it is killed; nothing else may leave it
+    # running for the next case.
+    pkill -f "$WORK/bin-lease/" 2>/dev/null
     # The arecord stub execs the real binary, so its command line no longer mentions
     # the stub directory.
     pkill -f 'arecord -D null' 2>/dev/null
@@ -414,6 +445,23 @@ recorder_alive() {
 pasted_text() { cat "$WORK/clipboard" 2>/dev/null; }
 
 pasted() { [ -n "$(pasted_text)" ]; }
+
+# The lease's blocking stub is the offer: while it lives, a process is serving the selection, and
+# its death is the lease ending.
+lease_offer_alive() { pgrep -f "$WORK/bin-lease/" >/dev/null 2>&1; }
+no_lease_offer() { ! lease_offer_alive; }
+
+# The session spawns the offer and goes on: the clipboard does not necessarily hold the text the
+# instant the command that wrote it returned, and a `transcribe` has no keypress after the offer to
+# give it time. A test that reads the clipboard waits for the text rather than racing the process.
+wait_pasted_text() {
+    local i
+    for i in $(seq 1 100); do
+        [ "$(pasted_text)" = "$1" ] && return 0
+        sleep 0.02
+    done
+    return 1
+}
 
 # The stub presenter polls, so the state it was asked to draw is not in the log the instant
 # the command that wrote it returns.
@@ -1075,7 +1123,7 @@ test_transcribe_copies_and_rewrites() {
     check "transcribe succeeds" [ "$?" -eq 0 ]
     check "the transcript is overwritten" [ "$(cat "$dir/transcript.txt")" = "second text" ]
     check "the raw response is overwritten" [ "$(cat "$dir/transcript.raw.json")" = '{"raw":"second"}' ]
-    check "the text is on the clipboard" [ "$(pasted_text)" = "second text" ]
+    check "the text is on the clipboard" wait_pasted_text "second text"
     check "the command says the text is on the clipboard" \
         grep -q "^tiny-dictate: $id: transcript copied to the clipboard$" "$WORK/transcribe.err"
     check "the metadata says transcribed" [ "$(metadata_value "$dir" outcome)" = '"transcribed"' ]
@@ -1349,6 +1397,118 @@ test_pill_color() {
     check "no leftover process" no_leftover_process
 }
 
+# ─────────────────────── the clipboard lease ───────────────────────
+
+# The transcript is offered on both selections with the KDE password hint, wrapped in
+# `timeout <clipboard_seconds>`: the offer serves the lease, and the hint is what keeps the text
+# out of a clipboard history. `--paste-once` is never used — a stolen focus, a paste into the
+# wrong window or a clipboard manager reading the data would cost the user the text (ADR-0007).
+#
+# The stub logs the command line of its own parent, so `timeout` stays the real coreutils and the
+# wrapper is still observable.
+test_clipboard_lease_invocation() {
+    start_test "the offer carries the password hint on both selections, under the default lease"
+    TRANSCRIBE_TEXT="leased text" td start
+    sleep 0.4
+    td stop
+    check "the dictation finishes" wait_idle
+
+    check "the CLIPBOARD offer carries the password hint" \
+        grep -qx -- '--foreground --sensitive' "$WORK/wl-copy.log"
+    check "the PRIMARY offer carries the password hint" \
+        grep -qx -- '--primary --foreground --sensitive' "$WORK/wl-copy.log"
+    check "the offer is never paste-once" \
+        bash -c '! grep -q -- --paste-once "$1"' _ "$WORK/wl-copy.log"
+    check "the CLIPBOARD offer is wrapped in the default lease" \
+        grep -q -- 'timeout 60 .*wl-copy --foreground --sensitive' "$WORK/wl-copy-parent.log"
+    check "the PRIMARY offer is wrapped in the default lease" \
+        grep -q -- 'timeout 60 .*wl-copy --primary --foreground --sensitive' "$WORK/wl-copy-parent.log"
+}
+
+# The lease's duration is the configuration's `clipboard_seconds`, and `0` means no expiry: no
+# `timeout` wrapper at all, the offer then serving until another client takes the selection over.
+test_clipboard_lease_duration_from_config() {
+    start_test "the lease duration comes from the configuration, and 0 means no expiry"
+    write_config 'clipboard_seconds = 7'
+    TRANSCRIBE_TEXT="leased text" td start
+    sleep 0.4
+    td stop
+    check "the dictation finishes" wait_idle
+
+    check "the CLIPBOARD offer is wrapped at the configured duration" \
+        grep -q -- 'timeout 7 .*wl-copy --foreground --sensitive' "$WORK/wl-copy-parent.log"
+    check "the PRIMARY offer is wrapped at the configured duration" \
+        grep -q -- 'timeout 7 .*wl-copy --primary --foreground --sensitive' "$WORK/wl-copy-parent.log"
+
+    : > "$WORK/wl-copy.log"
+    : > "$WORK/wl-copy-parent.log"
+    write_config 'clipboard_seconds = 0'
+    TRANSCRIBE_TEXT="leased text" td start
+    sleep 0.4
+    td stop
+    check "the second dictation finishes" wait_idle
+
+    check "the text is still offered" wait_pasted_text "leased text"
+    check "a zero duration leaves no timeout wrapper" \
+        bash -c '! grep -q "^timeout " "$1"' _ "$WORK/wl-copy-parent.log"
+    check "the hint is still carried without a lease" \
+        grep -qx -- '--foreground --sensitive' "$WORK/wl-copy.log"
+    check "no leftover process" no_leftover_process
+}
+
+# `transcribe` offers the rescued text through the same single path as a dictation, so it gets the
+# same lease: the same `--foreground --sensitive` offer, wrapped in the same `timeout`.
+test_transcribe_uses_the_lease() {
+    start_test "transcribe offers the rescued text through the same lease"
+    write_config 'clipboard_seconds = 4'
+    TRANSCRIBE_TEXT="first text" td start
+    sleep 0.4
+    td stop
+    check "the dictation finishes" wait_idle
+
+    : > "$WORK/wl-copy.log"
+    : > "$WORK/wl-copy-parent.log"
+    rm -f "$WORK/clipboard"
+    TRANSCRIBE_TEXT="rescued text" td transcribe last 2> "$WORK/lease-transcribe.err"
+    check "transcribe succeeds" [ "$?" -eq 0 ]
+    check "the rescued text is offered" wait_pasted_text "rescued text"
+    check "transcribe offers the CLIPBOARD selection with the hint" \
+        grep -qx -- '--foreground --sensitive' "$WORK/wl-copy.log"
+    check "transcribe offers the PRIMARY selection with the hint" \
+        grep -qx -- '--primary --foreground --sensitive' "$WORK/wl-copy.log"
+    check "transcribe's offer is wrapped in the configured lease" \
+        grep -q -- 'timeout 4 .*wl-copy --foreground --sensitive' "$WORK/wl-copy-parent.log"
+    check "no leftover process" no_leftover_process
+}
+
+# The offer serves the lease and then dies, taking the transcript with it: the same process is
+# still there, still pasteable, later in the lease, and nothing of it is left once the lease ends.
+# What the compositor hands over when the user copies something else is not observable through a
+# stub; `wl-copy --foreground` exiting by itself is what leaves that newer copy alone.
+test_clipboard_lease_expires() {
+    start_test "the offer serves the whole lease, then takes the transcript with it"
+    write_config 'clipboard_seconds = 2'
+    TRANSCRIBE_TEXT="leased text" td_lease start
+    sleep 0.4
+    td_lease stop
+    check "the dictation finishes" wait_idle
+
+    check "the text is offered" wait_pasted_text "leased text"
+    check "a process is serving the offer" lease_offer_alive
+
+    sleep 0.3
+    check "the offer is still pasteable later in the lease" [ "$(pasted_text)" = "leased text" ]
+    check "the same process is still serving it" lease_offer_alive
+
+    local i
+    for i in $(seq 1 60); do
+        no_lease_offer && break
+        sleep 0.1
+    done
+    check "the offer is gone once the lease ends" no_lease_offer
+    check "the transcript is gone from the clipboard" [ -z "$(pasted_text)" ]
+}
+
 # The reported bug: `start` wrote the recorder PID from a subshell that raced with
 # the worker, so the worker could believe recording was over and transcribe an empty
 # file. Run the same scenario many times and count the failures.
@@ -1601,6 +1761,10 @@ run_test test_prune_not_after_cancel
 run_test test_prune_not_after_crash
 run_test test_config_never_blocks_a_dictation
 run_test test_pill_color
+run_test test_clipboard_lease_invocation
+run_test test_clipboard_lease_duration_from_config
+run_test test_transcribe_uses_the_lease
+run_test test_clipboard_lease_expires
 run_test test_race_loop
 if [ -n "$OLD_SCRIPT" ] && [ -z "$ONLY" ]; then
     test_race_loop_old

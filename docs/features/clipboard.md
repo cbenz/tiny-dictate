@@ -15,6 +15,32 @@ available on both selections if the injected keypress misses.
 checks live in the commands that need them, so `history` and `transcribe --print` run on a machine
 without a clipboard tool, and a missing one costs the paste, never the recording.
 
+## The lease
+
+Both offers carry the KDE password hint and live for the lease
+([ADR-0007](../adr/0007-the-clipboard-lease.md)):
+
+```
+timeout <clipboard_seconds> wl-copy --foreground --sensitive
+timeout <clipboard_seconds> wl-copy --primary --foreground --sensitive
+```
+
+`--foreground` keeps `wl-copy` in the process `timeout` wrapped, so the offer serves the selection
+for the whole lease, as many pastes as the user needs, and the wrapper is what ends it. When the
+lease ends the transcript is gone from the clipboard; when the user copies something else in the
+meantime, `wl-copy` exits by itself and leaves that newer copy alone. `--paste-once` is deliberately
+not used: a window that steals focus, a paste into the wrong window or a clipboard manager reading
+the data would cost the user the text.
+
+`--sensitive` sets `x-kde-passwordManagerHint` (presence only), which is what keeps the transcript
+out of a clipboard history, and what stops a clipboard manager from consuming the offer the lease
+depends on.
+
+The duration is `clipboard_seconds`, read from the [configuration file](configuration.md), `60` by
+default; `0` means no expiry, and then no `timeout` wrapper at all. The text is written to the
+session before any clipboard write, and every clipboard write goes through the one function, so
+`transcribe` gets the same lease as a dictation.
+
 ## The injected keypress
 
 The transcript is inserted with `ydotool`, which replays a `Shift+Insert` chord at the input layer:

@@ -136,7 +136,7 @@ pub fn notify(message: &str, expire_ms: u32, urgency: &str) {
 /// Offer the text on both selections, the way a normal dictation does, and report whether the
 /// CLIPBOARD selection took it. Every clipboard write in the tool goes through here, so the lease
 /// has exactly one place to replace. `clipboard_seconds` is the lease's duration, read from the
-/// configuration.
+/// configuration: `0` means no expiry.
 pub fn copy_to_clipboard(value: &str, clipboard_seconds: u64) -> bool {
     let clipboard = clipboard_write(value, false, clipboard_seconds);
     let _ = clipboard_write(value, true, clipboard_seconds);
@@ -149,9 +149,9 @@ pub fn copy_to_clipboard(value: &str, clipboard_seconds: u64) -> bool {
 /// Wayland has no API to insert text into another client, so the text is copied and the chord
 /// pressed. The chord carries no Enter: the text is inserted, never submitted.
 ///
-/// `clipboard_seconds` is the lease's duration, read from the configuration; the lease itself
-/// ([ADR-0007](../docs/adr/0007-the-clipboard-lease.md)) is what will wrap the offer in
-/// `timeout <clipboard_seconds>`.
+/// `clipboard_seconds` is the lease's duration, read from the configuration: the offer is wrapped
+/// in `timeout <clipboard_seconds>`, so it is gone when the lease ends
+/// ([ADR-0007](../docs/adr/0007-the-clipboard-lease.md)).
 pub fn paste(value: &str, clipboard_seconds: u64) -> bool {
     copy_to_clipboard(value, clipboard_seconds);
 
@@ -169,24 +169,58 @@ pub fn paste(value: &str, clipboard_seconds: u64) -> bool {
     inserted
 }
 
-fn clipboard_write(value: &str, primary: bool, _clipboard_seconds: u64) -> bool {
-    let mut child = Command::new("wl-copy");
+/// Offer the text on one selection, under the lease.
+///
+/// The offer is `timeout <clipboard_seconds> wl-copy --foreground --sensitive` (no `timeout`
+/// wrapper when the duration is `0`): `--foreground` keeps `wl-copy` in the process `timeout`
+/// wrapped, so the wrapper, or another client taking the selection over, is what ends the offer;
+/// `--sensitive` sets the KDE password hint, which keeps the transcript out of a clipboard
+/// history and stops a manager from consuming the offer; `--paste-once` is deliberately absent, so
+/// a stolen focus, a paste into the wrong window or a manager reading the data cannot cost the
+/// user the text ([ADR-0007](../docs/adr/0007-the-clipboard-lease.md)).
+///
+/// The offer is not waited for: `--foreground` serves the selection for the whole lease, so
+/// waiting here would wait out the lease and the paste would arrive a minute late. What is
+/// reported is whether the offer took the text: a `wl-copy` that cannot reach a compositor dies on
+/// the spot, which closes the pipe under the write or leaves an already-exited process behind. An
+/// offer still alive once the text has been handed over is serving the selection.
+fn clipboard_write(value: &str, primary: bool, clipboard_seconds: u64) -> bool {
+    // A duration of `0` means no expiry: the offer is not wrapped, and serves until another
+    // client takes the selection over.
+    let mut command = match clipboard_seconds {
+        0 => Command::new("wl-copy"),
+        seconds => {
+            let mut command = Command::new("timeout");
+            command.arg(seconds.to_string()).arg("wl-copy");
+            command
+        }
+    };
     if primary {
-        child.arg("--primary");
+        command.arg("--primary");
     }
-    child
+    command
+        .arg("--foreground")
+        .arg("--sensitive")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
-    if let Ok(mut process) = child.spawn() {
-        if let Some(mut stdin) = process.stdin.take() {
-            let _ = stdin.write_all(value.as_bytes());
+    if let Ok(mut process) = command.spawn() {
+        let written = match process.stdin.take() {
+            Some(mut stdin) => stdin.write_all(value.as_bytes()).is_ok(),
+            None => false,
+        };
+
+        if !written {
+            // The offer never took the text (no compositor, a broken `wl-copy`): reap it.
+            let _ = process.wait();
+            return false;
         }
-        return process
-            .wait()
-            .map(|status| status.success())
-            .unwrap_or(false);
+
+        return match process.try_wait() {
+            Ok(Some(status)) => status.success(),
+            _ => true,
+        };
     }
 
     false
