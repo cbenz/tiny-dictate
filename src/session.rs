@@ -342,6 +342,169 @@ fn discard(paths: &Paths, session: &store::Session) {
     let _ = fs::remove_dir_all(&session.directory);
 }
 
+/// The widest summary a history line carries: enough words to recognize a session, not a page.
+const SUMMARY_WORDS: usize = 60;
+
+/// `history`: list the kept sessions, newest first, with the id, the duration, the outcome and
+/// the first words of the transcript or the error.
+///
+/// It reads the sessions directory and nothing else: no encoder, no clipboard tool, no
+/// microphone, no pill. A machine that cannot dictate can still read what is kept.
+pub fn history() -> ExitCode {
+    let runtime = Runtime::from_env();
+    let sessions = runtime.sessions_directory();
+
+    for id in store::session_ids(&sessions) {
+        // A directory without readable metadata is not a session this command can describe; it
+        // is still a session `session delete` can remove.
+        if let Some(session) = store::Session::load(&sessions, &id) {
+            println!("{}", history_line(&session));
+        }
+    }
+
+    ExitCode::SUCCESS
+}
+
+/// One history line: `<id>  <duration>  <outcome>  <first words>`.
+///
+/// The duration is `null` while a session died mid-recording, which `-` stands for. The summary
+/// is the error when there is one, else the first words of the transcript, else `-`.
+fn history_line(session: &store::Session) -> String {
+    let duration = session
+        .metadata
+        .duration
+        .map_or_else(|| "-".to_owned(), |seconds| format!("{seconds:.1}s"));
+    let summary = session
+        .metadata
+        .error
+        .clone()
+        .or_else(|| transcript_words(&session.transcript()))
+        .unwrap_or_else(|| "-".to_owned());
+
+    format!(
+        "{}  {}  {}  {}",
+        session.id, duration, session.metadata.outcome, summary
+    )
+}
+
+/// The first words of a transcript file, when it holds any.
+fn transcript_words(path: &Path) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    let words = store::first_words(&text, SUMMARY_WORDS);
+    if words.is_empty() { None } else { Some(words) }
+}
+
+/// `transcribe <id|last> [--print]`: run the transcriber again on a kept session, rewrite its
+/// `transcript.txt` and its metadata, then offer the text on the clipboard -- or print it.
+///
+/// The transcriber contract is the one a live dictation uses: `$1` the audio, `$2` the session
+/// directory, the text on stdout, the error on stderr. Nothing here needs the encoder, the
+/// recorder or the clipboard tools; `--print` does not even need `wl-copy`.
+pub fn transcribe_session(target: &str, print: bool) -> ExitCode {
+    let runtime = Runtime::from_env();
+    let sessions = runtime.sessions_directory();
+
+    let Some(id) = store::resolve_id(&sessions, target) else {
+        return unknown_session(target);
+    };
+    let Some(mut session) = store::Session::load(&sessions, &id) else {
+        return unknown_session(target);
+    };
+
+    let Some(transcriber) = text::resolve_transcriber() else {
+        journal::log(
+            None,
+            "failure: No transcription command. Set TINY_DICTATE_TRANSCRIBE or install tiny-dictate-transcribe",
+        );
+        return ExitCode::FAILURE;
+    };
+
+    // The transcriber's stderr is collapsed into the one line a failure is shown as, exactly
+    // like a live dictation. It is written outside the session directory: a rescue leaves no
+    // trace of its own in the session it rescues.
+    let error_file = std::env::temp_dir().join(format!(
+        "tiny-dictate-transcribe-{}-{}.err",
+        std::process::id(),
+        session.id
+    ));
+    let result = text::transcribe(
+        &transcriber,
+        &session.audio(),
+        &session.directory,
+        &error_file,
+    );
+    let error = fs::read_to_string(&error_file)
+        .map(|text| text::format_error(&text))
+        .unwrap_or_else(|_| "Unknown error".to_owned());
+    let _ = fs::remove_file(&error_file);
+
+    match result {
+        Ok(transcript) => {
+            // The transcript reaches the session before any clipboard write, as in a live
+            // dictation: a text that only lived in the clipboard is a text that can be lost.
+            let _ = fs::write(session.transcript(), &transcript);
+            session.metadata.outcome = store::TRANSCRIBED.to_owned();
+            session.metadata.error = None;
+            session.metadata.transcriber = Some(transcriber.display().to_string());
+            let _ = session.save();
+
+            if print {
+                println!("{transcript}");
+                return ExitCode::SUCCESS;
+            }
+
+            if text::copy_to_clipboard(&transcript) {
+                journal::log(Some(&session.id), "transcript copied to the clipboard");
+                ExitCode::SUCCESS
+            } else {
+                journal::log(
+                    Some(&session.id),
+                    "could not copy the transcript to the clipboard",
+                );
+                ExitCode::FAILURE
+            }
+        }
+        Err(()) => {
+            session.metadata.outcome = store::FAILED.to_owned();
+            session.metadata.error = Some(error.clone());
+            session.metadata.transcriber = Some(transcriber.display().to_string());
+            let _ = session.save();
+
+            journal::log(Some(&session.id), &format!("failure: {error}"));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `session delete <id|last>`: remove one session directory, and nothing else. This is the only
+/// verb that destroys a recording.
+pub fn session_delete(target: &str) -> ExitCode {
+    let runtime = Runtime::from_env();
+    let sessions = runtime.sessions_directory();
+
+    let Some(id) = store::resolve_id(&sessions, target) else {
+        return unknown_session(target);
+    };
+
+    match fs::remove_dir_all(sessions.join(&id)) {
+        Ok(()) => {
+            // ADR-0008: `session delete` is one of the events that carry no session id.
+            journal::log(None, "session deleted");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            journal::log(None, &format!("could not delete the session: {error}"));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The answer to an id no kept session answers to: reported on stderr, nothing removed.
+fn unknown_session(target: &str) -> ExitCode {
+    journal::log(None, &format!("unknown session: {target}"));
+    ExitCode::FAILURE
+}
+
 /// `stop`: signal the recorder, never the encoder, never the session.
 pub fn stop() -> ExitCode {
     stop_command("stop")

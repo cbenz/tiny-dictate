@@ -19,8 +19,8 @@ mod text;
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
 
-    // Hidden verbs are dispatched before any dependency check: they are internal, and a mode
-    // like `_present` runs on a machine where the recorder and the clipboard tools need not be
+    // Hidden verbs are dispatched before anything else: they are internal, and a mode like
+    // `_present` runs on a machine where the recorder and the clipboard tools need not be
     // installed.
     match arguments.first().map(String::as_str) {
         Some("_pump") => return audio::pump(&arguments[1..]),
@@ -56,6 +56,9 @@ fn main() -> ExitCode {
         cli::Command::Stop => session::stop(),
         cli::Command::Cancel => session::cancel(),
         cli::Command::Toggle => session::toggle(),
+        cli::Command::History => session::history(),
+        cli::Command::Transcribe { target, print } => session::transcribe_session(&target, print),
+        cli::Command::SessionDelete { target } => session::session_delete(&target),
     }
 }
 

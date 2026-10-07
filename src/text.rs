@@ -133,13 +133,22 @@ pub fn notify(message: &str, expire_ms: u32, urgency: &str) {
         .status();
 }
 
+/// Offer the text on both selections, the way a normal dictation does, and report whether the
+/// CLIPBOARD selection took it. Every clipboard write in the tool goes through here, so the lease
+/// has exactly one place to replace.
+pub fn copy_to_clipboard(value: &str) -> bool {
+    let clipboard = clipboard_write(value, false);
+    let _ = clipboard_write(value, true);
+
+    clipboard
+}
+
 /// Offer the text on both selections and inject it with the `Shift+Insert` chord.
 ///
 /// Wayland has no API to insert text into another client, so the text is copied and the chord
 /// pressed. The chord carries no Enter: the text is inserted, never submitted.
 pub fn paste(value: &str) -> bool {
-    clipboard_write(value, false);
-    clipboard_write(value, true);
+    copy_to_clipboard(value);
 
     if !ydotool(&["key", "42:1"]) {
         return false;
@@ -155,7 +164,7 @@ pub fn paste(value: &str) -> bool {
     inserted
 }
 
-fn clipboard_write(value: &str, primary: bool) {
+fn clipboard_write(value: &str, primary: bool) -> bool {
     let mut child = Command::new("wl-copy");
     if primary {
         child.arg("--primary");
@@ -169,8 +178,13 @@ fn clipboard_write(value: &str, primary: bool) {
         if let Some(mut stdin) = process.stdin.take() {
             let _ = stdin.write_all(value.as_bytes());
         }
-        let _ = process.wait();
+        return process
+            .wait()
+            .map(|status| status.success())
+            .unwrap_or(false);
     }
+
+    false
 }
 
 fn ydotool(arguments: &[&str]) -> bool {
