@@ -13,7 +13,7 @@ use std::os::unix::io::FromRawFd;
 use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 
-use crate::journal;
+use crate::log;
 use crate::session::{Paths, self_executable};
 
 /// One slice is 64 S16_LE samples, 4 ms of mono audio at 16 kHz.
@@ -197,7 +197,7 @@ pub fn pump(arguments: &[String]) -> ExitCode {
         .filter(|id| !id.is_empty());
 
     if let Err(error) = run_pump(Path::new(fifo), Path::new(waveform)) {
-        journal::log(
+        log::line(
             session_id,
             &format!("failure: the waveform pump stopped: {error}"),
         );

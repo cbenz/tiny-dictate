@@ -10,7 +10,7 @@ mod audio;
 mod claim;
 mod cli;
 mod config;
-mod journal;
+mod log;
 mod pill;
 mod presentation;
 mod session;
