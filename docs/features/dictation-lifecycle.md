@@ -62,7 +62,9 @@ session's `audio.mp3` from the first frame: it writes progressively instead of b
 recording, so a killed encoder leaves a file that decoders still open. The normal stop path, where
 the recorder dies first and the encoder sees end-of-file, finalises the file properly. The
 recorder, the pump and the encoder are three processes; the waveform channel is a copy of the same
-stream.
+stream. The pump opens the fifo without blocking on the other end, so an encoder that is already
+gone is a failure it reports and exits on rather than a process left waiting for a partner that
+will not come.
 
 The pipeline exists only while a dictation runs, and its runtime files go with the runtime
 directory; the recording it produces goes to the [session](sessions.md).

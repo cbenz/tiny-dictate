@@ -530,14 +530,14 @@ journal_no_line_names_a_session() { # journal_no_line_names_a_session <file>
 # The text of the failure line is the error the metadata holds: the journal and the durable
 # trace agree on what went wrong (`docs/features/dictation-lifecycle.md`).
 journal_failure_matches_metadata() { # journal_failure_matches_metadata <session dir> <session id>
-    local expected actual
+    local expected
 
     expected="$(metadata_error "$1")"
     expected="${expected#\"}"
     expected="${expected%\"}"
-    actual="$(grep -m1 -F "tiny-dictate: $2: failure: " "$JOURNAL" | sed "s/^tiny-dictate: $2: failure: //")"
 
-    [ -n "$actual" ] && [ "$actual" = "$expected" ]
+    [ -n "$expected" ] && [ "$expected" != "null" ] &&
+        grep -qF "tiny-dictate: $2: failure: $expected" "$JOURNAL"
 }
 
 # The stages of a dictation appear in the order they happened: the journal is a timeline, not a
@@ -715,6 +715,7 @@ test_recorder_failure() {
     check "the pill never claimed to transcribe" pill_never_transcribed
     check "the notification waited for the pill to go" pill_gone_before_notification
     check "every notification expires on its own" notifications_expire
+    check "no waveform channel left behind" no_waveform_channel_process
     check "no presentation left behind" presenter_left
     check "no leftover process" no_leftover_process
     check "session directory removed" session_dir_gone

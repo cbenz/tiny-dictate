@@ -132,7 +132,7 @@ pub fn create_fifo(path: &Path) -> io::Result<()> {
 /// `arecord.err` and the encoder's to `lame.err`, the files the failure path reads, and the
 /// encoder's stdout — it writes nothing there when it is given an output file — is dropped.
 pub fn start_pipeline(paths: &Paths, audio: &Path, session_id: &str) -> io::Result<()> {
-    let reader = open_fifo_reader(&paths.fifo)?;
+    let reader = open_fifo(&paths.fifo, libc::O_RDONLY)?;
     let encoder = Command::new("lame")
         .args([
             "-r",
@@ -207,9 +207,12 @@ pub fn pump(arguments: &[String]) -> ExitCode {
 }
 
 fn run_pump(fifo: &Path, waveform: &Path) -> io::Result<()> {
-    // Opening for writing blocks until the encoder has the read end, exactly as the shell's
-    // `tee` does; the recorder is already writing into the pipe before us either way.
-    let mut channel = fs::OpenOptions::new().write(true).open(fifo)?;
+    // Opening for writing blocks until a reader holds the fifo, and the encoder can already be
+    // gone by the time this process runs — the recorder's failure kills it. Opening without
+    // blocking turns that into an `ENXIO` the caller logs, instead of a pump that waits forever
+    // on a partner that will never come and outlives the dictation; the flag is cleared below,
+    // so the writes block the way `tee`'s do.
+    let mut channel = open_fifo(fifo, libc::O_WRONLY)?;
     let mut channel_file = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -239,24 +242,28 @@ fn run_pump(fifo: &Path, waveform: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Open the fifo's read end without blocking on a writer, then clear `O_NONBLOCK` so the
-/// encoder waits on the stream the way it does in the shell.
-fn open_fifo_reader(path: &Path) -> io::Result<fs::File> {
+/// Open one end of the fifo without blocking on the other end, then clear `O_NONBLOCK` so the
+/// stream applies the backpressure it applies in the shell.
+///
+/// The read end is opened before the encoder so the encoder never waits on a partner that has
+/// not started; the write end of a fifo with no reader fails with `ENXIO`, which is how a pump
+/// left behind by a dead encoder exits instead of blocking forever.
+fn open_fifo(path: &Path, flags: libc::c_int) -> io::Result<fs::File> {
     let path = CString::new(path.as_os_str().as_bytes())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path holds a NUL byte"))?;
 
-    // Safety: `open` with a valid C string and two plain flags.
-    let descriptor = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_NONBLOCK) };
+    // Safety: `open` with a valid C string and plain flags.
+    let descriptor = unsafe { libc::open(path.as_ptr(), flags | libc::O_NONBLOCK) };
     if descriptor < 0 {
         return Err(io::Error::last_os_error());
     }
 
     // Safety: a descriptor we just opened.
-    let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFL) };
-    if flags >= 0 {
+    let current = unsafe { libc::fcntl(descriptor, libc::F_GETFL) };
+    if current >= 0 {
         // Safety: same descriptor, clearing one flag.
         unsafe {
-            libc::fcntl(descriptor, libc::F_SETFL, flags & !libc::O_NONBLOCK);
+            libc::fcntl(descriptor, libc::F_SETFL, current & !libc::O_NONBLOCK);
         }
     }
 
