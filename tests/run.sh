@@ -562,12 +562,17 @@ test_no_transcribe_command() {
     check "session directory removed" session_dir_gone
 }
 
+# The pill is no longer a command the user installs: it is a mode of the tool, and the session
+# spawns the presenter itself. A presenter that cannot start therefore costs the pill only -- the
+# dictation must run end to end without one, pasting its text as usual.
 test_no_presenter() {
-    start_test "no presenter configured"
-    TINY_DICTATE_PRESENT=does-not-exist td start 2> "$WORK/no-presenter.err"
-    check "start is refused" [ "$?" -ne 0 ]
-    check "reason printed on stderr" grep -q 'No presenter' "$WORK/no-presenter.err"
-    check "nothing was recorded" [ "$(td status)" = "idle" ]
+    start_test "a presenter that cannot start"
+    TINY_DICTATE_PRESENT_COMMAND="$WORK/does-not-exist" td start 2> "$WORK/no-presenter.err"
+    check "start is not blocked by the missing pill" [ "$?" -eq 0 ]
+    sleep 0.3
+    td stop
+    check "session finishes" wait_idle
+    check "transcription pasted" [ "$(pasted_text)" = "text transcribed" ]
     check "no presentation left behind" presenter_left
     check "no leftover process" no_leftover_process
     check "session directory removed" session_dir_gone

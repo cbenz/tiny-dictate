@@ -150,3 +150,35 @@ fn hold_delay() -> Duration {
 
     Duration::from_secs_f64(seconds.clamp(0.0, 10.0))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_error_flattens_multiline_stderr_to_one_line() {
+        let stderr = "arecord: main:7226:\taudio open error:\n\n   Device or resource busy  \n";
+
+        assert_eq!(
+            format_error(stderr),
+            "arecord: main:7226: audio open error: Device or resource busy"
+        );
+    }
+
+    #[test]
+    fn format_error_is_unknown_when_there_is_nothing_to_show() {
+        assert_eq!(format_error(""), "Unknown error");
+        assert_eq!(format_error(" \n\t "), "Unknown error");
+    }
+
+    #[test]
+    fn format_error_truncates_to_180_characters() {
+        let stderr = format!("{}\n{}", "x".repeat(120), "y".repeat(120));
+
+        let message = format_error(&stderr);
+
+        // 120 x, one space for the flattened newline, then 59 y: the 180th character.
+        assert_eq!(message, format!("{} {}", "x".repeat(120), "y".repeat(59)));
+        assert_eq!(message.chars().count(), 180);
+    }
+}
