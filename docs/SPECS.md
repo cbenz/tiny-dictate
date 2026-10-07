@@ -107,9 +107,9 @@ These hold whatever implementation runs them, and a port is expected to keep the
 - `stop` and `cancel` signal the recorder, never the session. The session owns the lifecycle.
 - A signal never removes the pidfile it was read from: the session reads liveness from it.
 - The encoder outlives the recorder, so it can flush the last frames.
-- One presenter per dictation, spawned by the session, and the session is the only writer of the
-  state file. The presenter is therefore the only writer of the screen, and no stale frame can land
-  after the pill is gone.
+- One presenter per dictation, spawned by the session. The session and `cancel`'s verdict are the
+  only writers of the state file, and the presenter never writes it; the presenter is therefore the
+  only writer of the screen, and no stale frame can land after the pill is gone.
 - The session waits for the presenter to be gone before it notifies anything: one thing on screen at
   a time.
 - The pill never takes keyboard focus: the paste that ends a dictation goes to the focused window,

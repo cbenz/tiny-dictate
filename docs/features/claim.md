@@ -19,7 +19,8 @@ first, and no window between the test and the take.
    session killed by a signal, a crash) can be reclaimed; a live one never.
 
 When the claim cannot be taken, `start` prints `tiny-dictate is already busy` on stderr, exits
-non-zero, and notifies nothing: the running session's pill already shows what is going on, and it is
+non-zero, and notifies nothing: the running session's pill already shows what is going on. The pill
+never writes the state file — the session and `cancel`'s verdict are its only writers — and it is
 the only writer of the screen.
 
 ## The command lock

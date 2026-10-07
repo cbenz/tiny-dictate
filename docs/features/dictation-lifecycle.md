@@ -16,7 +16,8 @@ failure.
 
 One session process owns the whole lifecycle of a dictation. `start` forks it and exits; the session
 waits for the recorder, transcribes, injects, and cleans up after itself. It is the only process
-driving the presenter, and the only writer of the [state file](pill.md).
+driving the presenter, and — with `cancel`'s verdict — one of the two writers of the
+[state file](pill.md); the presenter never writes it.
 
 The session and everything it needs to exchange with the other commands live in a runtime
 directory under `$XDG_RUNTIME_DIR` (falling back to `$XDG_STATE_HOME` or `~/.local/state`):

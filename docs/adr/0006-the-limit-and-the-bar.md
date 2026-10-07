@@ -5,7 +5,9 @@ encoder's bitrate, so a dictation can never exceed what can be transcribed. At t
 recording stops as if the shortcut had been pressed: the text is transcribed and pasted, never
 dropped. The limit is passed to the pill, which measures elapsed time on its own monotonic clock
 from the moment it reads `recording`; the bar is 3 px high under the meter, on the meter's width,
-plain colour, white below 80%, amber between 80 and 95, red above.
+its plain band the configured waveform colour (see
+[the configuration file](../features/configuration.md)), amber from 80 to 95 % of the limit, red
+above.
 
 A transcriber that declares no limit gets no limit and no bar, rather than a ceiling the user did not
 ask for. The pill measuring elapsed time itself keeps the core from publishing a timer tick, and the

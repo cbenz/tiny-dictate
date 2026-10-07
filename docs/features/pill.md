@@ -39,9 +39,9 @@ cancellation is the pill's business, because it is a [verdict](cancel-and-verdic
 dictation itself.
 
 The pill is spawned once per dictation and never replaced. Changing state is a write to the state
-file it watches, and the session is the only writer of that file — so the pill is the only writer of
-the screen, and no frame of it can land after it is gone. The session waits for the pill to be gone
-before it notifies anything.
+file it watches; the session and `cancel`'s verdict are the only writers of that file, and the pill
+never writes it — so the pill is the only writer of the screen, and no frame of it can land after it
+is gone. The session waits for the pill to be gone before it notifies anything.
 
 `TINY_DICTATE_PRESENT_COMMAND` names another command to run in its place, with the same arguments.
 It exists for `tests/run.sh`, which stubs the pill like every other collaborator; it is internal, and

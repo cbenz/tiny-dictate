@@ -35,8 +35,8 @@ Rules the tool does not break, whatever implementation runs them:
   was read from.
 - The kill order: the recorder is signalled before the encoder, and the encoder outlives it so it can
   flush the last frames.
-- One presenter per dictation, and the session is the only writer of the state file: the presenter is
-  the only writer of the screen.
+- One presenter per dictation: the session and `cancel`'s verdict are the only writers of the state
+  file, and the presenter never writes it — the presenter is the only writer of the screen.
 - The pill leaves on its own: the state file disappears, it reads `stop`, or the process it was given
   is gone. A killed dictation cannot leave a pill frozen on screen.
 - The session waits for the presenter to be gone before it notifies anything.
