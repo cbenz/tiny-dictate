@@ -67,6 +67,21 @@ bindsym $mod+Shift+backslash exec tiny-dictate cancel
 Bindings through a key remapper such as keyd work the same way. The
 [automation page](docs/features/automation.md) describes the reference setup.
 
+### Configure the tool
+
+`$XDG_CONFIG_HOME/tiny-dictate/config.toml` (`~/.config/tiny-dictate/config.toml` by default) is
+optional, and every key has a default:
+
+```toml
+keep = 10                # the past sessions retained, oldest beyond it pruned after a dictation
+color = "#e4e4e7"        # the pill's waveform
+clipboard_seconds = 60   # how long the transcript stays offered on the clipboard, 0 means no expiry
+```
+
+A missing, unreadable or malformed file, or an unknown key, falls back to the defaults and never
+blocks a dictation. The file holds no secret: a transcriber's key comes from the environment only.
+The full page is [`docs/features/configuration.md`](docs/features/configuration.md).
+
 ### Waybar module (optional)
 
 `contrib/waybar/tiny-dictate-module.jsonc` puts the dictation state in the bar: the module reads the

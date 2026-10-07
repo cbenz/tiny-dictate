@@ -45,17 +45,17 @@ impl Presenter {
     /// Publish the first state and spawn the presenter.
     ///
     /// The default is this binary's own `_present` mode, handed the state file, the pid it
-    /// must outlive, the waveform file, the command that re-invokes the tool and the recording's
+    /// must outlive, the waveform file, the command that re-invokes the tool, the recording's
     /// limit in seconds (empty when the transcriber declared none, in which case no bar is
-    /// drawn). `TINY_DICTATE_PRESENT_COMMAND` names another command instead — the internal test
-    /// seam documented in `docs/SPECS.md`. A presenter that cannot start costs the pill only: the
-    /// dictation goes on without one.
-    pub fn start(paths: &Paths, word: &str, limit: Option<Duration>) -> Self {
+    /// drawn) and the colour of the waveform, read from the configuration. `TINY_DICTATE_PRESENT_COMMAND`
+    /// names another command instead — the internal test seam documented in `docs/SPECS.md`. A
+    /// presenter that cannot start costs the pill only: the dictation goes on without one.
+    pub fn start(paths: &Paths, word: &str, limit: Option<Duration>, color: &str) -> Self {
         write_state(&paths.state, word);
 
         Self {
             state: paths.state.clone(),
-            child: spawn(paths, limit),
+            child: spawn(paths, limit, color),
         }
     }
 
@@ -79,7 +79,7 @@ impl Presenter {
     }
 }
 
-fn spawn(paths: &Paths, limit: Option<Duration>) -> Option<Child> {
+fn spawn(paths: &Paths, limit: Option<Duration>, color: &str) -> Option<Child> {
     let self_command = self_executable();
     let own_pid = std::process::id().to_string();
 
@@ -107,6 +107,9 @@ fn spawn(paths: &Paths, limit: Option<Duration>) -> Option<Child> {
                 .map(|limit| limit.as_secs_f64().to_string())
                 .unwrap_or_default(),
         )
+        // The 6th argument is the pill's colour, read from the configuration by the session; an
+        // empty argument means the default, and the presenter parses it.
+        .arg(color)
         // The cairo renderer puts the window on screen in about a tenth of a second instead of a
         // third: the one reason the pill is drawn by this binary. It is set on this child only,
         // never by the pill for itself and never for the interactive modes.

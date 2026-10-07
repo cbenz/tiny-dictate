@@ -45,9 +45,13 @@ HOME_DIR="$WORK/home"
 # The durable sessions live under the state directory. Pointing it at the work directory
 # keeps a run hermetic: reset_run wipes it like the runtime directory.
 STATE_HOME="$WORK/state"
-mkdir -p "$BIN" "$RUN" "$HOME_DIR" "$STATE_HOME"
-export WORK BIN RUN HOME_DIR STATE_HOME
+# The configuration lives under the config directory; pointing it at the work directory keeps a
+# run hermetic too, and reset_run wipes it like the rest.
+CONFIG_HOME="$WORK/config"
+mkdir -p "$BIN" "$RUN" "$HOME_DIR" "$STATE_HOME" "$CONFIG_HOME"
+export WORK BIN RUN HOME_DIR STATE_HOME CONFIG_HOME
 export XDG_STATE_HOME="$STATE_HOME"
+export XDG_CONFIG_HOME="$CONFIG_HOME"
 
 FAILURES=0
 CURRENT_TEST=""
@@ -158,7 +162,7 @@ cat > "$BIN/present" <<'STUB'
 state_file="$1"
 owner="$2"
 waveform_file="$3"
-printf 'PRESENT start owner=%s file=%s waveform=%s caller=%s limit=%s command=%s\n' "$owner" "$state_file" "$waveform_file" "$PPID" "${5:-}" "${4:-}" >> "$WORK/events.log"
+printf 'PRESENT start color=%s owner=%s file=%s waveform=%s caller=%s limit=%s command=%s\n' "${6:-}" "$owner" "$state_file" "$waveform_file" "$PPID" "${5:-}" "${4:-}" >> "$WORK/events.log"
 state=""
 while :; do
     if ! current="$(cat "$state_file" 2>/dev/null)"; then
@@ -311,6 +315,7 @@ reset_run() {
     cleanup_processes
     rm -rf "$RUN/tiny-dictate"
     rm -rf "$STATE_HOME/tiny-dictate"
+    rm -rf "$CONFIG_HOME/tiny-dictate"
     : > "$WORK/events.log"
     : > "$WORK/ydotool.log"
     : > "$WORK/wl-copy.log"
@@ -355,6 +360,11 @@ waveform_file_is_a_slice_series() {
         }
         END { exit !(bad != 1 && (short_line == 0 || short_line == NR)) }
     ' "$file"
+}
+
+# The pill is handed the colour it draws with as $6: the waveform and the plain band of the bar.
+presenter_got_color() {
+    grep -q "^PRESENT start color=$1 " "$WORK/events.log"
 }
 
 # The pill is handed the waveform file as $3, so the waveform it draws is the recording it
@@ -489,6 +499,20 @@ session_dir_gone() { [ ! -e "$RUN/tiny-dictate/session" ]; }
 # ─────────────────────── the durable session, on disk ───────────────────────
 
 sessions_dir() { printf '%s/tiny-dictate/sessions' "$STATE_HOME"; }
+
+# The configuration file the tool reads: `$XDG_CONFIG_HOME/tiny-dictate/config.toml`.
+config_file() { printf '%s/tiny-dictate/config.toml' "$CONFIG_HOME"; }
+
+# Write a configuration file, one line per argument. An absent file is the default one.
+write_config() {
+    mkdir -p "$CONFIG_HOME/tiny-dictate"
+    printf '%s\n' "$@" > "$(config_file)"
+}
+
+# The session ids on disk, oldest first (the id is the local start timestamp).
+session_ids() { ls -1 "$(sessions_dir)" 2>/dev/null | sort; }
+
+session_count() { session_ids | grep -c . ; }
 
 # The one session directory of the run, when there is exactly one.
 single_session_dir() {
@@ -888,6 +912,152 @@ test_session_cancelled_keeps_recording() {
     check "no leftover process" no_leftover_process
 }
 
+# ─────────────── the configuration file and the prune ───────────────
+
+# The number of sessions kept comes from the configuration: after a dictation whose text was
+# pasted, the oldest sessions beyond the limit are removed, and the one just recorded is kept.
+test_prune_keeps_the_limit() {
+    start_test "the prune keeps the configured number of sessions"
+    write_config 'keep = 2'
+
+    td start 2>> "$WORK/prune.err"
+    sleep 0.4
+    td stop
+    check "the first dictation finishes" wait_idle
+
+    local first
+    first="$(session_ids | head -1)"
+    check "the first session is on disk" test -n "$first"
+
+    td start 2>> "$WORK/prune.err"
+    sleep 0.4
+    td stop
+    check "the second dictation finishes" wait_idle
+    check "two sessions are within the limit" [ "$(session_count)" -eq 2 ]
+
+    td start 2>> "$WORK/prune.err"
+    sleep 0.4
+    td stop
+    check "the third dictation finishes" wait_idle
+    check "the limit is respected" [ "$(session_count)" -eq 2 ]
+    check "the oldest session was removed" [ ! -e "$(sessions_dir)/$first" ]
+    check "the session just recorded is kept" test -d "$(sessions_dir)/$(session_ids | tail -1)"
+    check "the prune is logged" grep -q 'pruned' "$WORK/prune.err"
+    check "no leftover process" no_leftover_process
+}
+
+# A dictation that failed prunes nothing: the failure is the moment when nothing is deleted,
+# and the session it left stays available for `transcribe`.
+test_prune_not_after_failure() {
+    start_test "a failed dictation prunes nothing"
+    write_config 'keep = 1'
+
+    td start
+    sleep 0.4
+    td stop
+    check "the pasted dictation finishes" wait_idle
+    check "one session is kept" [ "$(session_count)" -eq 1 ]
+
+    # Forget the text the first dictation pasted: the failure must not put anything back.
+    rm -f "$WORK/clipboard"
+    TRANSCRIBE_FAIL=1 td start
+    sleep 0.4
+    td stop
+    check "the failed dictation finishes" wait_idle
+    check "the failure pruned nothing" [ "$(session_count)" -eq 2 ]
+    check "nothing was pasted" [ -z "$(pasted_text)" ]
+    check "no leftover process" no_leftover_process
+}
+
+# A cancelled dictation prunes nothing either: it was never pasted, so it is not the moment the
+# directory is bounded.
+test_prune_not_after_cancel() {
+    start_test "a cancelled dictation prunes nothing"
+    write_config 'keep = 1'
+
+    td start
+    sleep 0.4
+    td stop
+    check "the pasted dictation finishes" wait_idle
+    check "one session is kept" [ "$(session_count)" -eq 1 ]
+
+    td start
+    sleep 0.3
+    td cancel
+    check "the cancelled dictation finishes" wait_idle
+    check "the cancel pruned nothing" [ "$(session_count)" -eq 2 ]
+    check "no leftover process" no_leftover_process
+}
+
+# A crashed run prunes nothing either: a `SIGKILL` never reaches the pasted path, so the
+# sessions it left behind stay where they are.
+test_prune_not_after_crash() {
+    start_test "a crashed run prunes nothing"
+    write_config 'keep = 1'
+
+    td start
+    sleep 0.4
+    td stop
+    check "the pasted dictation finishes" wait_idle
+    check "one session is kept" [ "$(session_count)" -eq 1 ]
+
+    td start
+    sleep 0.3
+    kill_run
+    check "the crash pruned nothing" [ "$(session_count)" -eq 2 ]
+    check "no leftover process" no_leftover_process
+}
+
+# The configuration file is optional and never a way to refuse a dictation: an unknown key, a
+# malformed file and an unreadable one all fall back to the defaults.
+test_config_never_blocks_a_dictation() {
+    start_test "an unknown-key, malformed or unreadable config still dictates"
+
+    write_config 'keep = 1' 'unknown_key = "x"'
+    td start
+    sleep 0.3
+    td stop
+    check "a dictation with an unknown key finishes" wait_idle
+    check "and its text is pasted" [ "$(pasted_text)" = "text transcribed" ]
+
+    write_config 'this is not toml = = ='
+    td start
+    sleep 0.3
+    td stop
+    check "a dictation with a malformed config finishes" wait_idle
+    check "and its text is pasted" [ "$(pasted_text)" = "text transcribed" ]
+
+    chmod 000 "$(config_file)"
+    td start
+    sleep 0.3
+    td stop
+    check "a dictation with an unreadable config finishes" wait_idle
+    check "and its text is pasted" [ "$(pasted_text)" = "text transcribed" ]
+    chmod 600 "$(config_file)"
+    check "no leftover process" no_leftover_process
+}
+
+# The pill's colour is read from the configuration by the session and passed to the presenter:
+# the default when no file says otherwise, the configured one when it does.
+test_pill_color() {
+    start_test "the pill takes its colour from the configuration"
+
+    td start
+    sleep 0.3
+    td stop
+    check "the dictation with no config finishes" wait_idle
+    check "the default colour reaches the presenter" presenter_got_color "#e4e4e7"
+
+    : > "$WORK/events.log"
+    write_config 'color = "#ff0000" # the pill'
+    td start
+    sleep 0.3
+    td stop
+    check "the dictation with a colour finishes" wait_idle
+    check "the configured colour reaches the presenter" presenter_got_color "#ff0000"
+    check "no leftover process" no_leftover_process
+}
+
 # The reported bug: `start` wrote the recorder PID from a subshell that raced with
 # the worker, so the worker could believe recording was over and transcribe an empty
 # file. Run the same scenario many times and count the failures.
@@ -970,6 +1140,12 @@ run_test test_session_transcriber_writes_nothing
 run_test test_session_recording_killed
 run_test test_session_audio_survives_kill
 run_test test_session_cancelled_keeps_recording
+run_test test_prune_keeps_the_limit
+run_test test_prune_not_after_failure
+run_test test_prune_not_after_cancel
+run_test test_prune_not_after_crash
+run_test test_config_never_blocks_a_dictation
+run_test test_pill_color
 run_test test_race_loop
 if [ -n "$OLD_SCRIPT" ] && [ -z "$ONLY" ]; then
     test_race_loop_old

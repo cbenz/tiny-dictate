@@ -20,6 +20,7 @@ fn tiny_dictate(runtime: &Path, arguments: &[&str]) -> Output {
         .env("XDG_RUNTIME_DIR", runtime)
         .env("HOME", runtime)
         .env_remove("XDG_STATE_HOME")
+        .env_remove("XDG_CONFIG_HOME")
         .output()
         .expect("the binary runs")
 }

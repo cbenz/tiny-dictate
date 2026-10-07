@@ -27,6 +27,50 @@ pub const TRANSCRIPT_FILE: &str = "transcript.txt";
 /// The metadata, rewritten atomically at each stage.
 pub const METADATA_FILE: &str = "metadata.json";
 
+/// Which sessions to remove: the oldest beyond the newest `keep`, oldest first.
+///
+/// `ids` is the sessions directory, oldest first, and `current` is the dictation that has just
+/// been pasted: it is counted among the sessions — it is one of them — but it is never removed,
+/// even when the limit has been reached.
+pub fn sessions_to_prune(ids: &[String], keep: usize, current: &str) -> Vec<String> {
+    ids.iter()
+        .take(ids.len().saturating_sub(keep))
+        .filter(|id| id.as_str() != current)
+        .cloned()
+        .collect()
+}
+
+/// Remove the oldest sessions beyond `keep` from the sessions directory.
+///
+/// Returns the ids that were removed, oldest first; directory entries that are not session
+/// directories are left alone. A missing or unreadable directory removes nothing.
+pub fn prune_sessions(sessions: &Path, keep: usize, current: &str) -> Vec<String> {
+    let removed = sessions_to_prune(&list_sessions(sessions), keep, current);
+
+    for id in &removed {
+        let _ = fs::remove_dir_all(sessions.join(id));
+    }
+
+    removed
+}
+
+/// The session directories, oldest first. The id is the local start timestamp, so sorting the
+/// names sorts the dictations.
+fn list_sessions(sessions: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(sessions) else {
+        return Vec::new();
+    };
+
+    let mut ids: Vec<String> = entries
+        .flatten()
+        .filter(|entry| entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false))
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    ids.sort();
+
+    ids
+}
+
 /// What became of one session, as it is written to `metadata.json`.
 ///
 /// `started`, `ended` and `duration` are Unix epoch seconds; the fractional part is kept, so
@@ -235,4 +279,34 @@ fn json_string(value: &str) -> String {
 
     out.push('"');
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ids(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn the_prune_removes_the_oldest_beyond_the_number_kept() {
+        // Oldest first: `a` is the oldest, `d` the dictation just pasted.
+        let sessions = ids(&["a", "b", "c", "d"]);
+
+        assert_eq!(sessions_to_prune(&sessions, 2, "d"), ids(&["a", "b"]));
+        assert_eq!(sessions_to_prune(&sessions, 3, "d"), ids(&["a"]));
+        assert_eq!(sessions_to_prune(&sessions, 4, "d"), Vec::<String>::new());
+        assert_eq!(sessions_to_prune(&[], 2, "d"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_session_being_recorded_is_never_pruned() {
+        let sessions = ids(&["a", "b", "c", "d"]);
+
+        // Even when it is among the oldest, the session just recorded is kept: it is the
+        // one whose text was pasted a moment ago.
+        assert_eq!(sessions_to_prune(&sessions, 2, "a"), ids(&["b"]));
+        assert_eq!(sessions_to_prune(&sessions, 0, "d"), ids(&["a", "b", "c"]));
+    }
 }

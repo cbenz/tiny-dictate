@@ -56,6 +56,27 @@ impl Color {
         blue: 231.0 / 255.0,
     };
 
+    /// `#rrggbb` as the configuration writes it. Anything else is `None`, and the caller keeps
+    /// the default: a colour the presenter cannot read must not cost the pill.
+    pub fn parse_hex(value: &str) -> Option<Self> {
+        let digits = value.strip_prefix('#')?;
+        if digits.len() != 6 || !digits.chars().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+
+        let channel = |index: usize| {
+            u8::from_str_radix(&digits[index..index + 2], 16)
+                .ok()
+                .map(|value| f32::from(value) / 255.0)
+        };
+
+        Some(Self {
+            red: channel(0)?,
+            green: channel(2)?,
+            blue: channel(4)?,
+        })
+    }
+
     /// The colour in the form GTK CSS reads.
     fn hex(self) -> String {
         let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
@@ -81,16 +102,16 @@ pub struct Options {
 
 /// The `_present` usage, printed on stderr when the arguments are wrong.
 pub const USAGE: &str = "usage: tiny-dictate _present <state file> <owner pid> [waveform file] \
-[command] [limit seconds]";
+[command] [limit seconds] [color]";
 
 impl Options {
     /// Read the arguments the session passes, tolerating an absent waveform, command or limit.
     ///
     /// An empty argument is an absent one: the contract allows a presenter with no waveform
     /// channel and no command, and the session passes an empty fifth argument when the transcriber
-    /// declared no limit.
+    /// declared no limit. The colour is absent too when no configuration file says otherwise.
     pub fn parse(arguments: &[String]) -> Result<Self, String> {
-        if !(3..=5).contains(&arguments.len()) {
+        if !(3..=6).contains(&arguments.len()) {
             return Err(USAGE.to_owned());
         }
 
@@ -114,7 +135,9 @@ impl Options {
                 .and_then(|value| value.parse::<f64>().ok())
                 .filter(|seconds| *seconds > 0.0)
                 .map(Duration::from_secs_f64),
-            color: Color::DEFAULT,
+            color: argument(5)
+                .and_then(Color::parse_hex)
+                .unwrap_or(Color::DEFAULT),
         })
     }
 }
@@ -518,9 +541,28 @@ mod tests {
     }
 
     #[test]
+    fn the_colour_is_read_from_the_sixth_argument() {
+        let options =
+            parse(&["state", "1234", "wave", "tool", "120", "#ff0000"]).expect("six arguments");
+
+        assert_eq!(
+            options.color,
+            Color {
+                red: 1.0,
+                green: 0.0,
+                blue: 0.0,
+            }
+        );
+
+        // An unreadable or absent colour keeps the default rather than failing the pill.
+        let default = parse(&["state", "1234", "wave", "tool", "120", "red"]).expect("six");
+        assert_eq!(default.color, Color::DEFAULT);
+    }
+
+    #[test]
     fn a_wrong_call_prints_the_usage() {
         assert!(parse(&["state"]).is_err());
         assert!(parse(&["state", "not-a-pid", "wave", "tool"]).is_err());
-        assert!(parse(&["a", "1", "b", "c", "d", "e"]).is_err());
+        assert!(parse(&["a", "1", "b", "c", "d", "e", "f"]).is_err());
     }
 }

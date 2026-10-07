@@ -16,14 +16,15 @@ The session hands it:
 - `$3`: the path of the **waveform file**, the input waveform the pill draws while recording
 - `$4`: the command that re-invokes the tool, so the pill's buttons run what the keyboard shortcut
   runs (optional; a pill given no command draws no buttons)
+- `$5`: the recording's limit in seconds, empty when the transcriber declared none
+- `$6`: the colour of the waveform, read from the [configuration file](configuration.md) by the
+  session; empty means the default (`#e4e4e7`, zinc-200)
 
-`$5` is the recording's limit in seconds, and is empty when the transcriber declared none (see
-[the audio limit](transcriber.md)). From it the pill draws a progress bar under the meter: 3 px high,
-on the meter's width, plain colour until 80 % of the limit has elapsed, amber from 80 to 95, red
-above. The elapsed time is the pill's own monotonic clock, started when it first reads `recording` —
-the session publishes no timer tick. The bar is absent when there is no limit, and it leaves the
-screen with the meter once the state is no longer `recording`
-([ADR-0006](../adr/0006-the-limit-and-the-bar.md)).
+The limit in `$5` is what the progress bar is drawn from: 3 px high, on the meter's width, plain
+colour until 80 % of the limit has elapsed, amber from 80 to 95, red above. The elapsed time is the
+pill's own monotonic clock, started when it first reads `recording` — the session publishes no timer
+tick. The bar is absent when there is no limit, and it leaves the screen with the meter once the
+state is no longer `recording` ([ADR-0006](../adr/0006-the-limit-and-the-bar.md)).
 
 It leaves on its own when the state file disappears, when it reads `stop`, or when the process it was
 given is gone. Three ways out, so a killed dictation cannot leave a pill frozen on screen. A screen
@@ -91,8 +92,9 @@ Details that make it work:
 - `recording` carries no word: the waveform is the whole message, and a pill that announces the
   state the user just asked for announces nothing. `transcribing` carries its word. `cancelled` is a
   verdict, not a live state, so the spinner stops and it carries an emoji.
-- The waveform is a soft white (`#e4e4e7`, zinc-200). Making it configurable is the configuration
-  file's business, and comes with it.
+- The waveform takes its colour from `color` in the [configuration file](configuration.md):
+  `#e4e4e7` (zinc-200) by default, and the session hands the presenter the configured value as `$6`.
+  The pill parses it back, and an unreadable colour keeps the default rather than costing a pill.
 - The pill carries one button at each end: a cross on the left cancels the dictation, a check on the
   right stops it and transcribes it. Each is drawn only where it means something — the cross while
   the dictation is live, the check only while recording, and neither by a pill given no command. A

@@ -137,9 +137,13 @@ pub fn notify(message: &str, expire_ms: u32, urgency: &str) {
 ///
 /// Wayland has no API to insert text into another client, so the text is copied and the chord
 /// pressed. The chord carries no Enter: the text is inserted, never submitted.
-pub fn paste(value: &str) -> bool {
-    clipboard_write(value, false);
-    clipboard_write(value, true);
+///
+/// `clipboard_seconds` is the lease's duration, read from the configuration; the lease itself
+/// ([ADR-0007](../docs/adr/0007-the-clipboard-lease.md)) is what will wrap the offer in
+/// `timeout <clipboard_seconds>`.
+pub fn paste(value: &str, clipboard_seconds: u64) -> bool {
+    clipboard_write(value, false, clipboard_seconds);
+    clipboard_write(value, true, clipboard_seconds);
 
     if !ydotool(&["key", "42:1"]) {
         return false;
@@ -155,7 +159,7 @@ pub fn paste(value: &str) -> bool {
     inserted
 }
 
-fn clipboard_write(value: &str, primary: bool) {
+fn clipboard_write(value: &str, primary: bool, _clipboard_seconds: u64) {
     let mut child = Command::new("wl-copy");
     if primary {
         child.arg("--primary");
