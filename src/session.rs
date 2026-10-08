@@ -635,9 +635,10 @@ fn session_body(
         sleep(Duration::from_millis(100));
     }
 
-    // The encoder exits once the recorder is gone and it has flushed its last frames. Bounded:
-    // it can block in open() until the recorder opens the pipe, so never wait forever. When
-    // nothing was captured there is nothing to flush, so do not wait for it at all.
+    // The encoder exits once the recorder is gone and it has flushed its last frames: the pump's
+    // input ends, it closes the fifo's write end, and the encoder reads end-of-file. The loop is
+    // still bounded, so a pump that somehow outlives the recorder cannot hold the session here
+    // forever. When nothing was captured there is nothing to flush, so do not wait at all.
     let audio_present = files::file_size(&session.audio()) > 0;
     if audio_present {
         for _ in 0..100 {

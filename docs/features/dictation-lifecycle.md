@@ -50,9 +50,9 @@ The session waits for the recorder to exit, then for the encoder to flush its la
 
 - if the encoder dies first, the recorder would write into a pipe nobody reads and block forever;
   the session gives up instead.
-- `lame` blocks in `open()` until `arecord` opens the pipe, so the wait for the encoder is always
-  bounded. When nothing was captured there is nothing to flush, so the session does not wait for it
-  at all.
+- The encoder finalises at end-of-file: once the recorder is gone, the pump's input ends, the pump
+  exits and closes the fifo's write end, and `lame` flushes and exits. When nothing was captured
+  there is nothing to flush, so the session does not wait for it at all.
 
 ## The pipeline
 
@@ -63,9 +63,11 @@ session's `audio.mp3` from the first frame: it writes progressively instead of b
 recording, so a killed encoder leaves a file that decoders still open. The normal stop path, where
 the recorder dies first and the encoder sees end-of-file, finalises the file properly. The
 recorder, the pump and the encoder are three processes; the waveform channel is a copy of the same
-stream. The pump opens the fifo without blocking on the other end, so an encoder that is already
-gone is a failure it reports and exits on rather than a process left waiting for a partner that
-will not come.
+stream. `start` opens both ends of the fifo itself and hands the encoder the reader and the pump
+the writer. A fifo whose reader has no writer hands that reader end-of-file, and the pump is the
+same binary, GTK links and all: it takes tens of milliseconds to reach its first write, while a
+real encoder reads the moment it execs. Opening the write end before the encoder starts, and
+holding it until the pump has it, is what leaves no writerless window for the encoder to read.
 
 The pipeline exists only while a dictation runs, and its runtime files go with the runtime
 directory; the recording it produces goes to the [session](sessions.md).

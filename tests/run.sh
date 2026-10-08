@@ -99,7 +99,19 @@ report() { printf 'lame %s at %s\n' "$1" "$(date +%s.%N)" >> "$WORK/lame-report"
 report "start pid=$$"
 : > "$out"
 for _ in 1 2 3 4 5; do
-    dd bs=1600 count=1 status=none 2>/dev/null >> "$out"
+    # A real lame reads as soon as it starts and exits on end-of-file. The stub normally
+    # stays alive for a quarter of a second whatever happens, which is long enough for the
+    # pump to open the fifo -- hiding a fifo the encoder finds writerless. LAME_STRICT_EOF=1
+    # lets the first read decide, the way the real encoder does.
+    if [ -n "${LAME_STRICT_EOF:-}" ]; then
+        bytes="$(dd bs=1600 count=1 status=none 2>/dev/null | tee -a "$out" | wc -c)"
+        if [ "$bytes" -eq 0 ]; then
+            report "saw EOF"
+            break
+        fi
+    else
+        dd bs=1600 count=1 status=none 2>/dev/null >> "$out"
+    fi
     sleep 0.05
 done
 report "draining, file=$(wc -c < "$out") bytes"
@@ -288,6 +300,14 @@ td_lease() {
         XDG_RUNTIME_DIR="$RUN" HOME="$HOME_DIR" "$SCRIPT" "$@"
 }
 
+# Same as td, with an encoder that reads the fifo and exits on end-of-file the way the real
+# lame does, instead of staying alive long enough for the pump to arrive.
+td_strict_encoder() {
+    LAME_STRICT_EOF=1 PATH="$BIN:$PATH" \
+        TINY_DICTATE_TRANSCRIBE="$BIN/transcribe" TINY_DICTATE_PRESENT_COMMAND="$BIN/present" \
+        XDG_RUNTIME_DIR="$RUN" HOME="$HOME_DIR" "$SCRIPT" "$@"
+}
+
 # Same as td, with a waveform meter that dies instead of reading the stream.
 td_broken_meter() {
     PATH="$BIN-broken-meter:$BIN:$PATH" \
@@ -442,6 +462,20 @@ recorder_alive() {
     [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
 }
 
+# The pump never reported the stream stopped, which is what a writerless fifo makes it do.
+pump_never_reported_a_stop() {
+    ! grep -q 'the waveform pump stopped' "$WORK/encoder.err"
+}
+
+# The encoder, checked for liveness: a writerless fifo hands it end-of-file, and a real lame is
+# gone on it within milliseconds.
+encoder_alive() {
+    local pid
+
+    pid="$(cat "$RUN/tiny-dictate/session/lame.pid" 2>/dev/null)" || return 1
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
 pasted_text() { cat "$WORK/clipboard" 2>/dev/null; }
 
 pasted() { [ -n "$(pasted_text)" ]; }
@@ -536,15 +570,14 @@ no_leftover_process() {
     ! pgrep -f "$WORK/bin/" >/dev/null 2>&1 && ! pgrep -f 'arecord -D null' >/dev/null 2>&1
 }
 
-# Nothing is left reading the waveform channel once the recording is over. The fifo path pins the
-# match to this run's own copy: a dictation the user happens to be running for real, on the real
-# runtime directory, is none of this test's business. The meter is the tee's child and goes when the
-# tee does, so looking for the tee is enough.
+# Nothing is left reading the waveform channel once the recording is over. The pump's argv
+# carries this run's own waveform path, which pins the match: a dictation the user happens to be
+# running for real, on the real runtime directory, is none of this test's business.
 no_waveform_channel_process() {
     local i
 
     for i in $(seq 1 20); do
-        pgrep -f "$RUN/tiny-dictate/session/audio.fifo" >/dev/null 2>&1 || return 0
+        pgrep -f "_pump $RUN/tiny-dictate/session/waveform" >/dev/null 2>&1 || return 0
         sleep 0.05
     done
     return 1
@@ -676,7 +709,7 @@ kill_run() {
 
     pid="$(cat "$RUN/tiny-dictate/session/session.pid" 2>/dev/null)"
     [ -n "$pid" ] && kill -9 "$pid" 2>/dev/null
-    pkill -9 -f "$RUN/tiny-dictate/session/audio.fifo" 2>/dev/null
+    pkill -9 -f "_pump $RUN/tiny-dictate/session/waveform" 2>/dev/null
     cleanup_processes
     sleep 0.1
 }
@@ -715,6 +748,27 @@ test_waveform_channel() {
     check "session finishes" wait_idle
     check "transcription pasted" [ "$(pasted_text)" = "text transcribed" ]
     check "no waveform channel process left behind" no_waveform_channel_process
+    check "session directory removed" session_dir_gone
+}
+
+# The encoder reads the fifo the instant it starts, and a fifo with no writer hands it
+# end-of-file: the encoder is gone before the pump -- which loads GTK first -- can open the
+# write end. `start` must therefore open both ends itself and hand the encoder a reader that
+# already has a writer, rather than let the pump be the one that opens the fifo.
+test_encoder_finds_a_writer() {
+    start_test "the encoder never reads a writerless fifo"
+    td_strict_encoder start 2> "$WORK/encoder.err"
+    sleep 0.4
+    check "the encoder is still there" encoder_alive
+    td stop
+    check "session finishes" wait_idle
+    check "transcription pasted" [ "$(pasted_text)" = "text transcribed" ]
+    check "audio given to the transcriber is not empty (was $(audio_size) bytes)" \
+        [ "$(audio_size)" -gt 0 ] 2>/dev/null
+    check "the pump never reported a stopped stream" pump_never_reported_a_stop
+    check "no waveform channel process left behind" no_waveform_channel_process
+    check "no presentation left behind" presenter_left
+    check "no leftover process" no_leftover_process
     check "session directory removed" session_dir_gone
 }
 
@@ -1777,6 +1831,7 @@ run_test() {
 
 run_test test_normal_flow
 run_test test_waveform_channel
+run_test test_encoder_finds_a_writer
 run_test test_audio_limit
 run_test test_no_audio_limit
 run_test test_broken_meter
