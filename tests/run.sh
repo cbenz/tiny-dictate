@@ -15,6 +15,10 @@
 
 SCRIPT="${SCRIPT:-$(cd "$(dirname "$0")/.." && pwd)/target/release/tiny-dictate}"
 OLD_SCRIPT="${OLD_SCRIPT:-}"
+# The waybar module belongs to the bar, not to the binary; the suite reads it to keep the bar going
+# through the command line instead of reading the state file.
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+WAYBAR_MODULE="$REPO_ROOT/contrib/waybar/tiny-dictate-module.jsonc"
 RACE_ITERATIONS="${RACE_ITERATIONS:-25}"
 ONLY="${ONLY:-}"
 DIAG="${DIAG:-}"
@@ -43,6 +47,9 @@ BIN="$WORK/bin"
 # A second stub directory: the ordinary `wl-copy` exits at once, and only the lease's own case wants
 # one that holds the offer, the way `--foreground` does.
 BIN_LEASE="$WORK/bin-lease"
+# A third stub directory: the waybar module's exec is run with a `tiny-dictate` that prints the
+# word it is told to print, so the module's own mapping is what the test observes.
+BIN_WAYBAR="$WORK/bin-waybar"
 RUN="$WORK/run"
 HOME_DIR="$WORK/home"
 # The durable sessions live under the state directory. Pointing it at the work directory
@@ -268,10 +275,19 @@ trap 'rm -f "$WORK/clipboard"; exit 0' TERM INT
 while :; do sleep 0.05; done
 STUB
 
-chmod +x "$BIN"/* "$BIN-broken-meter"/* "$BIN_LEASE"/*
+# A `tiny-dictate` whose one word is chosen by $FAKE_STATUS, and that logs the verb it was given:
+# the module must call it, and call it with `status`.
+mkdir -p "$BIN_WAYBAR"
+cat > "$BIN_WAYBAR/tiny-dictate" <<'STUB'
+#!/usr/bin/env bash
+printf 'tiny-dictate %s\n' "$*" >> "$WORK/waybar-report"
+printf '%s\n' "${FAKE_STATUS:-idle}"
+STUB
+
+chmod +x "$BIN"/* "$BIN-broken-meter"/* "$BIN_LEASE"/* "$BIN_WAYBAR"/*
 
 # A broken stub would silently test nothing: check them before running anything.
-for stub in "$BIN"/* "$BIN-broken-meter"/* "$BIN_LEASE"/*; do
+for stub in "$BIN"/* "$BIN-broken-meter"/* "$BIN_LEASE"/* "$BIN_WAYBAR"/*; do
     if ! bash -n "$stub"; then
         printf 'ERROR: stub %s is not valid bash\n' "$stub"
         exit 99
@@ -313,6 +329,24 @@ td_broken_meter() {
     PATH="$BIN-broken-meter:$BIN:$PATH" \
         TINY_DICTATE_TRANSCRIBE="$BIN/transcribe" TINY_DICTATE_PRESENT_COMMAND="$BIN/present" \
         XDG_RUNTIME_DIR="$RUN" HOME="$HOME_DIR" "$SCRIPT" "$@"
+}
+
+# The module is JSONC. Pull its `exec` value out, undo the two JSON escapes it uses (`\\` becomes
+# `\`, `\"` becomes `"`), and what is left is the shell command waybar runs.
+waybar_module_exec() {
+    local line
+
+    line="$(grep -m1 '"exec":' "$WAYBAR_MODULE")"
+    line="${line#*\"exec\": \"}"
+    line="${line%\",}"
+    line="${line//\\\\/\\}"
+    printf '%s\n' "${line//\\\"/\"}"
+}
+
+# Run that command with a `tiny-dictate` that answers the word given, and return what the bar
+# would draw: line 1 the text, line 2 the tooltip, line 3 the CSS class.
+waybar_module_output() {
+    FAKE_STATUS="$1" PATH="$BIN_WAYBAR:$PATH" bash -c "$(waybar_module_exec)"
 }
 
 dump() {
@@ -376,7 +410,7 @@ reset_run() {
     : > "$WORK/wl-copy.log"
     : > "$WORK/wl-copy-parent.log"
     rm -f "$WORK/transcribe-size" "$WORK/transcribe-received" "$WORK/clipboard" \
-        "$WORK/arecord-report" "$WORK/lame-report" "$WORK/journal.err"
+        "$WORK/arecord-report" "$WORK/lame-report" "$WORK/journal.err" "$WORK/waybar-report"
 }
 
 cleanup_processes() {
@@ -1360,6 +1394,39 @@ test_command_line() {
         grep -q 'Usage: tiny-dictate <command>' "$WORK/help.out"
 }
 
+# The bar asks the tool for its status instead of reading the state file: reading the file made an
+# internal file an interface for anything outside the binary, which is what #9's criterion asked
+# for and #16 reverses (ADR-0013). The module runs `tiny-dictate status` and maps its two words.
+test_waybar_module_asks_the_tool() {
+    start_test "the waybar module asks the tool instead of reading the state file"
+
+    local exec_line output
+
+    exec_line="$(waybar_module_exec)"
+    check "the module has an exec line" test -n "$exec_line"
+    check "the module runs tiny-dictate status" \
+        grep -q '^tiny-dictate status' <<<"$exec_line"
+    check "the module does not read the state file" \
+        test -z "$(grep -F 'session/state' "$WAYBAR_MODULE")"
+
+    output="$(waybar_module_output idle)"
+    check "the bar called tiny-dictate status" \
+        grep -q '^tiny-dictate status$' "$WORK/waybar-report"
+    check "idle is three lines" [ "$(printf '%s\n' "$output" | wc -l)" -eq 3 ]
+    check "idle draws the microphone" [ "$(sed -n 1p <<<"$output")" = "🎤" ]
+    check "idle carries its tooltip" [ "$(sed -n 2p <<<"$output")" = "Dictation idle" ]
+    check "idle carries its CSS class" [ "$(sed -n 3p <<<"$output")" = "idle" ]
+
+    : > "$WORK/waybar-report"
+    output="$(waybar_module_output working)"
+    check "working draws the hourglass" [ "$(sed -n 1p <<<"$output")" = "⏳" ]
+    check "working carries its tooltip" [ "$(sed -n 2p <<<"$output")" = "Dictation working…" ]
+    check "working carries its CSS class" [ "$(sed -n 3p <<<"$output")" = "working" ]
+
+    check "the click still runs toggle" \
+        grep -q '"on-click": "tiny-dictate toggle"' "$WAYBAR_MODULE"
+}
+
 # ─────────────── the configuration file and the prune ───────────────
 
 # The number of sessions kept comes from the configuration: after a dictation whose text was
@@ -1867,6 +1934,7 @@ run_test test_session_delete_removes_one
 run_test test_unknown_session_id
 run_test test_rescue_without_encoder_or_clipboard
 run_test test_command_line
+run_test test_waybar_module_asks_the_tool
 run_test test_prune_keeps_the_limit
 run_test test_prune_not_after_failure
 run_test test_prune_not_after_cancel

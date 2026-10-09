@@ -1,14 +1,11 @@
 {
   "custom/tiny-dictate": {
     "format": "{}",
-    // The session writes its live state to $XDG_RUNTIME_DIR/tiny-dictate/session/state, the
-    // same file the pill draws: "recording", "transcribing", "cancelled", or "stop" while
-    // the pill is leaving. It is absent when no dictation is in flight.
-    // Reading it costs a file read; `tiny-dictate status` would spawn a GTK-linked binary
-    // every second the bar polls, which is not what a status light should cost.
-    // Line 1 is the text, line 2 the tooltip, line 3 the CSS class: waybar's format-icons
-    // requires a JSON "alt" field, which this mapping does not emit.
-    "exec": "dir=${XDG_RUNTIME_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}}; state=$(cat \"$dir/tiny-dictate/session/state\" 2>/dev/null); case \"$state\" in recording) icon=🎤; tooltip='Dictation recording…'; class=recording ;; transcribing) icon=⏳; tooltip='Dictation transcribing…'; class=transcribing ;; cancelled) icon=🛑; tooltip='Dictation cancelled'; class=cancelled ;; *) icon=🎤; tooltip='Dictation idle'; class=idle ;; esac; printf '%s\\n%s\\n%s\\n' \"$icon\" \"$tooltip\" \"$class\"",
+    // The script only prints "idle" or "working", so the icon is
+    // mapped here: waybar's format-icons requires a JSON "alt" field, which
+    // this script does not emit. Line 1 is the text, line 2 the tooltip,
+    // line 3 the CSS class.
+    "exec": "tiny-dictate status | sed -e 's/^idle$/🎤\\nDictation idle\\nidle/' -e 's/^working$/⏳\\nDictation working…\\nworking/'",
     "interval": 1,
     "exec-on-event": true,
     "on-click": "tiny-dictate toggle",
