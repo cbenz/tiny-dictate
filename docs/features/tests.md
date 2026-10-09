@@ -90,6 +90,10 @@ presenter was asked to draw, the lifecycle of the processes, the exit codes.
   terminal back every time — after `q`, after `ctrl-c` and after a run that failed — showing a
   session whose metadata cannot be read as a selectable row of `?`, and opening an empty history as
   an empty list rather than an error
+- the browser's `c`, `i` and `p` put the selected session's transcript, its id and its path on the
+  clipboard through the same writer `session copy` uses — both selections, the password hint, the
+  configured lease — injecting nothing, saying on the status line what was copied, and saying so
+  when no session is selected or the session on disk holds no transcript
 - the browser holds no command lock: a shortcut starts a dictation while it is open
 - `session transcribe last` re-runs the transcriber, rewrites the transcript and the raw response,
   and copies the text to the clipboard, saying so
@@ -126,8 +130,8 @@ was asked to draw, the lifecycle of the processes and the exit codes are all obs
 pure functions the seam cannot see are unit-tested instead: the pill's frame computation (state,
 waveform, limit and elapsed time in, what to draw out, including the three bands of the progress
 bar), the prune selection (a list of sessions in, the ones to remove out, sharing one listing with
-`session list` and `last`), the browser's frame (the rows, the selection and the terminal's size in,
-the visible lines out), and, for the session surface, reading the metadata back, resolving a
+`session list` and `last`), the browser's frame (the rows, the selection, the
+status line and the terminal's size in, the visible lines out), and, for the session surface, reading the metadata back, resolving a
 `<id|last>` argument, the human duration, the row of the listing and the fields of the detail.
 
 ## Decisions

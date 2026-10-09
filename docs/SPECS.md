@@ -68,7 +68,8 @@ with `last` meaning the newest session; the two verbs that used to live at the r
 `transcribe`, are unknown arguments now, so the usage is what teaches their new name. `session
 browse` takes no command lock, so a dictation still starts while it is open. Dependency checks live
 in the commands that need them, so the `session` verbs run on a machine without the encoder or the
-clipboard tools; the [browser](features/browse.md) needs nothing but a terminal.
+clipboard tools; the [browser](features/browse.md) needs nothing but a terminal to look at the
+sessions, and only its copy actions ask for the clipboard tool, as `session copy` does.
 
 ## Plugins
 

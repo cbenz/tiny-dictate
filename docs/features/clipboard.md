@@ -38,8 +38,10 @@ depends on.
 
 The duration is `clipboard_seconds`, read from the [configuration file](configuration.md), `60` by
 default; `0` means no expiry, and then no `timeout` wrapper at all. The text is written to the
-session before any clipboard write, and every clipboard write goes through the one function, so
-`session copy` and `session transcribe` get the same lease as a dictation.
+session before any clipboard write, and every clipboard write goes through the one function, so the
+browser's `c`, `i` and `p`, `session copy` and `session transcribe` get the same lease as a
+dictation. The browser injects nothing: it copies, and the `Shift+Insert` chord stays the live
+dictation's business.
 
 ## Waiting for the offer
 
