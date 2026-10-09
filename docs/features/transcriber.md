@@ -47,7 +47,8 @@ no bar ([ADR-0006](../adr/0006-the-limit-and-the-bar.md)).
 ## The reference implementation
 
 `transcribers/groq` is the reference transcriber (Groq Whisper), shipped with the tool and installed
-under the default name `tiny-dictate-transcribe`. It declares `--print-audio-limit` as 25 000 000
+under the default name `tiny-dictate-transcribe` (`./install.sh` links it there, keeping whatever
+held the name as `tiny-dictate-transcribe.bak`). It declares `--print-audio-limit` as 25 000 000
 bytes, Groq's free-tier upload ceiling. It reads its configuration from the environment:
 
 - `GROQ_API_KEY` — required, created at <https://console.groq.com/keys>

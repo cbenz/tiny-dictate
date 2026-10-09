@@ -70,9 +70,13 @@ touching the compositor's configuration:
 `install.sh` links `~/.local/bin/tiny-dictate` at this checkout's `target/release/tiny-dictate`, so
 a later `cargo build --release` is picked up without re-running it, and removes the
 `tiny-dictate-present` symlink the bash implementation installed — the binary draws the pill itself.
-It refuses to replace `~/.local/bin/tiny-dictate` when that is not a symlink, since `restore` can
-only undo a symlink and a copy left by the production install is not promised back. `restore`
-rebuilds both symlinks from the main worktree and never touches `tiny-dictate-transcribe`.
+It also links `~/.local/bin/tiny-dictate-transcribe` at this checkout's `transcribers/groq`, keeping
+whatever held that name as `tiny-dictate-transcribe.bak` (once, so a personal wrapper is never
+lost): the reference transcriber answers the audio-limit probe the progress bar is drawn from, and
+reads `GROQ_API_KEY` from the environment. It refuses to replace `~/.local/bin/tiny-dictate` when
+that is not a symlink, since `restore` can only undo a symlink and a copy left by the production
+install is not promised back. `restore` rebuilds the two symlinks from the main worktree and puts
+the transcriber backup back when there is one.
 
 Missing build dependencies stop the install before the build, each named with its Arch package;
 missing runtime commands are only listed.

@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 #
 # The reversible dev install: `./install.sh` builds the release binary and links it onto PATH as
-# `tiny-dictate`, so the F19/F24 shortcuts and the bar drive this checkout without touching the
-# compositor's configuration; `./install.sh restore` puts the main worktree's install back.
+# `tiny-dictate`, links the reference transcriber as `tiny-dictate-transcribe`, and leaves the
+# F19/F24 shortcuts and the bar driving this checkout without touching the compositor's
+# configuration; `./install.sh restore` puts the main worktree's install back.
 #
-# Only the two symlinks in ~/.local/bin are managed. `tiny-dictate-transcribe` is the user's own
-# wrapper and is never touched, and nothing is ever installed: a missing package is named and the
-# script stops.
+# Three entries in ~/.local/bin are managed: `tiny-dictate` and the reference transcriber are
+# symlinks into this checkout, and the bash implementation's `tiny-dictate-present` link is removed.
+# Whatever held `tiny-dictate-transcribe` is kept as `tiny-dictate-transcribe.bak`, once, so a
+# personal wrapper is never lost. Nothing is ever installed from a package: a missing package is
+# named and the script stops.
 set -euo pipefail
 
 script="$(readlink -f -- "${BASH_SOURCE[0]}")"
@@ -15,6 +18,12 @@ root="$(dirname -- "$script")"
 bin_dir="${HOME}/.local/bin"
 binary_link="${bin_dir}/tiny-dictate"
 presenter_link="${bin_dir}/tiny-dictate-present"
+transcriber_link="${bin_dir}/tiny-dictate-transcribe"
+# The previous transcriber is kept beside its link, once: a second install must not overwrite it.
+transcriber_backup="${transcriber_link}.bak"
+
+# The reference transcriber shipped with the tool, installed under its default command name.
+reference_transcriber_rel="transcribers/groq"
 
 # The main worktree's bash install, whose two executables `restore` links back to.
 main_binary_rel="src/tiny-dictate"
@@ -24,11 +33,13 @@ usage() {
     cat <<'EOF'
 Usage: install.sh [restore]
 
-  install.sh          build target/release/tiny-dictate and link it onto PATH
-  install.sh restore  link the main worktree's tiny-dictate and tiny-dictate-present back
+  install.sh          build target/release/tiny-dictate, link it and the reference transcriber
+  install.sh restore  link the main worktree's tiny-dictate and tiny-dictate-present back, and put
+                      the transcriber backup back
 
-Only those two symlinks are touched: tiny-dictate-transcribe is the user's own wrapper. A missing
-build dependency stops the install; a missing runtime command is only listed.
+`tiny-dictate` and `tiny-dictate-transcribe` become symlinks into this checkout; whatever held the
+transcriber before is kept as tiny-dictate-transcribe.bak. A missing build dependency stops the
+install; a missing runtime command is only listed.
 EOF
 }
 
@@ -45,6 +56,38 @@ refuse_a_copy() {
         printf 'install.sh: refusing to overwrite %s: it is not a symlink\n' "$path" >&2
         printf 'install.sh: restore can only undo a symlink, and a copy left by the README is not promised back; remove it and run again\n' >&2
         exit 1
+    fi
+}
+
+# Keep whatever holds `tiny-dictate-transcribe` before the reference transcriber takes its place:
+# a regular file is copied, a symlink is copied as a symlink, and an existing backup is never
+# overwritten, so the first install is the one that remembers the user's own command.
+backup_transcriber() {
+    { [ -e "$transcriber_link" ] || [ -L "$transcriber_link" ]; } || return 0
+
+    if [ -e "$transcriber_backup" ] || [ -L "$transcriber_backup" ]; then
+        printf 'install.sh: keeping the existing backup %s\n' "$transcriber_backup"
+        return 0
+    fi
+
+    if [ -L "$transcriber_link" ]; then
+        ln -s -- "$(readlink -- "$transcriber_link")" "$transcriber_backup"
+    else
+        cp -p -- "$transcriber_link" "$transcriber_backup"
+    fi
+    printf 'install.sh: kept %s as %s\n' "$transcriber_link" "$transcriber_backup"
+}
+
+# `restore` undoes what `install_dev` did to the transcriber and nothing else: the backup goes back
+# when there is one, and the link this script made is removed when there is not.
+restore_transcriber() {
+    if [ -e "$transcriber_backup" ] || [ -L "$transcriber_backup" ]; then
+        mv -f -- "$transcriber_backup" "$transcriber_link"
+        printf 'install.sh: restored %s from the backup\n' "$transcriber_link"
+    elif [ -L "$transcriber_link" ] &&
+        [ "$(readlink -- "$transcriber_link")" = "$root/$reference_transcriber_rel" ]; then
+        rm -f -- "$transcriber_link"
+        printf 'install.sh: removed %s, which this script had linked\n' "$transcriber_link"
     fi
 }
 
@@ -102,7 +145,16 @@ install_dev() {
         rm -f "$presenter_link"
     fi
 
+    # The reference transcriber, under the tool's default command name: it answers the audio-limit
+    # probe the pill's progress bar is drawn from, which an older wrapper did not.
+    local transcriber="$root/$reference_transcriber_rel"
+    [ -f "$transcriber" ] || die "$transcriber is missing from this checkout"
+    backup_transcriber
+    ln -sfn "$transcriber" "$transcriber_link"
+
     printf 'install.sh: installed %s -> %s\n' "$binary_link" "$binary"
+    printf 'install.sh: installed %s -> %s\n' "$transcriber_link" "$transcriber"
+    printf 'install.sh: it declares its audio limit and reads GROQ_API_KEY from the environment\n'
     printf 'install.sh: a later cargo build --release is picked up without re-running this\n'
 }
 
@@ -143,6 +195,8 @@ restore_main() {
     mkdir -p "$bin_dir"
     ln -sfn "$main_binary" "$binary_link"
     ln -sfn "$main_presenter" "$presenter_link"
+
+    restore_transcriber
 
     printf 'install.sh: restored %s -> %s\n' "$binary_link" "$main_binary"
     printf 'install.sh: restored %s -> %s\n' "$presenter_link" "$main_presenter"

@@ -1284,6 +1284,10 @@ test_history_lists_sessions_newest_first() {
     check "transcribing the failed session by id succeeds" [ "$?" -eq 0 ]
     check "it now holds the text" [ "$(cat "$(sessions_dir)/$oldest/transcript.txt")" = "rescued text" ]
     check "its outcome became transcribed" [ "$(metadata_value "$(sessions_dir)/$oldest" outcome)" = '"transcribed"' ]
+
+    # A closed stdout is how a Unix tool is expected to leave: `history | head` must not panic.
+    check "history piped into head leaves no panic" \
+        bash -c '"$1" history 2>"$2" | head -1 >/dev/null; ! grep -q panicked "$2"' _ "$SCRIPT" "$WORK/history-pipe.err"
 }
 
 # `transcribe last` re-runs the transcriber on the newest session, rewrites the transcript and
@@ -1998,6 +2002,8 @@ test_dev_install_and_restore() {
     mkdir -p "$checkout" "$home/.local/bin" "$copy_home/.local/bin" "$dep_home/.local/bin" \
         "$bare_home/.local/bin" "$main/src/presenters"
     cp "$REPO/install.sh" "$checkout/install.sh"
+    mkdir -p "$checkout/transcribers"
+    cp "$REPO/transcribers/groq" "$checkout/transcribers/groq"
     chmod +x "$checkout/install.sh"
 
     # The main worktree's bash install: restore links back to these two executables.
@@ -2019,9 +2025,12 @@ test_dev_install_and_restore() {
         [ "$(readlink "$home/.local/bin/tiny-dictate")" = "$checkout/target/release/tiny-dictate" ]
     check "the target the link points at is executable" [ -x "$checkout/target/release/tiny-dictate" ]
     check "the stale presenter link is gone" path_absent "$home/.local/bin/tiny-dictate-present"
-    check "the transcribe wrapper is untouched" \
-        [ "$(cat "$home/.local/bin/tiny-dictate-transcribe")" = "my wrapper" ]
-    check "the transcribe wrapper is still a plain file" [ ! -L "$home/.local/bin/tiny-dictate-transcribe" ]
+    check "the reference transcriber is linked from this checkout" \
+        [ "$(readlink "$home/.local/bin/tiny-dictate-transcribe")" = "$checkout/transcribers/groq" ]
+    check "the custom wrapper is kept as a backup" \
+        [ "$(cat "$home/.local/bin/tiny-dictate-transcribe.bak")" = "my wrapper" ]
+    check "the installed transcriber answers the audio-limit probe" \
+        [ "$("$home/.local/bin/tiny-dictate-transcribe" --print-audio-limit)" = 25000000 ]
 
     # `restore` rebuilds both links from the main worktree, whose path the porcelain listing names.
     rc=0
@@ -2032,6 +2041,26 @@ test_dev_install_and_restore() {
         [ "$(readlink "$home/.local/bin/tiny-dictate")" = "$main/src/tiny-dictate" ]
     check "the presenter link points at the main worktree" \
         [ "$(readlink "$home/.local/bin/tiny-dictate-present")" = "$main/src/presenters/layer-shell" ]
+    check "restore puts the custom wrapper back" \
+        [ "$(cat "$home/.local/bin/tiny-dictate-transcribe")" = "my wrapper" ]
+    check "restore leaves no backup behind" path_absent "$home/.local/bin/tiny-dictate-transcribe.bak"
+
+    # A personal wrapper is often a symlink: the backup keeps it a symlink, and restore puts that
+    # link back rather than a copy of what it points at.
+    rm -f "$home/.local/bin/tiny-dictate-transcribe"
+    ln -s "$main/src/tiny-dictate" "$home/.local/bin/tiny-dictate-transcribe"
+    rc=0
+    PATH="$BIN:$PATH" HOME="$home" TD_MAIN_WORKTREE="$main" "$checkout/install.sh" \
+        > "$WORK/install-again.out" 2> "$WORK/install-again.err" || rc=$?
+    check "a second install replaces a symlinked wrapper" [ "$rc" -eq 0 ]
+    check "the symlinked wrapper is kept as a symlink" \
+        [ "$(readlink "$home/.local/bin/tiny-dictate-transcribe.bak")" = "$main/src/tiny-dictate" ]
+    rc=0
+    PATH="$BIN:$PATH" HOME="$home" TD_MAIN_WORKTREE="$main" "$checkout/install.sh" restore \
+        > "$WORK/restore-again.out" 2> "$WORK/restore-again.err" || rc=$?
+    check "restore exits zero again" [ "$rc" -eq 0 ]
+    check "the wrapper is a symlink again" \
+        [ "$(readlink "$home/.local/bin/tiny-dictate-transcribe")" = "$main/src/tiny-dictate" ]
 
     # A target that vanished is named, and restore exits non-zero rather than half-installing.
     rm "$main/src/presenters/layer-shell"

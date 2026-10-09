@@ -22,6 +22,15 @@ mod text;
 mod xdg;
 
 fn main() -> ExitCode {
+    // Rust ignores `SIGPIPE` by default, so `tiny-dictate history | head` fails its write and
+    // `println!` panics on a closed pipe. A tool piped into `head` leaves the way every other one
+    // does, so the default disposition is restored before anything runs.
+    //
+    // Safety: a plain `signal(2)` call with `SIG_DFL`, before any thread exists.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
     let arguments: Vec<String> = std::env::args().skip(1).collect();
 
     // Hidden verbs are dispatched before anything else: they are internal, and a mode like
