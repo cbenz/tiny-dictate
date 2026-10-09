@@ -1,12 +1,11 @@
 //! The rescue verbs: the kept sessions on disk, read again, re-transcribed or removed.
 //!
-//! `history` lists them, `transcribe` runs the transcriber again on one, `session delete` is the
-//! only verb that destroys one. They read the durable sessions and nothing else: no encoder, no
-//! clipboard tool, no microphone, so a machine that cannot dictate can still rescue what was
-//! kept.
+//! They all live under `session`: `list` prints them, `transcribe` runs the transcriber again on
+//! one, `delete` is the only verb that destroys one. They read the durable sessions and nothing
+//! else: no encoder, no clipboard tool, no microphone, so a machine that cannot dictate can still
+//! rescue what was kept.
 
 use std::fs;
-use std::path::Path;
 use std::process::ExitCode;
 
 use crate::config;
@@ -14,60 +13,24 @@ use crate::log;
 use crate::session::Runtime;
 use crate::store;
 use crate::text;
+use crate::view;
 
-/// The widest summary a history line carries: enough words to recognize a session, not a page.
-const SUMMARY_WORDS: usize = 60;
-
-/// `history`: list the kept sessions, newest first, with the id, the duration, the outcome and
-/// the first words of the transcript or the error.
-pub fn history() -> ExitCode {
+/// `session list`: the kept sessions, newest first, one row per session.
+///
+/// A directory whose metadata cannot be read gets a row of its own rather than no row: it is
+/// exactly the session `session delete` can remove.
+pub fn session_list() -> ExitCode {
     let runtime = Runtime::from_env();
     let sessions = runtime.sessions_directory();
 
     for id in store::session_ids(&sessions) {
-        // A directory without readable metadata is not a session this command can describe; it
-        // is still a session `session delete` can remove.
-        if let Some(session) = store::Session::load(&sessions, &id) {
-            println!("{}", history_line(&session));
-        }
+        println!("{}", view::Row::read(&sessions, &id));
     }
 
     ExitCode::SUCCESS
 }
 
-/// One history line: `<id>  <duration>  <outcome>  <first words>`.
-///
-/// The duration is `null` while a session died mid-recording, which `-` stands for. The summary
-/// is the error when there is one, else the first words of the transcript, else `-`.
-fn history_line(session: &store::Session) -> String {
-    let duration = session
-        .metadata
-        .duration
-        .map_or_else(|| "-".to_owned(), |seconds| format!("{seconds:.1}s"));
-    let summary = session
-        .metadata
-        .error
-        .clone()
-        .or_else(|| transcript_words(&session.transcript()))
-        .unwrap_or_else(|| "-".to_owned());
-
-    format!(
-        "{}  {}  {}  {}",
-        session.id,
-        duration,
-        session.metadata.outcome.as_str(),
-        summary
-    )
-}
-
-/// The first words of a transcript file, when it holds any.
-fn transcript_words(path: &Path) -> Option<String> {
-    let text = fs::read_to_string(path).ok()?;
-    let words = store::first_words(&text, SUMMARY_WORDS);
-    if words.is_empty() { None } else { Some(words) }
-}
-
-/// `transcribe <id|last> [--print]`: run the transcriber again on a kept session, rewrite its
+/// `session transcribe <id|last> [--print]`: run the transcriber again on a kept session, rewrite
 /// `transcript.txt` and its metadata, then offer the text on the clipboard -- or print it.
 ///
 /// The transcriber contract is the one a live dictation uses: `$1` the audio, `$2` the session

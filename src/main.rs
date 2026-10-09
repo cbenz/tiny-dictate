@@ -19,12 +19,13 @@ mod rescue;
 mod session;
 mod store;
 mod text;
+mod view;
 mod xdg;
 
 fn main() -> ExitCode {
-    // Rust ignores `SIGPIPE` by default, so `tiny-dictate history | head` fails its write and
-    // `println!` panics on a closed pipe. A tool piped into `head` leaves the way every other one
-    // does, so the default disposition is restored before anything runs.
+    // Rust ignores `SIGPIPE` by default, so `tiny-dictate session list | head` fails its write
+    // and `println!` panics on a closed pipe. A tool piped into `head` leaves the way every other
+    // one does, so the default disposition is restored before anything runs.
     //
     // Safety: a plain `signal(2)` call with `SIG_DFL`, before any thread exists.
     unsafe {
@@ -70,8 +71,10 @@ fn main() -> ExitCode {
         cli::Command::Stop => session::stop(),
         cli::Command::Cancel => session::cancel(),
         cli::Command::Toggle => session::toggle(),
-        cli::Command::History => rescue::history(),
-        cli::Command::Transcribe { target, print } => rescue::transcribe_session(&target, print),
+        cli::Command::SessionList => rescue::session_list(),
+        cli::Command::SessionTranscribe { target, print } => {
+            rescue::transcribe_session(&target, print)
+        }
         cli::Command::SessionDelete { target } => rescue::session_delete(&target),
     }
 }
