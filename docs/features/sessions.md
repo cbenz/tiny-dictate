@@ -127,9 +127,11 @@ cannot be read is an element with `"metadata": null`, never a missing one: the a
 shorter than the sessions directory, because it is exactly the session `session delete` can remove.
 
 `session show <id|last> --output json` prints one object: the element above plus `"transcript"`, the
-text the session holds or `null` when it holds none. A session whose metadata cannot be read is
-still refused, as it is in the text format -- `"metadata": null`, an exit non-zero, and the failure
-logged with the session.
+text the session holds or `null` when it holds none. A session whose metadata cannot be read still
+prints that object -- its id, its path and `"metadata": null` -- and then exits non-zero, as the
+text format does, with the failure logged with the session: the document is complete, so a script
+sees the same session the listing shows, and the exit code is what tells it the metadata could not
+be read.
 
 `--output` belongs to the verbs that print a session as data and to no other: `session browse` owns
 a terminal, `status` is the one word the bar reads, and `session transcribe --print` prints a

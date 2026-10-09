@@ -1897,6 +1897,15 @@ test_session_show_with_unreadable_metadata() {
         grep -q "^tiny-dictate: $id: cannot read the session's metadata$" "$WORK/show-unreadable.err"
     check "the metadata is untouched" [ "$(cat "$dir/metadata.json")" = "not json" ]
     check "the session is still there" test -d "$dir"
+
+    # `--output json` is the same verdict in the other format: the object is printed -- its id, its
+    # path and `"metadata": null` -- and the exit is non-zero, so a script sees the session and the
+    # failure at once.
+    td session show "$id" --output json > "$WORK/show-unreadable.json" 2>> "$WORK/show-unreadable.err"
+    check "the json format exits non-zero too" [ "$?" -ne 0 ]
+    check "the object is the session with null metadata" \
+        json_document_is "$WORK/show-unreadable.json" \
+        'd["id"] == "2026-10-07T19-05-22" and d["path"] == extra[0] and d["metadata"] is None' "$dir"
 }
 
 # `--output json` renders the listing as data: one document, newest first, each element the id, the
