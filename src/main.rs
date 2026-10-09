@@ -72,6 +72,7 @@ fn main() -> ExitCode {
         cli::Command::Cancel => session::cancel(),
         cli::Command::Toggle => session::toggle(),
         cli::Command::SessionList => rescue::session_list(),
+        cli::Command::SessionCopy { target } => rescue::session_copy(&target),
         cli::Command::SessionTranscribe { target, print } => {
             rescue::transcribe_session(&target, print)
         }

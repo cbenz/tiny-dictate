@@ -1483,6 +1483,139 @@ test_transcribe_print() {
     check "nothing claims the clipboard" bash -c '! grep -q clipboard "$1"' _ "$WORK/print.err"
 }
 
+# `session copy` reads the transcript from disk and offers it through the one clipboard writer a
+# dictation uses: both selections, the password hint, under the configured lease. A transcript
+# that already exists is never re-transcribed, and nothing is injected: the paste stays the live
+# dictation's business.
+test_session_copy_offers_the_stored_transcript() {
+    start_test "session copy offers the stored transcript without transcribing or injecting"
+    write_config 'clipboard_seconds = 4'
+    TRANSCRIBE_TEXT="kept text" td start
+    sleep 0.4
+    td stop
+    check "the dictation finishes" wait_idle
+
+    local dir id
+    dir="$(single_session_dir)"
+    id="$(basename "$dir")"
+    : > "$WORK/wl-copy.log"
+    : > "$WORK/wl-copy-parent.log"
+    : > "$WORK/ydotool.log"
+    rm -f "$WORK/clipboard" "$WORK/transcribe-size"
+
+    td session copy last 2> "$WORK/copy.err"
+    check "session copy succeeds" [ "$?" -eq 0 ]
+    check "the stored transcript is on the clipboard" wait_pasted_text "kept text"
+    check "the stored transcript was not re-transcribed" [ ! -e "$WORK/transcribe-size" ]
+    check "nothing was injected" [ ! -s "$WORK/ydotool.log" ]
+    check "the CLIPBOARD offer carries the password hint" \
+        grep -qx -- '--foreground --sensitive' "$WORK/wl-copy.log"
+    check "the PRIMARY offer carries the password hint" \
+        grep -qx -- '--primary --foreground --sensitive' "$WORK/wl-copy.log"
+    check "the offer is wrapped in the configured lease" \
+        grep -q -- 'timeout 4 .*wl-copy --foreground --sensitive' "$WORK/wl-copy-parent.log"
+    check "the command says the text is on the clipboard" \
+        grep -q "^tiny-dictate: $id: transcript copied to the clipboard$" "$WORK/copy.err"
+    check "the transcript file is untouched" [ "$(cat "$dir/transcript.txt")" = "kept text" ]
+}
+
+# A session that was never transcribed -- or whose task left it without a transcript -- has no
+# `transcript.txt`: `session copy` runs the transcriber first, through the same runner
+# `session transcribe` uses, writes the transcript and the metadata, and then offers the text.
+test_session_copy_transcribes_a_session_without_a_transcript() {
+    start_test "session copy transcribes a session whose transcript was removed"
+    TRANSCRIBE_TEXT="first text" td start
+    sleep 0.4
+    td stop
+    check "the dictation finishes" wait_idle
+
+    local dir id
+    dir="$(single_session_dir)"
+    id="$(basename "$dir")"
+    rm "$dir/transcript.txt"
+    rm -f "$WORK/clipboard" "$WORK/ydotool.log" "$WORK/transcribe-size"
+
+    TRANSCRIBE_TEXT="copied text" td session copy last 2> "$WORK/copy-transcribe.err"
+    check "session copy succeeds" [ "$?" -eq 0 ]
+    check "the transcriber was run" [ -e "$WORK/transcribe-size" ]
+    check "the transcript is written" [ "$(cat "$dir/transcript.txt")" = "copied text" ]
+    check "the outcome became transcribed" [ "$(metadata_value "$dir" outcome)" = '"transcribed"' ]
+    check "the transcriber is recorded" [ "$(metadata_value "$dir" transcriber)" = "\"$BIN/transcribe\"" ]
+    check "no error is recorded" [ "$(metadata_value "$dir" error)" = "null" ]
+    check "the text is on the clipboard" wait_pasted_text "copied text"
+    check "nothing was injected" [ ! -s "$WORK/ydotool.log" ]
+    check "the command says the text is on the clipboard" \
+        grep -q "^tiny-dictate: $id: transcript copied to the clipboard$" "$WORK/copy-transcribe.err"
+}
+
+# A transcript that exists but holds no word is reported, and nothing is run: a second
+# transcriber run would say the same thing.
+test_session_copy_reports_an_empty_transcript() {
+    start_test "session copy reports an empty transcript and runs nothing"
+    TRANSCRIBE_TEXT="kept text" td start
+    sleep 0.4
+    td stop
+    check "the dictation finishes" wait_idle
+
+    local dir
+    dir="$(single_session_dir)"
+    : > "$dir/transcript.txt"
+    rm -f "$WORK/clipboard" "$WORK/transcribe-size"
+
+    td session copy last 2> "$WORK/copy-empty.err"
+    check "session copy exits non-zero" [ "$?" -ne 0 ]
+    check "it reports that there is nothing to copy" \
+        grep -q 'nothing to copy' "$WORK/copy-empty.err"
+    check "the transcriber was not run" [ ! -e "$WORK/transcribe-size" ]
+    check "nothing reached the clipboard" [ ! -e "$WORK/clipboard" ]
+    check "the empty transcript is left as it was" \
+        bash -c '[ -e "$1" ] && [ ! -s "$1" ]' _ "$dir/transcript.txt"
+}
+
+# A transcription that failed left the session without a transcript: `session copy` runs the
+# transcriber again, so a transient failure does not need a different verb.
+test_session_copy_retries_a_failed_transcription() {
+    start_test "session copy runs the transcriber again on a session a failure left without one"
+    TRANSCRIBE_FAIL=1 td start
+    sleep 0.4
+    td stop
+    check "the failed dictation finishes" wait_idle
+
+    local dir
+    dir="$(single_session_dir)"
+    check "the failure left no transcript" [ ! -e "$dir/transcript.txt" ]
+    rm -f "$WORK/clipboard"
+
+    TRANSCRIBE_TEXT="rescued text" td session copy last 2> "$WORK/copy-retry.err"
+    check "session copy succeeds" [ "$?" -eq 0 ]
+    check "the transcript is written" [ "$(cat "$dir/transcript.txt")" = "rescued text" ]
+    check "the outcome became transcribed" [ "$(metadata_value "$dir" outcome)" = '"transcribed"' ]
+    check "the error is cleared" [ "$(metadata_value "$dir" error)" = "null" ]
+    check "the text is on the clipboard" wait_pasted_text "rescued text"
+}
+
+# A cancelled dictation kept its recording and never transcribed: `session copy` transcribes it
+# on request, as `session transcribe` already does.
+test_session_copy_transcribes_a_cancelled_session() {
+    start_test "session copy transcribes a cancelled session on request"
+    td start
+    sleep 0.4
+    td cancel
+    check "the pill shows the verdict" wait_for_event '^PRESENT state=cancelled'
+    check "session finishes" wait_idle
+
+    local dir
+    dir="$(single_session_dir)"
+    check "nothing was transcribed" [ ! -e "$dir/transcript.txt" ]
+    rm -f "$WORK/clipboard"
+
+    TRANSCRIBE_TEXT="text from the recording" td session copy last 2> "$WORK/copy-cancelled.err"
+    check "session copy succeeds" [ "$?" -eq 0 ]
+    check "the transcript is written" [ "$(cat "$dir/transcript.txt")" = "text from the recording" ]
+    check "its outcome became transcribed" [ "$(metadata_value "$dir" outcome)" = '"transcribed"' ]
+    check "the text is on the clipboard" wait_pasted_text "text from the recording"
+}
+
 # `session delete` removes exactly one session and leaves the others alone.
 test_session_delete_removes_one() {
     start_test "session delete removes exactly one session"
@@ -1528,11 +1661,17 @@ test_unknown_session_id() {
 
     local dir
     dir="$(single_session_dir)"
+    rm -f "$WORK/clipboard" "$WORK/transcribe-size"
 
     td session transcribe does-not-exist 2> "$WORK/unknown-transcribe.err"
     check "session transcribe exits non-zero" [ "$?" -ne 0 ]
     check "session transcribe reports the unknown id" \
         grep -q 'unknown session: does-not-exist' "$WORK/unknown-transcribe.err"
+
+    td session copy does-not-exist 2> "$WORK/unknown-copy.err"
+    check "session copy exits non-zero" [ "$?" -ne 0 ]
+    check "session copy reports the unknown id" \
+        grep -q 'unknown session: does-not-exist' "$WORK/unknown-copy.err"
 
     td session delete does-not-exist 2> "$WORK/unknown-delete.err"
     check "session delete exits non-zero" [ "$?" -ne 0 ]
@@ -1541,11 +1680,13 @@ test_unknown_session_id() {
 
     check "the session is still there" test -d "$dir"
     check "the transcript is untouched" [ "$(cat "$dir/transcript.txt")" = "kept text" ]
+    check "nothing reached the clipboard" [ ! -e "$WORK/clipboard" ]
+    check "no transcriber ran" [ ! -e "$WORK/transcribe-size" ]
 }
 
-# `session list` and `session transcribe` need neither the encoder nor the clipboard tools: the
-# dependency checks live in the commands that use them, so the rescue surface runs on a bare
-# machine.
+# `session list`, `session copy` and `session transcribe` need neither the encoder nor the
+# clipboard tools: the dependency checks live in the commands that use them, so the rescue surface
+# runs on a bare machine.
 test_rescue_without_encoder_or_clipboard() {
     start_test "the session verbs run without the encoder or the clipboard tools"
     TRANSCRIBE_TEXT="rescued text" td start
@@ -1576,6 +1717,27 @@ test_rescue_without_encoder_or_clipboard() {
 
     out="$(env "${bare_env[@]}" "$SCRIPT" session transcribe last --print)"
     check "session transcribe --print runs without the tools" [ "$out" = "rescued text" ]
+
+    # A missing `wl-copy` costs the copy, never the transcription: an existing transcript is
+    # offered and only the copy fails, and a session without one is still transcribed and written
+    # before the offer it cannot make.
+    local dir id rc=0
+    dir="$(single_session_dir)"
+    id="$(basename "$dir")"
+
+    env "${bare_env[@]}" "$SCRIPT" session copy last > "$WORK/bare-copy.out" 2> "$WORK/bare-copy.err" || rc=$?
+    check "session copy exits non-zero without wl-copy" [ "$rc" -ne 0 ]
+    check "the copy failure is reported" \
+        grep -q "^tiny-dictate: $id: could not copy the transcript to the clipboard$" "$WORK/bare-copy.err"
+    check "the stored transcript was not rewritten" [ "$(cat "$dir/transcript.txt")" = "rescued text" ]
+
+    rm "$dir/transcript.txt"
+    rc=0
+    env "${bare_env[@]}" TRANSCRIBE_TEXT="copied text" "$SCRIPT" session copy last \
+        > "$WORK/bare-copy-transcribe.out" 2> "$WORK/bare-copy-transcribe.err" || rc=$?
+    check "session copy still exits non-zero when the offer cannot run" [ "$rc" -ne 0 ]
+    check "the transcriber ran without the clipboard tools" [ "$(cat "$dir/transcript.txt")" = "copied text" ]
+    check "the metadata records the transcription" [ "$(metadata_value "$dir" outcome)" = '"transcribed"' ]
 
     out="$(env "${bare_env[@]}" "$SCRIPT" status)"
     check "status runs without the tools" [ "$out" = "idle" ]
@@ -2390,6 +2552,11 @@ run_test test_session_list_shows_the_kept_sessions
 run_test test_session_list_shows_an_unreadable_session
 run_test test_transcribe_copies_and_rewrites
 run_test test_transcribe_print
+run_test test_session_copy_offers_the_stored_transcript
+run_test test_session_copy_transcribes_a_session_without_a_transcript
+run_test test_session_copy_reports_an_empty_transcript
+run_test test_session_copy_retries_a_failed_transcription
+run_test test_session_copy_transcribes_a_cancelled_session
 run_test test_session_delete_removes_one
 run_test test_unknown_session_id
 run_test test_rescue_without_encoder_or_clipboard
