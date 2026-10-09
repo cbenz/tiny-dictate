@@ -55,6 +55,15 @@ be read is a row of its own, its id and `?` where the other fields would be, rat
 line: it is exactly the session `session delete` can remove. The line is plain text on stdout, and
 `session list` reads nothing but the sessions directory. `tiny-dictate session` on its own is the
 same listing.
+- `tiny-dictate session copy <id|last>` puts the session's transcript on the clipboard. A
+  transcript already on disk is offered as it is, through the same write path a dictation uses: both
+  selections, the password hint, the same lease. When `transcript.txt` is missing -- the session was
+  never transcribed, or the run that would have written it failed -- the transcriber runs first,
+  through the same runner `session transcribe` uses, and writes the transcript and the metadata
+  exactly as that verb does, so the user never has to know which verb comes first. A transcript that
+  exists but holds no word is reported and nothing more: a second transcriber run would say the same
+  thing. A cancelled session is transcribed on request. Nothing is ever injected: the `Shift+Insert`
+  chord stays the live dictation's business.
 - `tiny-dictate session transcribe <id|last> [--print]` runs the transcriber command again on the
   session's `audio.mp3`, with the same contract a live dictation uses: `$1` the audio, `$2` the
 session directory, the text on stdout, the error on stderr. It rewrites `transcript.txt` and the

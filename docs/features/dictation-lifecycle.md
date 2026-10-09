@@ -147,7 +147,8 @@ none when they do not:
 
 | line | event |
 |------|-------|
-| `<id>: transcript copied to the clipboard`, `<id>: could not copy the transcript to the clipboard` | `session transcribe` offered the rescued text on the clipboard, or could not |
+| `<id>: transcript copied to the clipboard`, `<id>: could not copy the transcript to the clipboard` | `session transcribe` or `session copy` offered a transcript on the clipboard, or could not |
+| `<id>: nothing to copy: the transcript is empty` | `session copy` found a transcript that holds no word, and ran nothing |
 | `<id>: failure: <error>` | a rescue transcription failed; the text is the metadata's `error` |
 | `pruned <n> sessions` | the prune removed sessions beyond `keep`; concerns no session |
 | `session deleted` | `session delete` destroyed one session; concerns none by the time it is gone |

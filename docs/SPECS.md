@@ -41,6 +41,7 @@ Commands:
   status                                  Show status (idle or working)
   session                                 List the kept sessions, newest first
   session list                            List the kept sessions, newest first
+  session copy <id|last>                  Copy a session's transcript to the clipboard
   session transcribe <id|last> [--print]  Transcribe a session again, to the clipboard or to stdout
   session delete <id|last>                Remove exactly one session
 ```
@@ -54,8 +55,9 @@ the command, so two shortcuts pressed at once cannot interleave. `status` takes 
 
 The `session` group carries every verb that touches a kept [session](features/sessions.md), and no
 verb that touches one lives anywhere else: `session` on its own lists the kept sessions, `session
-list` does the same, `session transcribe <id|last> [--print]` runs the transcriber again on one, and
-`session delete <id|last>` is the only verb that destroys one. Each of them is given an id, with
+list` does the same, `session copy <id|last>` puts one's transcript on the clipboard, transcribing
+it first when it has none, `session transcribe <id|last> [--print]` runs the transcriber again on
+one, and `session delete <id|last>` is the only verb that destroys one. Each of them is given an id, with
 `last` meaning the newest session; the two verbs that used to live at the root, `history` and
 `transcribe`, are unknown arguments now, so the usage is what teaches their new name. Dependency
 checks live in the commands that need them, so the `session` verbs run on a machine without the

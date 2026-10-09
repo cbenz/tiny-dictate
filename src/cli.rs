@@ -12,6 +12,7 @@ Commands:
   status                                  Show status (idle or working)
   session                                 List the kept sessions, newest first
   session list                            List the kept sessions, newest first
+  session copy <id|last>                  Copy a session's transcript to the clipboard
   session transcribe <id|last> [--print]  Transcribe a session again, to the clipboard or to stdout
   session delete <id|last>                Remove exactly one session";
 
@@ -26,6 +27,11 @@ pub enum Command {
     Help,
     /// `session`, or `session list`: the kept sessions, newest first.
     SessionList,
+    /// `session copy <id|last>`: the transcript of a kept session on the clipboard, transcribing
+    /// it first when it has none.
+    SessionCopy {
+        target: String,
+    },
     SessionTranscribe {
         target: String,
         print: bool,
@@ -94,6 +100,7 @@ fn session(rest: &[String]) -> Result<Command, Error> {
     match rest.first().map(String::as_str) {
         None => Ok(Command::SessionList),
         Some("list") => alone(Command::SessionList, &rest[1..]),
+        Some("copy") => copy(&rest[1..]),
         Some("transcribe") => transcribe(&rest[1..]),
         Some("delete") => delete(&rest[1..]),
         Some(word) => Err(Error::Unknown(word.to_owned())),
@@ -125,6 +132,20 @@ fn transcribe(rest: &[String]) -> Result<Command, Error> {
         None => Err(Error::Missing(
             "session transcribe needs a session id or `last`".to_owned(),
         )),
+    }
+}
+
+/// `session copy <id|last>`: the verb that reads a transcript to the clipboard. Its single word
+/// is the session to read; more than one is a conflict, and none is the argument it needs.
+fn copy(rest: &[String]) -> Result<Command, Error> {
+    match rest {
+        [target] => Ok(Command::SessionCopy {
+            target: target.clone(),
+        }),
+        [] => Err(Error::Missing(
+            "session copy needs a session id or `last`".to_owned(),
+        )),
+        _ => Err(Error::Conflicting),
     }
 }
 
@@ -180,6 +201,12 @@ mod tests {
             })
         );
         assert_eq!(
+            parse_words(&["session", "copy", "last"]),
+            Ok(Command::SessionCopy {
+                target: "last".to_owned()
+            })
+        );
+        assert_eq!(
             parse_words(&["session", "delete", "2026-10-07T19-05-22"]),
             Ok(Command::SessionDelete {
                 target: "2026-10-07T19-05-22".to_owned()
@@ -207,8 +234,16 @@ mod tests {
             Err(Error::Missing(_))
         ));
         assert!(matches!(
+            parse_words(&["session", "copy"]),
+            Err(Error::Missing(_))
+        ));
+        assert!(matches!(
             parse_words(&["session", "delete"]),
             Err(Error::Missing(_))
+        ));
+        assert!(matches!(
+            parse_words(&["session", "copy", "last", "now"]),
+            Err(Error::Conflicting)
         ));
         assert_eq!(
             parse_words(&["session", "now"]),

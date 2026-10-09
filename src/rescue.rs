@@ -1,6 +1,7 @@
 //! The rescue verbs: the kept sessions on disk, read again, re-transcribed or removed.
 //!
-//! They all live under `session`: `list` prints them, `transcribe` runs the transcriber again on
+//! They all live under `session`: `list` prints them, `copy` reads one's transcript to the
+//! clipboard, transcribing it first when it has none, `transcribe` runs the transcriber again on
 //! one, `delete` is the only verb that destroys one. They read the durable sessions and nothing
 //! else: no encoder, no clipboard tool, no microphone, so a machine that cannot dictate can still
 //! rescue what was kept.
@@ -30,6 +31,46 @@ pub fn session_list() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// `session copy <id|last>`: the transcript of a kept session on the clipboard.
+///
+/// Reading, not transcribing, is the default: a transcript already on disk is offered as it is.
+/// Only when `transcript.txt` is missing -- the session was never transcribed, or the run that
+/// would have written it failed -- is the transcriber run first, through the same runner
+/// `session transcribe` uses, and its transcript and metadata written exactly as that verb writes
+/// them, so the two cannot drift. A transcript that exists but holds no word is reported rather
+/// than paid for twice: a second run would say the same thing. Nothing is ever injected: the
+/// paste stays the live dictation's business.
+pub fn session_copy(target: &str) -> ExitCode {
+    let runtime = Runtime::from_env();
+    let sessions = runtime.sessions_directory();
+    let config = config::load();
+
+    let Some(id) = store::resolve_id(&sessions, target) else {
+        return unknown_session(target);
+    };
+    let Some(mut session) = store::Session::load(&sessions, &id) else {
+        return unknown_session(target);
+    };
+
+    let transcript = match fs::read_to_string(session.transcript()) {
+        Ok(transcript) => transcript,
+        Err(_) => match transcribe_and_write(&mut session) {
+            Transcription::Text(transcript) => transcript,
+            Transcription::NoTranscriber | Transcription::Failed => return ExitCode::FAILURE,
+        },
+    };
+
+    if transcript.trim().is_empty() {
+        log::line(
+            Some(&session.id),
+            "nothing to copy: the transcript is empty",
+        );
+        return ExitCode::FAILURE;
+    }
+
+    offer_transcript(&session.id, &transcript, config.clipboard_seconds)
+}
+
 /// `session transcribe <id|last> [--print]`: run the transcriber again on a kept session, rewrite
 /// `transcript.txt` and its metadata, then offer the text on the clipboard -- or print it.
 ///
@@ -51,13 +92,40 @@ pub fn transcribe_session(target: &str, print: bool) -> ExitCode {
         return unknown_session(target);
     };
 
+    let transcript = match transcribe_and_write(&mut session) {
+        Transcription::Text(transcript) => transcript,
+        Transcription::NoTranscriber | Transcription::Failed => return ExitCode::FAILURE,
+    };
+
+    if print {
+        println!("{transcript}");
+        return ExitCode::SUCCESS;
+    }
+
+    offer_transcript(&session.id, &transcript, config.clipboard_seconds)
+}
+
+/// What one run of the transcriber leaves behind.
+enum Transcription {
+    /// The transcriber's text, already written to the session with its metadata.
+    Text(String),
+    /// No transcriber command resolves; nothing ran, and the session is untouched.
+    NoTranscriber,
+    /// The transcriber ran and failed; the metadata records the failure.
+    Failed,
+}
+
+/// Run the transcriber on a session and write what it produced exactly as `session transcribe`
+/// does: the transcript first, then the metadata. `session copy` runs the same function, so the
+/// two verbs cannot drift.
+fn transcribe_and_write(session: &mut store::Session) -> Transcription {
     let Some(transcriber) = text::resolve_transcriber() else {
         // The session is known here, so the failure line names it (ADR-0008).
         log::line(
             Some(&session.id),
             "failure: No transcription command. Set TINY_DICTATE_TRANSCRIBE or install tiny-dictate-transcribe",
         );
-        return ExitCode::FAILURE;
+        return Transcription::NoTranscriber;
     };
 
     // The transcriber's stderr is collapsed into the one line a failure is shown as, exactly
@@ -85,22 +153,7 @@ pub fn transcribe_session(target: &str, print: bool) -> ExitCode {
             session.metadata.error = None;
             session.metadata.transcriber = Some(transcriber.display().to_string());
             let _ = session.save();
-
-            if print {
-                println!("{transcript}");
-                return ExitCode::SUCCESS;
-            }
-
-            if text::copy_to_clipboard(&transcript, config.clipboard_seconds) {
-                log::line(Some(&session.id), "transcript copied to the clipboard");
-                ExitCode::SUCCESS
-            } else {
-                log::line(
-                    Some(&session.id),
-                    "could not copy the transcript to the clipboard",
-                );
-                ExitCode::FAILURE
-            }
+            Transcription::Text(transcript)
         }
         Err(error) => {
             session.metadata.outcome = store::Outcome::Failed;
@@ -109,8 +162,20 @@ pub fn transcribe_session(target: &str, print: bool) -> ExitCode {
             let _ = session.save();
 
             log::line(Some(&session.id), &format!("failure: {error}"));
-            ExitCode::FAILURE
+            Transcription::Failed
         }
+    }
+}
+
+/// Offer one transcript on both selections, through the one clipboard write path a live dictation
+/// uses, and say so: the lease and the password hint are `text::copy_to_clipboard`'s business.
+fn offer_transcript(id: &str, transcript: &str, clipboard_seconds: u64) -> ExitCode {
+    if text::copy_to_clipboard(transcript, clipboard_seconds) {
+        log::line(Some(id), "transcript copied to the clipboard");
+        ExitCode::SUCCESS
+    } else {
+        log::line(Some(id), "could not copy the transcript to the clipboard");
+        ExitCode::FAILURE
     }
 }
 
