@@ -2000,6 +2000,26 @@ test_browse_on_a_terminal() {
         bash -c 'grep -aqF "$(printf "\033[?1049l")" "$1"' _ "$WORK/browse.out"
 }
 
+# The pane follows the selection: moving in the list reloads it with the session the selection lands
+# on. Both transcripts run past the listing's summary cut, so the tail word each carries can only
+# come from the pane, and the field labels can only come from it either.
+test_browse_the_pane_follows_the_selection() {
+    start_test "the detail pane follows the selection in the list"
+
+    write_session 2026-10-08T10-00-00 transcribed "$(printf 'o%.0s' {1..70}) OLDERTAIL"
+    write_session 2026-10-09T10-00-00 transcribed "$(printf 'n%.0s' {1..70}) NEWERTAIL"
+
+    pty 'DOWN,q' "$WORK/browse-pane.out" session browse > "$WORK/browse-pane.summary"
+
+    check "the browser exits zero" grep -q '^EXIT=0$' "$WORK/browse-pane.summary"
+    check "the pane draws the shared view's fields" \
+        bash -c 'grep -aq "audio bytes" "$1"' _ "$WORK/browse-pane.out"
+    check "the pane opens on the newest session's transcript" \
+        bash -c 'grep -aq NEWERTAIL "$1"' _ "$WORK/browse-pane.out"
+    check "the pane follows the selection to the older session" \
+        bash -c 'grep -aq OLDERTAIL "$1"' _ "$WORK/browse-pane.out"
+}
+
 # `ctrl-c` in raw mode is a key event, not a signal: the browser leaves by the same door as `q` and
 # gives the terminal back.
 test_browse_leaves_on_ctrl_c() {
@@ -3303,6 +3323,7 @@ run_test test_session_show_output_json
 run_test test_output_flag_is_refused
 run_test test_browse_refuses_a_pipe
 run_test test_browse_on_a_terminal
+run_test test_browse_the_pane_follows_the_selection
 run_test test_browse_leaves_on_ctrl_c
 run_test test_browse_a_failed_run_restores_the_terminal
 run_test test_browse_an_empty_history_is_not_an_error
