@@ -12,7 +12,8 @@ These pages describe the tool as it works today. The decisions taken during desi
 ## What a dictation does
 
 1. `start`, or `toggle` from idle, resolves the transcriber, asks it for its audio limit, claims the
-   microphone, checks that the microphone is not muted, and forks a session process.
+   microphone, sets the default source to its base volume and unmutes it, and forks a session
+   process.
 2. The recorder captures the microphone, the encoder writes MP3 from the first frame, and the
    session publishes the input waveform for the pill to draw.
 3. `stop`, or `toggle` while recording, stops the recorder; the encoder flushes its last frames.
@@ -123,6 +124,7 @@ These hold whatever implementation runs them, and a port is expected to keep the
 - [Sessions on disk](features/sessions.md)
 - [The dictation lifecycle](features/dictation-lifecycle.md)
 - [The claim](features/claim.md)
+- [The microphone](features/microphone.md)
 - [Cancelling and the verdict](features/cancel-and-verdict.md)
 - [The pill and the waveform channel](features/pill.md)
 - [The transcriber command](features/transcriber.md)

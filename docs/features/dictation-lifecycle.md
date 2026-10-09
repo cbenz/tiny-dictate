@@ -75,9 +75,10 @@ directory; the recording it produces goes to the [session](sessions.md).
 
 ## `start`, `stop`, `toggle`, `status`
 
-- `start` resolves the transcriber, refuses to run without one, claims the session directory,
-  refuses when the microphone is muted, and starts the pipeline. The pill is not a plugin: the
-  session spawns it, and a pill that cannot start costs the pill only.
+- `start` resolves the transcriber, refuses to run without one, claims the session directory, sets
+  the default source to its base volume and unmutes it ([the microphone](microphone.md)), and starts
+  the pipeline. The pill is not a plugin: the session spawns it, and a pill that cannot start costs
+  the pill only.
 - `stop` signals the recorder only, never the encoder: the encoder must outlive it to flush the last
   frames. When no recording is active but a session is transcribing, it prints
   `Transcription already in progress` on stderr. It never notifies: the pill already shows
@@ -105,7 +106,6 @@ The failures that are notified:
 - `Could not paste the transcription`, when the injected `Shift+Insert` fails.
 - `No transcription command. Set TINY_DICTATE_TRANSCRIBE or install tiny-dictate-transcribe`,
   before any recording starts.
-- `Microphone is muted. Unmute it before dictating.` with critical urgency.
 - `Cannot create the audio pipe` with normal urgency.
 
 A missing command is not a notification of its own: the tool reports what it could not do. `start`
@@ -125,6 +125,7 @@ button or command line — is not distinguished.
 
 | line | event |
 |------|-------|
+| `microphone set to base volume <raw>` | the default source was set before the recorder opened |
 | `start: recording started`, `toggle: recording started` | a dictation claimed the microphone |
 | `stop: recorder signalled`, `toggle: recorder signalled` | the recorder was signalled |
 | `stop: transcription already in progress`, `toggle: transcription already in progress` | there was nothing to signal |
@@ -173,3 +174,6 @@ repeatedly — see [the tests](tests.md).
   removing the session directory on the way out, and writes it under the state directory — see
   [the session](sessions.md).
 - [ADR-0008: the log](../adr/0008-the-log.md) gives the lifecycle one journal line per event.
+- [ADR-0014: the microphone at its base volume](../adr/0014-the-microphone-at-its-base-volume.md)
+  sets the default source and unmutes it before the recorder opens — see
+  [the microphone](microphone.md).
