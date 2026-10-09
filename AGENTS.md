@@ -23,7 +23,8 @@ to install.
   build dependencies and stops; missing runtime commands are only listed.
 - `tests/run.sh` runs the built binary at `target/release/tiny-dictate`, and never builds it. It
   stubs every external command, and needs no microphone, no notification daemon, no layer-shell
-  surface and no network.
+  surface and no network; its one dependency is `python3`, which drives the pseudo-terminal the
+  browser's cases are observed on.
 - `SCRIPT=<path> tests/run.sh`: run the suite against another executable.
 - `ONLY=<test> tests/run.sh` runs one test; `DIAG=1 tests/run.sh` dumps the state after each test.
 - The reference transcriber is a plain shell script, and stays one: "any command" is the contract.
