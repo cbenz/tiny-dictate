@@ -17,8 +17,7 @@ const TITLE: &str = "sessions";
 const EMPTY_TITLE: &str = "no kept sessions";
 
 /// The keys that mean something right now, with the detail pane beside the list.
-const FOOTER: &str =
-    "↑/↓ move  PgUp/PgDn scroll  c copy  i id  p path  t transcribe  d delete  r reload  q quit";
+const FOOTER: &str = "↑/↓ move  Home/End jump  PgUp/PgDn scroll  c copy  i id  p path  t transcribe  d delete  r reload  q quit";
 
 /// The same on a terminal too small for the pane: the page keys mean nothing there, the jump keys
 /// still move the list.
@@ -882,6 +881,7 @@ mod tests {
             assert_eq!(frame.list_columns, 0);
             assert_eq!(frame.lines[0].text, "> c  0:01  transcribed  hello");
             assert!(frame.lines[0].selected);
+            assert!(frame.footer.contains("Home/End jump"));
         }
 
         assert_eq!(panes(40, 24), None);
@@ -899,6 +899,7 @@ mod tests {
 
         assert_eq!(first.list_columns, 66);
         assert_eq!(first.lines.len(), 8);
+        assert!(first.footer.contains("Home/End jump"));
         assert!(first.footer.contains("PgUp/PgDn"));
         assert!(first.pane.iter().any(|line| line == "newer text"));
         assert!(!first.pane.iter().any(|line| line == "older text"));
