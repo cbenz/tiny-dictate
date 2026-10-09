@@ -75,6 +75,9 @@ presenter was asked to draw, the lifecycle of the processes, the exit codes.
   and copies the text to the clipboard, saying so
 - `session transcribe --print` writes the text to stdout and touches no clipboard
 - `session delete` removes exactly one session and leaves the others
+- `session delete` refuses the session in flight -- by `last` and by its id -- without removing
+  anything, taking the command lock or signalling the recorder, while an older session still
+  deletes, and the same id deletes normally once the dictation has ended or was killed
 - an unknown id is reported and removes or writes nothing
 - `history` and `transcribe` at the root print the usage and exit non-zero, and so does an unknown
   sub-verb of `session`

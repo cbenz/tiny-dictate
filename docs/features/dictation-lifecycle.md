@@ -119,8 +119,9 @@ A cancelled dictation is never a failure: its verdict replaces the notification 
 The tool writes its own timeline to standard error, one line per event, prefixed with its name and,
 when the event concerns a session, with that session's id ([ADR-0008](../adr/0008-the-log.md)).
 `start` publishes the id in the runtime directory as `session.id`, which is how `stop`, `cancel` and
-`toggle` — each a process of its own — can name the session their line concerns. The prune and
-`session delete` concern no session and carry no id, and the source of a command — keyboard, pill
+`toggle` — each a process of its own — can name the session their line concerns. The prune, and a
+`session delete` that removed what it was given, concern no session and carry no id; a delete
+refused because the session is in flight names it. The source of a command — keyboard, pill
 button or command line — is not distinguished.
 
 | line | event |
@@ -151,6 +152,7 @@ none when they do not:
 | `<id>: failure: <error>` | a rescue transcription failed; the text is the metadata's `error` |
 | `pruned <n> sessions` | the prune removed sessions beyond `keep`; concerns no session |
 | `session deleted` | `session delete` destroyed one session; concerns none by the time it is gone |
+| `<id>: failure: the session in flight cannot be deleted` | `session delete` refused the dictation in flight; nothing was removed |
 | `unknown session: <id>` | an id no kept session answers to |
 
 The encoder's, the recorder's, the presenter's and the transcriber's own output is kept out of the
