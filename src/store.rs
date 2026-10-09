@@ -16,7 +16,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::files;
 
 /// What became of a session, as `GLOSSARY.md` names it: a closed vocabulary, written verbatim
-/// into `metadata.json` and shown by `history`.
+/// into `metadata.json` and shown by `session list`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
     Recording,
@@ -80,7 +80,7 @@ pub fn sessions_to_prune(ids: &[String], keep: usize, current: &str) -> Vec<Stri
 ///
 /// Returns the ids that were removed, oldest first; directory entries that are not session
 /// directories are left alone. A missing or unreadable directory removes nothing. The listing is
-/// `session_ids`, the same one `history` and `resolve_id` read, so the two agree on what the
+/// `session_ids`, the same one `session list` and `resolve_id` read, so the two agree on what the
 /// newest session is.
 pub fn prune_sessions(sessions: &Path, keep: usize, current: &str) -> Vec<String> {
     let removed = sessions_to_prune(&session_ids(sessions), keep, current);
@@ -302,28 +302,6 @@ pub fn resolve_id(sessions: &Path, target: &str) -> Option<String> {
     ids.into_iter().find(|id| id == target)
 }
 
-/// The first words of a transcript, or of an error, on a history line.
-pub fn first_words(text: &str, limit: usize) -> String {
-    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if collapsed.chars().count() <= limit {
-        return collapsed;
-    }
-
-    // Take `limit` characters; when the cut would land inside a word, back up to the end of the
-    // last complete one, so a history line never ends in half a word.
-    let end = collapsed
-        .char_indices()
-        .nth(limit)
-        .map_or(collapsed.len(), |(index, _)| index);
-    let cut = if collapsed[end..].starts_with(' ') {
-        end
-    } else {
-        collapsed[..end].rfind(' ').unwrap_or(end)
-    };
-
-    format!("{}…", &collapsed[..cut])
-}
-
 /// The raw value of a top-level key in the metadata JSON. The tool writes one field per line and
 /// is the only writer, but the key is matched wherever it appears and whatever follows it, so a
 /// reformatted file still reads.
@@ -527,13 +505,6 @@ mod tests {
     }
 
     #[test]
-    fn first_words_flattens_and_cuts_on_a_word_boundary() {
-        assert_eq!(first_words("  hello\n\tworld ", 60), "hello world");
-        assert_eq!(first_words("one two three", 7), "one two…");
-        assert_eq!(first_words("one two three", 13), "one two three");
-    }
-
-    #[test]
     fn a_session_id_resolves_to_the_newest_or_an_exact_name() {
         let root = std::env::temp_dir().join(format!("td-store-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -588,8 +559,8 @@ mod tests {
         let listed = session_ids(&root);
         let newest = resolve_id(&root, "last").expect("the newest session");
 
-        // `history` reads `session_ids` in order, `last` is its first entry, and the prune never
-        // removes that entry: one listing, one notion of newest.
+        // `session list` reads `session_ids` in order, `last` is its first entry, and the prune
+        // never removes that entry: one listing, one notion of newest.
         assert_eq!(listed.first().map(String::as_str), Some(newest.as_str()));
         assert!(!sessions_to_prune(&listed, 1, &newest).contains(&newest));
 

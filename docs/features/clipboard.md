@@ -12,8 +12,8 @@ Writing both is what makes the paste land wherever the user is typing, and it le
 available on both selections if the injected keypress misses.
 
 `wl-copy` is looked up by the command that offers the text, not before anything runs: the dependency
-checks live in the commands that need them, so `history` and `transcribe --print` run on a machine
-without a clipboard tool, and a missing one costs the paste, never the recording.
+checks live in the commands that need them, so `session list` and `session transcribe --print` run on
+a machine without a clipboard tool, and a missing one costs the paste, never the recording.
 
 ## The lease
 
@@ -39,7 +39,7 @@ depends on.
 The duration is `clipboard_seconds`, read from the [configuration file](configuration.md), `60` by
 default; `0` means no expiry, and then no `timeout` wrapper at all. The text is written to the
 session before any clipboard write, and every clipboard write goes through the one function, so
-`transcribe` gets the same lease as a dictation.
+`session transcribe` gets the same lease as a dictation.
 
 ## Waiting for the offer
 
@@ -56,7 +56,7 @@ hold the previous text, and the failure takes the path a failed paste already ta
 `wl-paste` the read-back cannot be asked, and the chord is pressed as it was before the wait existed
 — losing the paste would cost more than the ordering is worth.
 
-`transcribe` writes through the same offer and does not wait: no chord follows its write.
+`session transcribe` writes through the same offer and does not wait: no chord follows its write.
 
 ## The injected keypress
 
@@ -76,7 +76,8 @@ nothing is submitted. When the injection fails, the session notifies `❌ Could 
 transcription` with critical urgency; the text is still on both selections, so it can be pasted by
 hand.
 
-`transcribe` writes through the same path: it offers the rescued text on both selections and says so
+`session transcribe` writes through the same path: it offers the rescued text on both selections and
+says so
 on stderr, or writes it to stdout with `--print`, which touches no clipboard at all.
 
 ## Decisions

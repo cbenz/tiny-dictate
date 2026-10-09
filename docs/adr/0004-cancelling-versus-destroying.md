@@ -6,4 +6,5 @@ about a cancelled dictation is transcribed or pasted. Destroying is a separate v
 
 Cancelling stays a way to throw something away — the text never reaches the keyboard — but a cancel
 by accident is no longer a lost dictation, because the recording is still there to
-`tiny-dictate transcribe` later.
+`tiny-dictate session transcribe` later ([ADR-0016](0016-the-session-group.md) moved the verb under
+`session`).

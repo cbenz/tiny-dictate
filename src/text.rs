@@ -118,7 +118,7 @@ pub fn transcribe(
 /// Run the transcriber and collapse its stderr into the one line a failure is shown as.
 ///
 /// Both callers — a live dictation and a rescue — show the same one-line error, so the
-/// invocation and the collapse live here once, `transcribe`'s contract included.
+/// invocation and the collapse live here once, `session transcribe`'s contract included.
 pub fn transcribe_collapsed(
     command: &Path,
     audio: &Path,

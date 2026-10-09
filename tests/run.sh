@@ -606,8 +606,9 @@ no_lease_offer() { ! lease_offer_alive; }
 path_absent() { [ ! -e "$1" ] && [ ! -L "$1" ]; }
 
 # The session spawns the offer and goes on: the clipboard does not necessarily hold the text the
-# instant the command that wrote it returned, and a `transcribe` has no keypress after the offer to
-# give it time. A test that reads the clipboard waits for the text rather than racing the process.
+# instant the command that wrote it returned, and a `session transcribe` has no keypress after the
+# offer to give it time. A test that reads the clipboard waits for the text rather than racing the
+# process.
 wait_pasted_text() {
     local i
     for i in $(seq 1 100); do
@@ -1368,12 +1369,12 @@ test_session_cancelled_keeps_recording() {
     check "no leftover process" no_leftover_process
 }
 
-# ──────────────────── the rescue surface: history, transcribe, session delete ────────────────────
+# ────────────── the rescue surface under `session`: list, transcribe, delete ──────────────
 
-# `history` lists the kept sessions newest first, and each line carries the id, the duration,
-# the outcome and the first words of the transcript or the error.
-test_history_lists_sessions_newest_first() {
-    start_test "history lists the sessions newest first with their fields"
+# `session list` prints the kept sessions newest first, and each line carries the id, the human
+# duration, the outcome and the first words of the transcript or the error.
+test_session_list_shows_the_kept_sessions() {
+    start_test "session list shows the kept sessions newest first with their fields"
     # The first dictation fails at the transcriber, the second succeeds: both the transcript
     # and the error are on the lines, each on its own session.
     TRANSCRIBE_FAIL=1 td start
@@ -1391,8 +1392,8 @@ test_history_lists_sessions_newest_first() {
     local newest oldest lines first last
     newest="$(newest_session_id)"
     oldest="$(oldest_session_id)"
-    lines="$(td history)"
-    check "history prints one line per session" [ "$(printf '%s\n' "$lines" | grep -c .)" -eq 2 ]
+    lines="$(td session list)"
+    check "the listing prints one line per session" [ "$(printf '%s\n' "$lines" | grep -c .)" -eq 2 ]
     first="$(printf '%s\n' "$lines" | head -1)"
     last="$(printf '%s\n' "$lines" | tail -1)"
 
@@ -1400,26 +1401,45 @@ test_history_lists_sessions_newest_first() {
     check "the oldest session is last" bash -c '[[ "$1" == "$2 "* ]]' _ "$last" "$oldest"
     check "the newest line carries its outcome" bash -c '[[ "$1" == *" transcribed "* ]]' _ "$first"
     check "the newest line carries the first words of the transcript" bash -c '[[ "$1" == *" second text" ]]' _ "$first"
-    check "the newest line carries a duration" bash -c '[[ "$1" =~ [0-9]+\.[0-9]s ]]' _ "$first"
+    check "the newest line carries a human duration" bash -c '[[ "$1" =~ [0-9]+:[0-9][0-9] ]]' _ "$first"
     check "the oldest line carries its outcome" bash -c '[[ "$1" == *" failed "* ]]' _ "$last"
     check "the oldest line carries the error" bash -c '[[ "$1" == *"groq: Error code: 401 - invalid api key" ]]' _ "$last"
 
     # The failed session is what the rescue surface exists for: transcribe it again with the
     # transcriber working, and the text lands in the session that had none.
-    TRANSCRIBE_TEXT="rescued text" td transcribe "$oldest" > /dev/null 2>&1
+    TRANSCRIBE_TEXT="rescued text" td session transcribe "$oldest" > /dev/null 2>&1
     check "transcribing the failed session by id succeeds" [ "$?" -eq 0 ]
     check "it now holds the text" [ "$(cat "$(sessions_dir)/$oldest/transcript.txt")" = "rescued text" ]
     check "its outcome became transcribed" [ "$(metadata_value "$(sessions_dir)/$oldest" outcome)" = '"transcribed"' ]
 
-    # A closed stdout is how a Unix tool is expected to leave: `history | head` must not panic.
-    check "history piped into head leaves no panic" \
-        bash -c '"$1" history 2>"$2" | head -1 >/dev/null; ! grep -q panicked "$2"' _ "$SCRIPT" "$WORK/history-pipe.err"
+    # A closed stdout is how a Unix tool is expected to leave: `session list | head` must not
+    # panic.
+    check "the listing piped into head leaves no panic" \
+        bash -c '"$1" session list 2>"$2" | head -1 >/dev/null; ! grep -q panicked "$2"' _ "$SCRIPT" "$WORK/list-pipe.err"
 }
 
-# `transcribe last` re-runs the transcriber on the newest session, rewrites the transcript and
-# the raw response, copies the text to the clipboard and says so.
+# A session whose metadata cannot be read is listed rather than skipped: it is exactly the session
+# `session delete` can remove, so hiding it would hide a recording the user can get rid of.
+test_session_list_shows_an_unreadable_session() {
+    start_test "session list shows a session whose metadata cannot be read"
+
+    mkdir -p "$(sessions_dir)/2026-10-07T19-05-22"
+    printf '%s' 'not json' > "$(sessions_dir)/2026-10-07T19-05-22/metadata.json"
+
+    local lines
+    lines="$(td session list)"
+    check "the unreadable session is a row" [ "$(printf '%s\n' "$lines" | grep -c .)" -eq 1 ]
+    check "the row is its id and question marks" [ "$lines" = "2026-10-07T19-05-22  ?  ?  ?" ]
+
+    td session delete 2026-10-07T19-05-22 2> "$WORK/unreadable-delete.err"
+    check "the unreadable session can be deleted" [ "$?" -eq 0 ]
+    check "its directory is gone" [ ! -e "$(sessions_dir)/2026-10-07T19-05-22" ]
+}
+
+# `session transcribe last` re-runs the transcriber on the newest session, rewrites the transcript
+# and the raw response, copies the text to the clipboard and says so.
 test_transcribe_copies_and_rewrites() {
-    start_test "transcribe re-runs the transcriber, rewrites the session and copies the text"
+    start_test "session transcribe re-runs the transcriber, rewrites the session and copies the text"
     TRANSCRIBE_TEXT="first text" TRANSCRIBE_RAW_TEXT='{"raw":"first"}' td start
     sleep 0.4
     td stop
@@ -1431,7 +1451,7 @@ test_transcribe_copies_and_rewrites() {
     rm -f "$WORK/clipboard"
 
     TRANSCRIBE_TEXT="second text" TRANSCRIBE_RAW_TEXT='{"raw":"second"}' \
-        td transcribe last 2> "$WORK/transcribe.err"
+        td session transcribe last 2> "$WORK/transcribe.err"
     check "transcribe succeeds" [ "$?" -eq 0 ]
     check "the transcript is overwritten" [ "$(cat "$dir/transcript.txt")" = "second text" ]
     check "the raw response is overwritten" [ "$(cat "$dir/transcript.raw.json")" = '{"raw":"second"}' ]
@@ -1444,9 +1464,9 @@ test_transcribe_copies_and_rewrites() {
     check "no leftover process" no_leftover_process
 }
 
-# `transcribe --print` writes the text to standard output instead of the clipboard.
+# `session transcribe --print` writes the text to standard output instead of the clipboard.
 test_transcribe_print() {
-    start_test "transcribe --print writes the text to stdout instead of the clipboard"
+    start_test "session transcribe --print writes the text to stdout instead of the clipboard"
     TRANSCRIBE_TEXT="first text" td start
     sleep 0.4
     td stop
@@ -1456,7 +1476,7 @@ test_transcribe_print() {
     dir="$(single_session_dir)"
     rm -f "$WORK/clipboard"
 
-    out="$(TRANSCRIBE_TEXT="printed text" td transcribe last --print 2> "$WORK/print.err")"
+    out="$(TRANSCRIBE_TEXT="printed text" td session transcribe last --print 2> "$WORK/print.err")"
     check "the text is on stdout" [ "$out" = "printed text" ]
     check "the transcript is rewritten" [ "$(cat "$dir/transcript.txt")" = "printed text" ]
     check "nothing was copied to the clipboard" [ ! -e "$WORK/clipboard" ]
@@ -1509,9 +1529,9 @@ test_unknown_session_id() {
     local dir
     dir="$(single_session_dir)"
 
-    td transcribe does-not-exist 2> "$WORK/unknown-transcribe.err"
-    check "transcribe exits non-zero" [ "$?" -ne 0 ]
-    check "transcribe reports the unknown id" \
+    td session transcribe does-not-exist 2> "$WORK/unknown-transcribe.err"
+    check "session transcribe exits non-zero" [ "$?" -ne 0 ]
+    check "session transcribe reports the unknown id" \
         grep -q 'unknown session: does-not-exist' "$WORK/unknown-transcribe.err"
 
     td session delete does-not-exist 2> "$WORK/unknown-delete.err"
@@ -1523,10 +1543,11 @@ test_unknown_session_id() {
     check "the transcript is untouched" [ "$(cat "$dir/transcript.txt")" = "kept text" ]
 }
 
-# `history` and `transcribe` need neither the encoder nor the clipboard tools: the dependency
-# checks live in the commands that use them, so the rescue surface runs on a bare machine.
+# `session list` and `session transcribe` need neither the encoder nor the clipboard tools: the
+# dependency checks live in the commands that use them, so the rescue surface runs on a bare
+# machine.
 test_rescue_without_encoder_or_clipboard() {
-    start_test "history and transcribe run without the encoder or the clipboard tools"
+    start_test "the session verbs run without the encoder or the clipboard tools"
     TRANSCRIBE_TEXT="rescued text" td start
     sleep 0.4
     td stop
@@ -1549,12 +1570,12 @@ test_rescue_without_encoder_or_clipboard() {
         XDG_RUNTIME_DIR="$RUN" HOME="$HOME_DIR")
     local out
 
-    out="$(env "${bare_env[@]}" "$SCRIPT" history)"
-    check "history runs without the tools" [ "$(printf '%s\n' "$out" | grep -c .)" -eq 1 ]
-    check "history still shows the transcript" bash -c '[[ "$1" == *"rescued text" ]]' _ "$out"
+    out="$(env "${bare_env[@]}" "$SCRIPT" session list)"
+    check "session list runs without the tools" [ "$(printf '%s\n' "$out" | grep -c .)" -eq 1 ]
+    check "the listing still shows the transcript" bash -c '[[ "$1" == *"rescued text" ]]' _ "$out"
 
-    out="$(env "${bare_env[@]}" "$SCRIPT" transcribe last --print)"
-    check "transcribe --print runs without the tools" [ "$out" = "rescued text" ]
+    out="$(env "${bare_env[@]}" "$SCRIPT" session transcribe last --print)"
+    check "session transcribe --print runs without the tools" [ "$out" = "rescued text" ]
 
     out="$(env "${bare_env[@]}" "$SCRIPT" status)"
     check "status runs without the tools" [ "$out" = "idle" ]
@@ -1574,6 +1595,30 @@ test_command_line() {
     check "an unknown verb writes nothing to stdout" [ ! -s "$WORK/unknown.out" ]
     check "the usage is printed on stderr" \
         grep -q 'Usage: tiny-dictate <command>' "$WORK/unknown.err"
+
+    # The two verbs that moved under `session` are unknown arguments at the root: the removal is
+    # announced by the usage, never silent, and nothing runs.
+    local removed
+    for removed in history transcribe; do
+        td "$removed" last > "$WORK/removed.out" 2> "$WORK/removed.err"
+        check "the removed root verb $removed exits non-zero" [ "$?" -ne 0 ]
+        check "the removed root verb $removed writes nothing to stdout" [ ! -s "$WORK/removed.out" ]
+        check "the removed root verb $removed prints its name and the usage" \
+            bash -c 'grep -q "^Unknown argument: $1$" "$2" && grep -q "Usage: tiny-dictate" "$2"' _ "$removed" "$WORK/removed.err"
+    done
+
+    # Bare `session` takes no argument of its own: anything after it is a sub-verb or an unknown
+    # word, and an unknown one is the usage, never a silent listing.
+    td session now > "$WORK/session-now.out" 2> "$WORK/session-now.err"
+    check "an unknown sub-verb exits non-zero" [ "$?" -ne 0 ]
+    check "an unknown sub-verb writes nothing to stdout" [ ! -s "$WORK/session-now.out" ]
+    check "an unknown sub-verb prints the usage" \
+        grep -q 'Usage: tiny-dictate <command>' "$WORK/session-now.err"
+
+    # An empty history is an empty listing and not an error.
+    td session > "$WORK/session.out" 2> "$WORK/session.err"
+    check "bare session exits zero" [ "$?" -eq 0 ]
+    check "bare session lists nothing when nothing is kept" [ ! -s "$WORK/session.out" ]
 
     td status > "$WORK/status.out"
     check "status exits zero" [ "$?" -eq 0 ]
@@ -1659,7 +1704,7 @@ test_prune_keeps_the_limit() {
 }
 
 # A dictation that failed prunes nothing: the failure is the moment when nothing is deleted,
-# and the session it left stays available for `transcribe`.
+# and the session it left stays available for `session transcribe`.
 test_prune_not_after_failure() {
     start_test "a failed dictation prunes nothing"
     write_config 'keep = 1'
@@ -1829,10 +1874,10 @@ test_clipboard_lease_duration_from_config() {
     check "no leftover process" no_leftover_process
 }
 
-# `transcribe` offers the rescued text through the same single path as a dictation, so it gets the
-# same lease: the same `--foreground --sensitive` offer, wrapped in the same `timeout`.
+# `session transcribe` offers the rescued text through the same single path as a dictation, so it
+# gets the same lease: the same `--foreground --sensitive` offer, wrapped in the same `timeout`.
 test_transcribe_uses_the_lease() {
-    start_test "transcribe offers the rescued text through the same lease"
+    start_test "session transcribe offers the rescued text through the same lease"
     write_config 'clipboard_seconds = 4'
     TRANSCRIBE_TEXT="first text" td start
     sleep 0.4
@@ -1842,14 +1887,14 @@ test_transcribe_uses_the_lease() {
     : > "$WORK/wl-copy.log"
     : > "$WORK/wl-copy-parent.log"
     rm -f "$WORK/clipboard"
-    TRANSCRIBE_TEXT="rescued text" td transcribe last 2> "$WORK/lease-transcribe.err"
-    check "transcribe succeeds" [ "$?" -eq 0 ]
+    TRANSCRIBE_TEXT="rescued text" td session transcribe last 2> "$WORK/lease-transcribe.err"
+    check "session transcribe succeeds" [ "$?" -eq 0 ]
     check "the rescued text is offered" wait_pasted_text "rescued text"
-    check "transcribe offers the CLIPBOARD selection with the hint" \
+    check "the session verb offers the CLIPBOARD selection with the hint" \
         grep -qx -- '--foreground --sensitive' "$WORK/wl-copy.log"
-    check "transcribe offers the PRIMARY selection with the hint" \
+    check "the session verb offers the PRIMARY selection with the hint" \
         grep -qx -- '--primary --foreground --sensitive' "$WORK/wl-copy.log"
-    check "transcribe's offer is wrapped in the configured lease" \
+    check "the session verb's offer is wrapped in the configured lease" \
         grep -q -- 'timeout 4 .*wl-copy --foreground --sensitive' "$WORK/wl-copy-parent.log"
     check "no leftover process" no_leftover_process
 }
@@ -2341,7 +2386,8 @@ run_test test_journal_toggle
 run_test test_journal_late_cancel
 run_test test_journal_no_collaborator_chatter
 run_test test_reference_transcriber
-run_test test_history_lists_sessions_newest_first
+run_test test_session_list_shows_the_kept_sessions
+run_test test_session_list_shows_an_unreadable_session
 run_test test_transcribe_copies_and_rewrites
 run_test test_transcribe_print
 run_test test_session_delete_removes_one

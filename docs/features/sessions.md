@@ -37,33 +37,41 @@ recording, so a session left on `recording` is one that died mid-recording. `out
 terminal words. `pasted` says whether the text reached the focused window. `transcriber` is the
 resolved command, and `error` is the failure on one line, or `null`.
 
-## The rescue surface
+## The `session` group
 
-Three commands read and write the sessions directory, and none of them touches the microphone, the
-encoder or the pill:
+Every command that touches a kept session lives under `tiny-dictate session`, and none of them
+touches the microphone, the encoder or the pill:
 
-- `tiny-dictate history` lists the kept sessions, newest first, one line per session:
+- `tiny-dictate session list` lists the kept sessions, newest first, one line per session:
 
   ```text
   <id>  <duration>  <outcome>  <summary>
   ```
 
-  the duration in seconds with one decimal, `-` when the session died mid-recording; the outcome in
-the vocabulary above; and the summary, which is the error when there is one, else the first words of
-the transcript, else `-`. The line is plain text on stdout, and `history` reads nothing but the
-sessions directory.
-- `tiny-dictate transcribe <id|last> [--print]` runs the transcriber command again on the session's
-  `audio.mp3`, with the same contract a live dictation uses: `$1` the audio, `$2` the session
-directory, the text on stdout, the error on stderr. It rewrites `transcript.txt` and the session's
-metadata (`outcome`, `error`, `transcriber`), and a transcriber that writes `transcript.raw.json`
-overwrites the previous one -- that file is the transcriber's, the core never rewrites its bytes. By
-default it offers the text on the clipboard, through the same write path a normal dictation uses,
-and says so on stderr; `--print` writes it to stdout instead, and needs no clipboard tool at all.
+  the duration as a person reads one -- `4:32` under an hour, `1:04:32` beyond, and `-` when the
+session died mid-recording; the outcome in the vocabulary above; and the summary, which is the error
+when there is one, else the first words of the transcript, else `-`. A session whose metadata cannot
+be read is a row of its own, its id and `?` where the other fields would be, rather than a skipped
+line: it is exactly the session `session delete` can remove. The line is plain text on stdout, and
+`session list` reads nothing but the sessions directory. `tiny-dictate session` on its own is the
+same listing.
+- `tiny-dictate session transcribe <id|last> [--print]` runs the transcriber command again on the
+  session's `audio.mp3`, with the same contract a live dictation uses: `$1` the audio, `$2` the
+session directory, the text on stdout, the error on stderr. It rewrites `transcript.txt` and the
+session's metadata (`outcome`, `error`, `transcriber`), and a transcriber that writes
+`transcript.raw.json` overwrites the previous one -- that file is the transcriber's, the core never
+rewrites its bytes. By default it offers the text on the clipboard, through the same write path a
+normal dictation uses, and says so on stderr; `--print` writes it to stdout instead, and needs no
+clipboard tool at all.
 - `tiny-dictate session delete <id|last>` removes exactly one session directory. It is the only verb
   that destroys a recording; cancelling never does.
 
-`last` is the newest session. An id that no kept session answers to is reported on stderr, exits
-non-zero, and removes or writes nothing.
+A verb that touches a session is not available anywhere else: `history` and `transcribe` used to
+live at the root, and they are unknown arguments now. `last` is the newest session. An id that no
+kept session answers to is reported on stderr, exits non-zero, and removes or writes nothing.
+
+Every one of those surfaces reads the session through the same view, one module that owns the row of
+the listing and the human duration, so the surfaces cannot drift apart.
 
 ## What survives
 
@@ -93,5 +101,6 @@ comes from the [configuration file](configuration.md), 10 by default.
   `session delete` the only verb that destroys a session.
 - [ADR-0005: prune the oldest sessions after a pasted dictation](../adr/0005-prune.md) bounds the
   directory without a timer or a daemon.
-- [ADR-0011: the command line](../adr/0011-command-line.md) adds `history`, `transcribe` and
-  `session delete`, and moves the dependency checks into the commands that need them.
+- [ADR-0011: the command line](../adr/0011-command-line.md) adds the verbs that read a session and
+  moves the dependency checks into the commands that need them;
+  [ADR-0016](../adr/0016-the-session-group.md) moves those verbs under `session`.

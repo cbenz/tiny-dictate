@@ -15,7 +15,8 @@ failed` line ADR-0008 asks for, and the user gets the notification a failed past
 
 ## Considered options
 
-Waiting inside `clipboard_write`, beside the offer, would make `transcribe` pay the wait too, where
+Waiting inside `clipboard_write`, beside the offer, would make `session transcribe` pay the wait too,
+where
 no chord follows and the read-back buys nothing.
 
 Killing the previous offer before writing the new one — holding the `wl-copy` pid in the runtime

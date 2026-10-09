@@ -5,14 +5,15 @@ pub const USAGE: &str = "\
 Usage: tiny-dictate <command>
 
 Commands:
-  start                           Start recording
-  stop                            Stop recording and transcribe
-  cancel                          Cancel recording
-  toggle                          Start if idle, stop if recording
-  status                          Show status (idle or working)
-  history                         List the kept sessions, newest first
-  transcribe <id|last> [--print]  Transcribe a session again, to the clipboard or to stdout
-  session delete <id|last>        Remove exactly one session";
+  start                                   Start recording
+  stop                                    Stop recording and transcribe
+  cancel                                  Cancel recording
+  toggle                                  Start if idle, stop if recording
+  status                                  Show status (idle or working)
+  session                                 List the kept sessions, newest first
+  session list                            List the kept sessions, newest first
+  session transcribe <id|last> [--print]  Transcribe a session again, to the clipboard or to stdout
+  session delete <id|last>                Remove exactly one session";
 
 /// What one invocation asks the tool to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -23,9 +24,15 @@ pub enum Command {
     Toggle,
     Status,
     Help,
-    History,
-    Transcribe { target: String, print: bool },
-    SessionDelete { target: String },
+    /// `session`, or `session list`: the kept sessions, newest first.
+    SessionList,
+    SessionTranscribe {
+        target: String,
+        print: bool,
+    },
+    SessionDelete {
+        target: String,
+    },
 }
 
 /// Why a command line cannot be run.
@@ -64,9 +71,7 @@ pub fn parse(arguments: &[String]) -> Result<Command, Error> {
         "cancel" => alone(Command::Cancel, rest),
         "toggle" => alone(Command::Toggle, rest),
         "status" => alone(Command::Status, rest),
-        "history" => alone(Command::History, rest),
         "-h" | "--help" | "help" => alone(Command::Help, rest),
-        "transcribe" => transcribe(rest),
         "session" => session(rest),
         word => Err(Error::Unknown(word.to_owned())),
     }
@@ -81,7 +86,21 @@ fn alone(command: Command, rest: &[String]) -> Result<Command, Error> {
     }
 }
 
-/// `transcribe <id|last> [--print]`.
+/// The `session` group: every verb that touches a kept session, and nothing else.
+///
+/// Bare, it takes no argument of its own and lists the sessions; a sub-verb it does not know is
+/// an unknown argument, like one at the root.
+fn session(rest: &[String]) -> Result<Command, Error> {
+    match rest.first().map(String::as_str) {
+        None => Ok(Command::SessionList),
+        Some("list") => alone(Command::SessionList, &rest[1..]),
+        Some("transcribe") => transcribe(&rest[1..]),
+        Some("delete") => delete(&rest[1..]),
+        Some(word) => Err(Error::Unknown(word.to_owned())),
+    }
+}
+
+/// `session transcribe <id|last> [--print]`.
 fn transcribe(rest: &[String]) -> Result<Command, Error> {
     let mut target: Option<String> = None;
     let mut print = false;
@@ -102,53 +121,34 @@ fn transcribe(rest: &[String]) -> Result<Command, Error> {
     }
 
     match target {
-        Some(target) => Ok(Command::Transcribe { target, print }),
+        Some(target) => Ok(Command::SessionTranscribe { target, print }),
         None => Err(Error::Missing(
-            "transcribe needs a session id or `last`".to_owned(),
+            "session transcribe needs a session id or `last`".to_owned(),
         )),
     }
 }
 
-/// `session delete <id|last>`: the only verb under `session`, and it means destroying one.
-fn session(rest: &[String]) -> Result<Command, Error> {
-    match rest.first().map(String::as_str) {
-        Some("delete") => {
-            let mut target: Option<String> = None;
-            for argument in &rest[1..] {
-                if target.is_some() {
-                    return Err(Error::Conflicting);
-                }
-                target = Some(argument.clone());
-            }
-
-            match target {
-                Some(target) => Ok(Command::SessionDelete { target }),
-                None => Err(Error::Missing(
-                    "session delete needs a session id or `last`".to_owned(),
-                )),
-            }
-        }
-        Some(word) => Err(Error::Unknown(word.to_owned())),
-        None => Err(Error::Missing("session needs `delete`".to_owned())),
+/// `session delete <id|last>`: the verb that destroys one session, and only one. The single word
+/// is the session to remove; more than one is a conflict, and none is the argument it needs.
+fn delete(rest: &[String]) -> Result<Command, Error> {
+    match rest {
+        [target] => Ok(Command::SessionDelete {
+            target: target.clone(),
+        }),
+        [] => Err(Error::Missing(
+            "session delete needs a session id or `last`".to_owned(),
+        )),
+        _ => Err(Error::Conflicting),
     }
 }
 
 /// Whether a word is a verb of this command line: what makes a second one conflicting rather
-/// than unknown.
+/// than unknown. The verbs removed from the root are deliberately absent: they are unknown
+/// arguments now, so the usage teaches the new name.
 fn is_verb(word: &str) -> bool {
     matches!(
         word,
-        "start"
-            | "stop"
-            | "cancel"
-            | "toggle"
-            | "status"
-            | "history"
-            | "transcribe"
-            | "session"
-            | "help"
-            | "-h"
-            | "--help"
+        "start" | "stop" | "cancel" | "toggle" | "status" | "session" | "help" | "-h" | "--help"
     )
 }
 
@@ -162,18 +162,19 @@ mod tests {
     }
 
     #[test]
-    fn the_new_verbs_read_their_arguments() {
-        assert_eq!(parse_words(&["history"]), Ok(Command::History));
+    fn the_session_group_reads_its_verbs() {
+        assert_eq!(parse_words(&["session"]), Ok(Command::SessionList));
+        assert_eq!(parse_words(&["session", "list"]), Ok(Command::SessionList));
         assert_eq!(
-            parse_words(&["transcribe", "last"]),
-            Ok(Command::Transcribe {
+            parse_words(&["session", "transcribe", "last"]),
+            Ok(Command::SessionTranscribe {
                 target: "last".to_owned(),
                 print: false
             })
         );
         assert_eq!(
-            parse_words(&["transcribe", "last", "--print"]),
-            Ok(Command::Transcribe {
+            parse_words(&["session", "transcribe", "last", "--print"]),
+            Ok(Command::SessionTranscribe {
                 target: "last".to_owned(),
                 print: true
             })
@@ -187,17 +188,38 @@ mod tests {
     }
 
     #[test]
+    fn the_removed_root_verbs_are_unknown_arguments() {
+        // The removal is announced by the usage, never silent: neither word is a verb any more.
+        assert_eq!(
+            parse_words(&["history"]),
+            Err(Error::Unknown("history".to_owned()))
+        );
+        assert_eq!(
+            parse_words(&["transcribe", "last"]),
+            Err(Error::Unknown("transcribe".to_owned()))
+        );
+    }
+
+    #[test]
     fn a_missing_or_misplaced_word_is_reported() {
         assert!(matches!(
-            parse_words(&["transcribe"]),
+            parse_words(&["session", "transcribe"]),
             Err(Error::Missing(_))
         ));
         assert!(matches!(
             parse_words(&["session", "delete"]),
             Err(Error::Missing(_))
         ));
+        assert_eq!(
+            parse_words(&["session", "now"]),
+            Err(Error::Unknown("now".to_owned()))
+        );
         assert!(matches!(
             parse_words(&["session", "prune"]),
+            Err(Error::Unknown(_))
+        ));
+        assert!(matches!(
+            parse_words(&["session", "list", "now"]),
             Err(Error::Unknown(_))
         ));
         assert!(matches!(
@@ -205,8 +227,12 @@ mod tests {
             Err(Error::Conflicting)
         ));
         assert!(matches!(
-            parse_words(&["history", "now"]),
+            parse_words(&["session", "session"]),
             Err(Error::Unknown(_))
+        ));
+        assert!(matches!(
+            parse_words(&["session", "list", "session"]),
+            Err(Error::Conflicting)
         ));
     }
 }

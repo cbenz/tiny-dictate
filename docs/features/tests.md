@@ -68,14 +68,17 @@ presenter was asked to draw, the lifecycle of the processes, the exit codes.
 - cancel while transcribing, and the text being dropped
 - a second start refused while recording
 - toggle while transcribing
-- `history` lists the sessions newest first, with the id, the duration, the outcome and the first
-  words of the transcript or the error
-- `transcribe last` re-runs the transcriber, rewrites the transcript and the raw response, and
-  copies the text to the clipboard, saying so
-- `transcribe --print` writes the text to stdout and touches no clipboard
+- `session list` prints the kept sessions newest first, with the id, the human duration, the
+  outcome and the first words of the transcript or the error, and shows a session whose metadata
+  cannot be read as a row of `?` instead of skipping it
+- `session transcribe last` re-runs the transcriber, rewrites the transcript and the raw response,
+  and copies the text to the clipboard, saying so
+- `session transcribe --print` writes the text to stdout and touches no clipboard
 - `session delete` removes exactly one session and leaves the others
 - an unknown id is reported and removes or writes nothing
-- `history` and `transcribe` run with the encoder and the clipboard tools removed from `PATH`
+- `history` and `transcribe` at the root print the usage and exit non-zero, and so does an unknown
+  sub-verb of `session`
+- the `session` verbs run with the encoder and the clipboard tools removed from `PATH`
 - the paste waits for the offer to serve the text it injects, so the chord cannot read the previous
   dictation's, and it still injects it with `wl-paste` removed from `PATH`
 - the recorder race run `RACE_ITERATIONS` times, optionally against another implementation
@@ -96,8 +99,8 @@ was asked to draw, the lifecycle of the processes and the exit codes are all obs
 pure functions the seam cannot see are unit-tested instead: the pill's frame computation (state,
 waveform, limit and elapsed time in, what to draw out, including the three bands of the progress
 bar), the prune selection (a list of sessions in, the ones to remove out, sharing one listing with
-`history` and `last`), and, for the rescue surface, reading the metadata back, resolving a
-`<id|last>` argument and cutting a history summary on a word boundary.
+`session list` and `last`), and, for the session surface, reading the metadata back, resolving a
+`<id|last>` argument, the human duration and the row of the listing.
 
 ## Decisions
 
@@ -105,5 +108,5 @@ bar), the prune selection (a list of sessions in, the ones to remove out, sharin
   acceptance criterion for.
 - [ADR-0005: prune](../adr/0005-prune.md) and
   [ADR-0006: the limit and the bar](../adr/0006-the-limit-and-the-bar.md) keep the pure functions —
-  the prune selection and the pill's frame computation — out of the process seam, where the rescue
-  surface's summary cutting and metadata read-back also live.
+  the prune selection and the pill's frame computation — out of the process seam, where the view's
+  row, its duration and the metadata read-back also live.
