@@ -349,8 +349,10 @@ fn start_command(command: &str) -> ExitCode {
     let _ = fs::write(&paths.session_id, &session.id);
 
     // The microphone is set now that the claim is held and the session exists: the line names the
-    // session, and a dictation that lost the claim has already been refused above.
-    microphone::set_base_volume(&session.id);
+    // session, and a dictation that lost the claim has already been refused above. The configured
+    // input level is the stand-in for a server that publishes no readable base.
+    let config = config::load();
+    microphone::set_base_volume(&session.id, config.input_level_pct);
 
     if let Err(error) = audio::start_pipeline(&paths, &session.audio(), &session.id) {
         log::line(

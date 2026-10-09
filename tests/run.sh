@@ -265,18 +265,22 @@ STUB
 cat > "$BIN/pactl" <<'STUB'
 #!/usr/bin/env bash
 # Stand-in for the audio server's control command, the only command the microphone module runs.
-# `list sources` publishes the source's base volume (PACTL_NO_BASE omits it) and its mute state
-# (PACTL_MUTED reports it as muted). Every call is logged with the instant it was made, so the
-# suite can check which commands ran, with which arguments, and in which order against the
-# recorder. `get-source-mute` and `get-source-volume` stay answered because they are the probes a
-# tool that checks before writing would run: the muted-source case asserts that only `set-` calls
-# were made.
+# `list sources` publishes the source's base volume (PACTL_NO_BASE omits the line, PACTL_BAD_BASE
+# prints one the parser cannot read) and its mute state (PACTL_MUTED reports it as muted). Every
+# call is logged with the instant it was made, so the suite can check which commands ran, with
+# which arguments, and in which order against the recorder. `get-source-mute` and
+# `get-source-volume` stay answered because they are the probes a tool that checks before writing
+# would run: the muted-source case asserts that only `set-` calls were made.
 printf 'pactl %s at %s\n' "$*" "$(date +%s.%N)" >> "$WORK/pactl.log"
 case "$1" in
     list)
         printf 'Source #0\n'
         [ -n "${PACTL_MUTED:-}" ] && printf '\tMute: yes\n'
-        [ -z "${PACTL_NO_BASE:-}" ] && printf '\tBase Volume: 6554 / 10%% / -60.00 dB\n'
+        if [ -n "${PACTL_BAD_BASE:-}" ]; then
+            printf '\tBase Volume: nonsense / 10%% / -60.00 dB\n'
+        elif [ -z "${PACTL_NO_BASE:-}" ]; then
+            printf '\tBase Volume: 6554 / 10%% / -60.00 dB\n'
+        fi
         ;;
     get-source-mute)
         [ -n "${PACTL_MUTED:-}" ] && echo "Mute: yes" || echo "Mute: no"
@@ -373,6 +377,24 @@ for stub in "$BIN"/* "$BIN-broken-meter"/* "$BIN_LEASE"/* "$BIN_WAYBAR"/*; do
     fi
 done
 
+# A stub directory carrying every collaborator but `pactl`, plus the real commands the stubs
+# themselves run: pointing PATH at it alone is a machine where the audio server's command is not
+# installed, whatever the machine of the run. It lives under $BIN, so `cleanup_processes`'s
+# "$WORK/bin/" pattern still reaps what it starts. Created after the check above: the loop would
+# hand a directory to `bash -n`.
+BIN_NO_PACTL="$BIN/no-pactl"
+mkdir -p "$BIN_NO_PACTL"
+for stub in "$BIN"/*; do
+    name="$(basename "$stub")"
+    [ "$name" = "no-pactl" ] && continue
+    [ "$name" = "pactl" ] && continue
+    ln -sf "$stub" "$BIN_NO_PACTL/$name"
+done
+for tool in bash timeout date dd tee wc sleep cat tr cp; do
+    resolved="$(command -v "$tool")" && ln -sf "$resolved" "$BIN_NO_PACTL/$tool"
+done
+export BIN_NO_PACTL
+
 # ─────────────────────────── helpers ───────────────────────────
 
 td() {
@@ -385,6 +407,14 @@ td() {
 # up on PATH.
 td_default() {
     PATH="$BIN:$PATH" XDG_RUNTIME_DIR="$RUN" HOME="$HOME_DIR" "$SCRIPT" "$@"
+}
+
+# Same, with a PATH that carries no `pactl` at all: the collaborators are there, the audio
+# server's command is not, which is what a machine without it looks like at the process seam.
+td_no_pactl() {
+    TINY_DICTATE_TRANSCRIBE="${TINY_DICTATE_TRANSCRIBE:-$BIN/transcribe}" \
+        TINY_DICTATE_PRESENT_COMMAND="${TINY_DICTATE_PRESENT_COMMAND:-$BIN/present}" \
+        PATH="$BIN_NO_PACTL" XDG_RUNTIME_DIR="$RUN" HOME="$HOME_DIR" "$SCRIPT" "$@"
 }
 
 # Same, with a `wl-copy` that holds the offer for the whole lease instead of exiting at once.
@@ -1167,15 +1197,19 @@ test_microphone_muted_source_records() {
     check "session directory removed" session_dir_gone
 }
 
-# A server that answers but publishes no base volume is not silence: the level is left alone and
-# the journal says why, and the source is unmuted all the same.
-test_microphone_without_a_base_volume() {
-    start_test "a server that publishes no base volume leaves the level alone"
+# A server that answers but publishes no base volume, or a line the parser cannot read, is not
+# silence: the configured input level stands in, written as a percentage, and one line naming the
+# session says so. The source is unmuted all the same
+# ([ADR-0014](../adr/0014-the-microphone-at-its-base-volume.md)).
+test_microphone_fallback_level() {
+    start_test "an unreadable base volume falls back to the configured input level"
     PACTL_NO_BASE=1 td start 2>> "$JOURNAL"
     sleep 0.4
     check "the server was asked" pactl_called "list sources"
-    check "no volume is written" \
-        bash -c '! grep -q "^pactl set-source-volume" "$1"' _ "$WORK/pactl.log"
+    check "the fallback level is written as a percentage" \
+        pactl_called "set-source-volume @DEFAULT_SOURCE@ 10%"
+    check "the level is written before the recorder opens" source_written_before_recorder
+    check "the dictation is recording" [ "$(td status)" = "working" ]
     check "the source is still unmuted" pactl_called "set-source-mute @DEFAULT_SOURCE@ 0"
     td stop 2>> "$JOURNAL"
     check "session finishes" wait_idle
@@ -1183,8 +1217,79 @@ test_microphone_without_a_base_volume() {
 
     local id
     id="$(basename "$(single_session_dir)")"
-    check "one line names the session and why nothing was set" \
-        journal_line_names_session "$id" 'microphone left at its level: no base volume published'
+    check "one line names the session and the level it fell back to" \
+        journal_line_names_session "$id" 'microphone set to input level 10%: no readable base volume'
+    check "the level is set once for the dictation" [ "$(pactl_calls set-source-volume)" -eq 1 ]
+    check "no leftover process" no_leftover_process
+    check "session directory removed" session_dir_gone
+
+    # A line carrying a value the parser cannot read is the same outcome, not an error: the count
+    # moving to two is what proves the malformed line wrote rather than the first dictation's log
+    # being read back.
+    PACTL_BAD_BASE=1 td start 2>> "$JOURNAL"
+    sleep 0.4
+    check "a malformed base line still writes the fallback" \
+        [ "$(pactl_calls set-source-volume)" -eq 2 ]
+    td stop 2>> "$JOURNAL"
+    check "the second session finishes" wait_idle
+    check "the second transcription is pasted" [ "$(pasted_text)" = "text transcribed" ]
+
+    id="$(newest_session_id)"
+    check "the malformed answer is logged the same way" \
+        journal_line_names_session "$id" 'microphone set to input level 10%: no readable base volume'
+    check "no leftover process after the malformed answer" no_leftover_process
+    check "the second session directory is removed" session_dir_gone
+}
+
+# The fallback lives in the configuration file like the other keys: a malformed value keeps the
+# default rather than costing a dictation ([ADR-0010](../adr/0010-configuration.md)).
+test_microphone_input_level_from_config() {
+    start_test "the fallback input level comes from the configuration file"
+    write_config 'input_level_pct = 25'
+    PACTL_NO_BASE=1 td start 2>> "$JOURNAL"
+    sleep 0.4
+    check "the configured level is written as a percentage" \
+        pactl_called "set-source-volume @DEFAULT_SOURCE@ 25%"
+    td stop 2>> "$JOURNAL"
+    check "session finishes" wait_idle
+    check "transcription pasted" [ "$(pasted_text)" = "text transcribed" ]
+
+    local id
+    id="$(basename "$(single_session_dir)")"
+    check "the journal names the configured level" \
+        journal_line_names_session "$id" 'microphone set to input level 25%: no readable base volume'
+    check "no leftover process" no_leftover_process
+    check "session directory removed" session_dir_gone
+
+    write_config 'input_level_pct = many'
+    PACTL_NO_BASE=1 td start 2>> "$JOURNAL"
+    sleep 0.4
+    check "a malformed level keeps the default" \
+        pactl_called "set-source-volume @DEFAULT_SOURCE@ 10%"
+    td stop 2>> "$JOURNAL"
+    check "session finishes with a malformed level" wait_idle
+    check "transcription pasted with a malformed level" [ "$(pasted_text)" = "text transcribed" ]
+    check "no leftover process with a malformed level" no_leftover_process
+    check "session directory removed with a malformed level" session_dir_gone
+}
+
+# No `pactl` on PATH is not a refusal: the dictation records as usual, one line names the session
+# and says the level was left alone, and no `set-` command is even attempted
+# ([ADR-0014](../adr/0014-the-microphone-at-its-base-volume.md)).
+test_microphone_without_pactl() {
+    start_test "a dictation without pactl records and only logs it"
+    td_no_pactl start 2>> "$JOURNAL"
+    sleep 0.4
+    check "the dictation is recording" [ "$(td status)" = "working" ]
+    check "no pactl command ran at all" [ ! -s "$WORK/pactl.log" ]
+    td stop 2>> "$JOURNAL"
+    check "session finishes" wait_idle
+    check "transcription pasted" [ "$(pasted_text)" = "text transcribed" ]
+
+    local id
+    id="$(basename "$(single_session_dir)")"
+    check "one line names the session and the missing server" \
+        journal_line_names_session "$id" 'microphone left at its level: no audio server answered'
     check "no leftover process" no_leftover_process
     check "session directory removed" session_dir_gone
 }
@@ -2368,7 +2473,9 @@ run_test test_chain_after_cancel
 run_test test_cancel_during_transcription
 run_test test_microphone_base_volume
 run_test test_microphone_muted_source_records
-run_test test_microphone_without_a_base_volume
+run_test test_microphone_fallback_level
+run_test test_microphone_input_level_from_config
+run_test test_microphone_without_pactl
 run_test test_second_start_refused
 run_test test_command_lock
 run_test test_toggle_during_transcription

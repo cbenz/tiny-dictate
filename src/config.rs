@@ -24,6 +24,10 @@ pub struct Config {
     /// How long the transcript stays offered on the clipboard, in seconds; `0` means no expiry.
     /// Consumed by the clipboard lease ([ADR-0007](../docs/adr/0007-the-clipboard-lease.md)).
     pub clipboard_seconds: u64,
+    /// The percentage the microphone is set to when the audio server publishes no readable base
+    /// volume ([ADR-0014](../docs/adr/0014-the-microphone-at-its-base-volume.md)). Never a target:
+    /// the base the server publishes is what a dictation writes when there is one.
+    pub input_level_pct: u32,
 }
 
 impl Default for Config {
@@ -32,6 +36,7 @@ impl Default for Config {
             keep: 10,
             color: DEFAULT_COLOR.to_owned(),
             clipboard_seconds: 60,
+            input_level_pct: 10,
         }
     }
 }
@@ -67,6 +72,9 @@ fn parse(text: &str) -> Config {
             "keep" => config.keep = value.parse().unwrap_or(config.keep),
             "clipboard_seconds" => {
                 config.clipboard_seconds = value.parse().unwrap_or(config.clipboard_seconds);
+            }
+            "input_level_pct" => {
+                config.input_level_pct = value.parse().unwrap_or(config.input_level_pct);
             }
             "color" => {
                 let color = unquote(value);

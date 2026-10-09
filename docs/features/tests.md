@@ -52,8 +52,8 @@ presenter was asked to draw, the lifecycle of the processes, the exit codes.
 - the waveform channel carries the recording to the pill, and hands the pill the waveform file and
   the command to run
 - the default source of the audio server is set to the base volume it publishes before the recorder
-  opens, the source is unmuted instead of refused, and the level is left alone when the server
-  answers without a base volume
+  opens, the source is unmuted instead of refused, and the configured fallback level stands in when
+  the server answers without a readable base volume, or is not on `PATH` at all
 - a waveform meter that dies mid-recording does not end the recording: the guarantee the `tee -p`
   pipeline used to carry, kept as a regression scenario even though the in-process slicer no longer
   calls the stub the scenario breaks
