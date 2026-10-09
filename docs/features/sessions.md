@@ -55,8 +55,9 @@ be read is a row of its own, its id and `?` where the other fields would be, rat
 line: it is exactly the session `session delete` can remove. The line is plain text on stdout, and
 `session list` reads nothing but the sessions directory. `tiny-dictate session` on its own is the
 same listing when its stdout is a pipe, and opens the [browser](browse.md) when it is a terminal.
-- `tiny-dictate session browse` reads the kept sessions on a terminal: the list, the selection and
-the keys that move through it. It takes no command lock and reads files only, so it opens while a
+- `tiny-dictate session browse` reads the kept sessions on a terminal: the list, the selection, the
+selected session's fields and transcript in a pane beside it, and the keys that move through both.
+It takes no command lock and reads files only, so it opens while a
 dictation runs, and it works on a machine without the encoder or the clipboard tools.
 - `tiny-dictate session show <id|last>` reads one session in full: its fields, one per line, then
   its transcript. The fields are the shared view's, in the one order every surface renders them --
