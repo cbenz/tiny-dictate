@@ -16,6 +16,10 @@ to install.
 
 - `cargo build --release` builds the binary. The pill links GTK4 and gtk4-layer-shell, so their
   development packages are needed to build; nothing is needed beside the binary at runtime.
+- `./install.sh` builds the release binary and links it onto PATH as `tiny-dictate`, so the
+  shortcuts and the bar drive this checkout; `./install.sh restore` links the main worktree's
+  install back. It names missing build dependencies and stops; missing runtime commands are only
+  listed.
 - `tests/run.sh` runs the built binary at `target/release/tiny-dictate`, and never builds it. It
   stubs every external command, and needs no microphone, no notification daemon, no layer-shell
   surface and no network.
