@@ -19,6 +19,8 @@ OLD_SCRIPT="${OLD_SCRIPT:-}"
 # through the command line instead of reading the state file.
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WAYBAR_MODULE="$REPO_ROOT/contrib/waybar/tiny-dictate-module.jsonc"
+# The checkout the suite runs from: `install.sh` is read from here, not from the built binary.
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
 RACE_ITERATIONS="${RACE_ITERATIONS:-25}"
 ONLY="${ONLY:-}"
 DIAG="${DIAG:-}"
@@ -250,6 +252,44 @@ STUB
 cat > "$BIN/amixer" <<'STUB'
 #!/usr/bin/env bash
 echo "[on]"
+STUB
+
+# The build toolchain `install.sh` drives and checks: a `cargo` that fakes the release binary it
+# links, a `cc` the C-compiler check finds, a `pkg-config` that answers for the two GTK modules
+# (TD_MISSING_MODULE names one to report missing), and a `git` whose porcelain listing names the
+# suite's fake main worktree (TD_MAIN_WORKTREE) as its first entry.
+cat > "$BIN/cargo" <<'STUB'
+#!/usr/bin/env bash
+printf 'cargo %s\n' "$*" >> "$WORK/cargo.log"
+mkdir -p "$PWD/target/release"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$PWD/target/release/tiny-dictate"
+chmod +x "$PWD/target/release/tiny-dictate"
+STUB
+
+cat > "$BIN/cc" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+
+cat > "$BIN/pkg-config" <<'STUB'
+#!/usr/bin/env bash
+# --exists <module>: the two the build links are installed, unless TD_MISSING_MODULE names one.
+if [ "${1:-}" = "--exists" ]; then
+    case "${2:-}" in
+        gtk4 | gtk4-layer-shell-0)
+            [ "${TD_MISSING_MODULE:-}" = "$2" ] && exit 1
+            exit 0
+            ;;
+        *) exit 1 ;;
+    esac
+fi
+exit 0
+STUB
+
+cat > "$BIN/git" <<'STUB'
+#!/usr/bin/env bash
+# `git worktree list --porcelain`: the suite's fake main worktree is the first entry.
+printf 'worktree %s\nHEAD 0000000000000000000000000000000000000000\nbranch refs/heads/main\n\n' "${TD_MAIN_WORKTREE:?TD_MAIN_WORKTREE is not set}"
 STUB
 
 # A meter that dies on its first slice instead of reading it. The scenario is kept as a regression
@@ -518,6 +558,10 @@ pasted() { [ -n "$(pasted_text)" ]; }
 # its death is the lease ending.
 lease_offer_alive() { pgrep -f "$WORK/bin-lease/" >/dev/null 2>&1; }
 no_lease_offer() { ! lease_offer_alive; }
+
+# Neither a file nor a symlink: what removing a link leaves behind, and what an install that only
+# manages symlinks must not replace.
+path_absent() { [ ! -e "$1" ] && [ ! -L "$1" ]; }
 
 # The session spawns the offer and goes on: the clipboard does not necessarily hold the text the
 # instant the command that wrote it returned, and a `transcribe` has no keypress after the offer to
@@ -1882,6 +1926,109 @@ test_race_loop_old() {
     printf '    info %s/%s iterations lost the audio\n' "$failures" "$RACE_ITERATIONS"
 }
 
+# ─────────────────────── the dev install ───────────────────────
+
+# `install.sh` is the reversible dev install: one command links this checkout onto PATH, and
+# `restore` puts the main worktree's install back. The suite drives a fake checkout, a fake HOME
+# and a stub `git`, so the real `~/.local/bin` is never touched.
+test_dev_install_and_restore() {
+    start_test "the dev install links this checkout, restore puts the main worktree back"
+
+    local checkout="$WORK/install-checkout" main="$WORK/install-main"
+    local home="$WORK/install-home" copy_home="$WORK/install-home-copy"
+    local dep_home="$WORK/install-home-dep" bare_home="$WORK/install-home-bare"
+    local rc=0
+    rm -rf "$checkout" "$main" "$home" "$copy_home" "$dep_home" "$bare_home"
+    mkdir -p "$checkout" "$home/.local/bin" "$copy_home/.local/bin" "$dep_home/.local/bin" \
+        "$bare_home/.local/bin" "$main/src/presenters"
+    cp "$REPO/install.sh" "$checkout/install.sh"
+    chmod +x "$checkout/install.sh"
+
+    # The main worktree's bash install: restore links back to these two executables.
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$main/src/tiny-dictate"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$main/src/presenters/layer-shell"
+    chmod +x "$main/src/tiny-dictate" "$main/src/presenters/layer-shell"
+
+    # The bash dev install's presenter link, the one the Rust install must take away, and the
+    # user's own wrapper, which neither command may touch.
+    ln -s "$main/src/presenters/layer-shell" "$home/.local/bin/tiny-dictate-present"
+    printf 'my wrapper\n' > "$home/.local/bin/tiny-dictate-transcribe"
+
+    : > "$WORK/cargo.log"
+    PATH="$BIN:$PATH" HOME="$home" TD_MAIN_WORKTREE="$main" "$checkout/install.sh" \
+        > "$WORK/install.out" 2> "$WORK/install.err" || rc=$?
+    check "install exits zero" [ "$rc" -eq 0 ]
+    check "the release build ran" grep -q -- '--release' "$WORK/cargo.log"
+    check "the binary link points into this checkout" \
+        [ "$(readlink "$home/.local/bin/tiny-dictate")" = "$checkout/target/release/tiny-dictate" ]
+    check "the target the link points at is executable" [ -x "$checkout/target/release/tiny-dictate" ]
+    check "the stale presenter link is gone" path_absent "$home/.local/bin/tiny-dictate-present"
+    check "the transcribe wrapper is untouched" \
+        [ "$(cat "$home/.local/bin/tiny-dictate-transcribe")" = "my wrapper" ]
+    check "the transcribe wrapper is still a plain file" [ ! -L "$home/.local/bin/tiny-dictate-transcribe" ]
+
+    # `restore` rebuilds both links from the main worktree, whose path the porcelain listing names.
+    rc=0
+    PATH="$BIN:$PATH" HOME="$home" TD_MAIN_WORKTREE="$main" "$checkout/install.sh" restore \
+        > "$WORK/restore.out" 2> "$WORK/restore.err" || rc=$?
+    check "restore exits zero" [ "$rc" -eq 0 ]
+    check "the binary link points at the main worktree" \
+        [ "$(readlink "$home/.local/bin/tiny-dictate")" = "$main/src/tiny-dictate" ]
+    check "the presenter link points at the main worktree" \
+        [ "$(readlink "$home/.local/bin/tiny-dictate-present")" = "$main/src/presenters/layer-shell" ]
+
+    # A target that vanished is named, and restore exits non-zero rather than half-installing.
+    rm "$main/src/presenters/layer-shell"
+    rc=0
+    PATH="$BIN:$PATH" HOME="$home" TD_MAIN_WORKTREE="$main" "$checkout/install.sh" restore \
+        > "$WORK/restore-missing.out" 2> "$WORK/restore-missing.err" || rc=$?
+    check "restore fails when a target is gone" [ "$rc" -ne 0 ]
+    check "restore names the missing target" \
+        grep -q "$main/src/presenters/layer-shell" "$WORK/restore-missing.err"
+
+    # The binary link already exists as a copy: install refuses, names it, and never builds.
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$copy_home/.local/bin/tiny-dictate"
+    chmod +x "$copy_home/.local/bin/tiny-dictate"
+    : > "$WORK/cargo.log"
+    rc=0
+    PATH="$BIN:$PATH" HOME="$copy_home" TD_MAIN_WORKTREE="$main" "$checkout/install.sh" \
+        > "$WORK/refuse.out" 2> "$WORK/refuse.err" || rc=$?
+    check "install refuses a copy" [ "$rc" -ne 0 ]
+    check "the refusal names the file" grep -q "$copy_home/.local/bin/tiny-dictate" "$WORK/refuse.err"
+    check "the copy is left alone" [ -f "$copy_home/.local/bin/tiny-dictate" ]
+    check "the copy is still not a symlink" [ ! -L "$copy_home/.local/bin/tiny-dictate" ]
+    check "the refusal stopped before the build" [ ! -s "$WORK/cargo.log" ]
+
+    # A missing build dependency stops the install before the build and names the Arch package.
+    : > "$WORK/cargo.log"
+    rc=0
+    TD_MISSING_MODULE=gtk4-layer-shell-0 PATH="$BIN:$PATH" HOME="$dep_home" \
+        "$checkout/install.sh" > "$WORK/missing.out" 2> "$WORK/missing.err" || rc=$?
+    check "a missing build dependency stops the install" [ "$rc" -ne 0 ]
+    check "the Arch package is named" grep -q 'gtk4-layer-shell' "$WORK/missing.err"
+    check "the dependency check ran before the build" [ ! -s "$WORK/cargo.log" ]
+
+    # A PATH with the build toolchain and none of the runtime commands: they are listed and
+    # nothing more, and the install still runs to the end.
+    local bare="$WORK/install-bare-bin" tool path
+    rm -rf "$bare"
+    mkdir -p "$bare"
+    for tool in bash env readlink dirname mkdir rm ln awk chmod; do
+        path="$(command -v "$tool")" && ln -sf "$path" "$bare/$tool"
+    done
+    for tool in cargo cc pkg-config git; do
+        ln -sf "$BIN/$tool" "$bare/$tool"
+    done
+    check "the bare PATH has no arecord" bash -c '! PATH="$1" command -v arecord >/dev/null 2>&1' _ "$bare"
+
+    rc=0
+    HOME="$bare_home" PATH="$bare" TD_MAIN_WORKTREE="$main" "$checkout/install.sh" \
+        > "$WORK/bare.out" 2> "$WORK/bare.err" || rc=$?
+    check "the install runs without the runtime commands" [ "$rc" -eq 0 ]
+    check "a missing runtime command is listed" grep -q 'arecord' "$WORK/bare.err"
+    check "the listing did not stop the install" [ -L "$bare_home/.local/bin/tiny-dictate" ]
+}
+
 # ─────────────────────────── main ───────────────────────────
 
 printf 'script under test: %s\n' "$SCRIPT"
@@ -1945,6 +2092,7 @@ run_test test_clipboard_lease_invocation
 run_test test_clipboard_lease_duration_from_config
 run_test test_transcribe_uses_the_lease
 run_test test_clipboard_lease_expires
+run_test test_dev_install_and_restore
 run_test test_race_loop
 if [ -n "$OLD_SCRIPT" ] && [ -z "$ONLY" ]; then
     test_race_loop_old

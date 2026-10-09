@@ -46,6 +46,8 @@ A notification daemon (dunst, mako, your desktop's) displays the failures.
 
 ### Install the binary and a transcriber
 
+This is the production path: copy the built binary.
+
 ```bash
 install -m 755 target/release/tiny-dictate ~/.local/bin/
 install -m 755 transcribers/groq ~/.local/bin/tiny-dictate-transcribe
@@ -54,6 +56,26 @@ install -m 755 transcribers/groq ~/.local/bin/tiny-dictate-transcribe
 The pill is built into the binary. The only thing installed beside it is a transcriber, and
 `tiny-dictate-transcribe` is its default command name, so the reference one needs no further
 configuration once installed under that name.
+
+### Dev install (reversible)
+
+To make the F19/F24 shortcuts and the bar drive this checkout instead of the main one, without
+touching the compositor's configuration:
+
+```bash
+./install.sh          # build the release binary and link it onto PATH
+./install.sh restore  # put the main checkout's install back
+```
+
+`install.sh` links `~/.local/bin/tiny-dictate` at this checkout's `target/release/tiny-dictate`, so
+a later `cargo build --release` is picked up without re-running it, and removes the
+`tiny-dictate-present` symlink the bash implementation installed — the binary draws the pill itself.
+It refuses to replace `~/.local/bin/tiny-dictate` when that is not a symlink, since `restore` can
+only undo a symlink and a copy left by the production install is not promised back. `restore`
+rebuilds both symlinks from the main worktree and never touches `tiny-dictate-transcribe`.
+
+Missing build dependencies stop the install before the build, each named with its Arch package;
+missing runtime commands are only listed.
 
 ### Configure keyboard shortcuts
 
