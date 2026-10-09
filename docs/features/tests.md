@@ -43,6 +43,14 @@ The recorder stub uses the real `arecord` on the null device, because a shell sc
 the `SIGINT` handler a capture installs: a background job of a non-interactive shell gets `SIGINT`
 set to `SIG_IGN`, and POSIX forbids trapping a signal that was ignored on entry.
 
+## The pseudo-terminal
+
+The browser is the one surface the process seam cannot see: it draws escape sequences and reads raw
+keys. `tests/run.sh` therefore drives it on a pseudo-terminal through a small `python3` helper built
+on the `pty` module: it opens the browser with a known terminal size, feeds it keys, captures the
+screen it drew, and compares the terminal's termios before and after the run. The screen's bytes are
+never asserted as a whole — the marker on the selected row is, and the fields the row must carry.
+
 ## What it covers
 
 The suite asserts external behaviour only: the states written to the state file, the events the
@@ -75,6 +83,14 @@ presenter was asked to draw, the lifecycle of the processes, the exit codes.
   the ended, the human duration, the audio bytes, the pasted flag, the transcriber and the error --
   then its transcript, and says so when the session holds no transcript or its metadata cannot be
   read
+- `session browse` refuses a stdout that is not a terminal, and bare `session` lists a pipe where it
+  browses a terminal
+- the browser opens on a pseudo-terminal, lists the kept sessions newest first, moves the selection
+  with the arrows and the vim keys, reloads on `r` and leaves on `q` or `ctrl-c`, giving the
+  terminal back every time — after `q`, after `ctrl-c` and after a run that failed — showing a
+  session whose metadata cannot be read as a selectable row of `?`, and opening an empty history as
+  an empty list rather than an error
+- the browser holds no command lock: a shortcut starts a dictation while it is open
 - `session transcribe last` re-runs the transcriber, rewrites the transcript and the raw response,
   and copies the text to the clipboard, saying so
 - `session transcribe --print` writes the text to stdout and touches no clipboard
@@ -110,7 +126,8 @@ was asked to draw, the lifecycle of the processes and the exit codes are all obs
 pure functions the seam cannot see are unit-tested instead: the pill's frame computation (state,
 waveform, limit and elapsed time in, what to draw out, including the three bands of the progress
 bar), the prune selection (a list of sessions in, the ones to remove out, sharing one listing with
-`session list` and `last`), and, for the session surface, reading the metadata back, resolving a
+`session list` and `last`), the browser's frame (the rows, the selection and the terminal's size in,
+the visible lines out), and, for the session surface, reading the metadata back, resolving a
 `<id|last>` argument, the human duration, the row of the listing and the fields of the detail.
 
 ## Decisions
@@ -121,3 +138,5 @@ bar), the prune selection (a list of sessions in, the ones to remove out, sharin
   [ADR-0006: the limit and the bar](../adr/0006-the-limit-and-the-bar.md) keep the pure functions —
   the prune selection and the pill's frame computation — out of the process seam, where the view's
   row, its duration and the metadata read-back also live.
+- [ADR-0017: the browser takes crossterm](../adr/0017-the-browser-takes-crossterm.md) is why the
+  browser's adapter is the one surface the suite watches on a pseudo-terminal.

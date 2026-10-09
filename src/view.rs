@@ -197,6 +197,17 @@ fn read_transcript(path: &Path) -> Option<String> {
     }
 }
 
+/// The kept sessions as rows, newest first.
+///
+/// The listing and the browser read the same rows through here, so the two surfaces cannot show
+/// different fields or a different order.
+pub fn rows(sessions: &Path) -> Vec<Row> {
+    store::session_ids(sessions)
+        .iter()
+        .map(|id| Row::read(sessions, id))
+        .collect()
+}
+
 /// The duration a person reads: `4:32` under an hour, `1:04:32` beyond, `-` when the session has
 /// none because it died mid-recording.
 pub fn duration(seconds: Option<f64>) -> String {

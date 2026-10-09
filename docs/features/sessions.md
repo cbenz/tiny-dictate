@@ -54,7 +54,10 @@ when there is one, else the first words of the transcript, else `-`. A session w
 be read is a row of its own, its id and `?` where the other fields would be, rather than a skipped
 line: it is exactly the session `session delete` can remove. The line is plain text on stdout, and
 `session list` reads nothing but the sessions directory. `tiny-dictate session` on its own is the
-same listing.
+same listing when its stdout is a pipe, and opens the [browser](browse.md) when it is a terminal.
+- `tiny-dictate session browse` reads the kept sessions on a terminal: the list, the selection and
+the keys that move through it. It takes no command lock and reads files only, so it opens while a
+dictation runs, and it works on a machine without the encoder or the clipboard tools.
 - `tiny-dictate session show <id|last>` reads one session in full: its fields, one per line, then
   its transcript. The fields are the shared view's, in the one order every surface renders them --
   `id`, `path`, `outcome`, `started`, `ended`, `duration`, `audio bytes`, `pasted`, `transcriber`,

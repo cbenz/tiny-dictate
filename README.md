@@ -184,8 +184,9 @@ Commands:
   cancel                                  Cancel recording
   toggle                                  Start if idle, stop if recording
   status                                  Show status (idle or working)
-  session                                 List the kept sessions, newest first
+  session                                 List the kept sessions, or browse them on a terminal
   session list                            List the kept sessions, newest first
+  session browse                          Browse the kept sessions on a terminal
   session show <id|last>                  Show one session: its fields, its path and its transcript
   session copy <id|last>                  Copy a session's transcript to the clipboard
   session transcribe <id|last> [--print]  Transcribe a session again, to the clipboard or to stdout
@@ -194,8 +195,9 @@ Commands:
 
 Every dictation is kept as a [session](docs/features/sessions.md): the recording, the transcript,
 the provider's raw response and the metadata. `session list` prints them newest first, `session
-show <id|last>` reads one in full (its fields, its path and its transcript), `session copy` puts
-one's transcript on the clipboard, transcribing it first when it has none, `session transcribe`
-runs the transcriber again on one (copying the text to the clipboard, or printing it with
-`--print`), and `session delete` is the only command that destroys one. All of them run on a
-machine without the encoder or the clipboard tools.
+browse` reads them on a terminal (bare `session` does one or the other, depending on whether its
+stdout is a terminal), `session show <id|last>` reads one in full (its fields, its path and its
+transcript), `session copy` puts one's transcript on the clipboard, transcribing it first when it
+has none, `session transcribe` runs the transcriber again on one (copying the text to the
+clipboard, or printing it with `--print`), and `session delete` is the only command that destroys
+one. All of them run on a machine without the encoder or the clipboard tools.
