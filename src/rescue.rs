@@ -35,8 +35,8 @@ pub fn session_list() -> ExitCode {
     let runtime = Runtime::from_env();
     let sessions = runtime.sessions_directory();
 
-    for id in store::session_ids(&sessions) {
-        println!("{}", view::Row::read(&sessions, &id));
+    for row in view::rows(&sessions) {
+        println!("{row}");
     }
 
     ExitCode::SUCCESS
