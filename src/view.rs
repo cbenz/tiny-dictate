@@ -208,6 +208,62 @@ pub fn rows(sessions: &Path) -> Vec<Row> {
         .collect()
 }
 
+/// The kept sessions as one JSON array, newest first: the same sessions, in the same order, as data
+/// a script reads rather than a layout a person reads.
+///
+/// Each element is the session's id, its path, and its metadata -- the object `metadata.json` holds,
+/// from the one writer that writes that file -- or `null` when the metadata cannot be read. A
+/// session whose metadata cannot be read appears rather than being skipped: the array is never
+/// shorter than the sessions directory.
+pub fn json_list(sessions: &Path) -> String {
+    let elements: Vec<String> = store::session_ids(sessions)
+        .iter()
+        .map(|id| json_element(sessions, id, "  ", false))
+        .collect();
+
+    if elements.is_empty() {
+        return "[]\n".to_owned();
+    }
+
+    format!("[\n  {}\n]\n", elements.join(",\n  "))
+}
+
+/// One kept session as one JSON object: the same fields as a listing element, plus the transcript
+/// the session holds, or `null` when it holds none. `id`, `path` and `metadata` are the durable
+/// values, never the human fields the text format renders.
+pub fn json_show(sessions: &Path, id: &str) -> String {
+    format!("{}\n", json_element(sessions, id, "", true))
+}
+
+/// One session as a JSON object drawn at `indent`: `id`, `path`, `metadata`, and, when asked,
+/// `transcript`.
+///
+/// The metadata object is `Metadata::to_json_at`'s, the one writer of that shape, and the transcript
+/// comes from the same reading the text view uses, so the two formats cannot disagree.
+fn json_element(sessions: &Path, id: &str, indent: &str, with_transcript: bool) -> String {
+    let field = format!("{indent}  ");
+    let directory = sessions.join(id);
+    let metadata = store::Session::load(sessions, id)
+        .map(|session| session.metadata.to_json_at(&field))
+        .unwrap_or_else(|| "null".to_owned());
+
+    let mut element = format!(
+        "{{\n{field}\"id\": {},\n{field}\"path\": {},\n{field}\"metadata\": {metadata}",
+        store::json_string(id),
+        store::json_string(&directory.display().to_string()),
+    );
+
+    if with_transcript {
+        let value = read_transcript(&directory.join(store::TRANSCRIPT_FILE))
+            .map_or_else(|| "null".to_owned(), |text| store::json_string(&text));
+        element.push_str(&format!(",\n{field}\"transcript\": {value}"));
+    }
+
+    element.push_str(&format!("\n{indent}}}"));
+
+    element
+}
+
 /// The duration a person reads: `4:32` under an hour, `1:04:32` beyond, `-` when the session has
 /// none because it died mid-recording.
 pub fn duration(seconds: Option<f64>) -> String {
@@ -282,6 +338,13 @@ mod tests {
     ) -> PathBuf {
         let root = std::env::temp_dir().join(format!("td-view-{test}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
+        write_session(&root, id, metadata_json, transcript);
+
+        root
+    }
+
+    /// Add one session directory to a sessions root, built by hand.
+    fn write_session(root: &Path, id: &str, metadata_json: Option<&str>, transcript: Option<&str>) {
         let directory = root.join(id);
         fs::create_dir_all(&directory).expect("a session directory");
         if let Some(json) = metadata_json {
@@ -290,8 +353,6 @@ mod tests {
         if let Some(text) = transcript {
             fs::write(directory.join(store::TRANSCRIPT_FILE), text).expect("a transcript");
         }
-
-        root
     }
 
     #[test]
@@ -486,5 +547,67 @@ mod tests {
         assert!(detail.to_string().contains("the metadata cannot be read"));
 
         let _ = fs::remove_dir_all(&corrupt);
+    }
+
+    #[test]
+    fn the_json_listing_is_the_sessions_directory_as_data_newest_first() {
+        let id = "2026-10-07T19-05-22";
+        let unreadable = "2026-10-07T18-02-10";
+        let root = std::env::temp_dir().join(format!("td-view-json-list-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        write_session(
+            &root,
+            id,
+            Some(&metadata(id, "79.33", "transcribed", "null")),
+            Some("hello world"),
+        );
+        write_session(&root, unreadable, Some("not json"), None);
+
+        let document = json_list(&root);
+
+        assert!(document.starts_with("[\n") && document.ends_with("]\n"));
+        // Newest first: the readable, later timestamped session comes before the earlier one.
+        assert!(document.find(id).unwrap() < document.find(unreadable).unwrap());
+        assert!(document.contains(&format!("\"path\": \"{}\"", root.join(id).display())));
+        // The metadata object is the durable one, and the times stay raw seconds.
+        assert!(document.contains("\"duration\": 79.33"));
+        assert!(document.contains("\"started\": 1759855522.12"));
+        assert!(!document.contains("1:19"));
+        // The session whose metadata cannot be read is an element with `null`, not a missing one.
+        assert!(document.contains(&format!("\"id\": \"{unreadable}\"")));
+        assert!(document.contains("\"metadata\": null"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_json_detail_is_the_element_plus_the_transcript_or_null() {
+        let id = "2026-10-07T19-05-22";
+        let cancelled = "2026-10-07T18-02-10";
+        let root = std::env::temp_dir().join(format!("td-view-json-show-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        write_session(
+            &root,
+            id,
+            Some(&metadata(id, "79.33", "transcribed", "null")),
+            Some("hello world\n"),
+        );
+        write_session(
+            &root,
+            cancelled,
+            Some(&metadata(cancelled, "null", "cancelled", "null")),
+            None,
+        );
+
+        let transcribed = json_show(&root, id);
+        let no_transcript = json_show(&root, cancelled);
+
+        assert!(transcribed.contains(&format!("\"path\": \"{}\"", root.join(id).display())));
+        assert!(transcribed.contains("\"transcript\": \"hello world\""));
+        // A session with no word of transcript is `null`, never an empty string.
+        assert!(no_transcript.contains("\"transcript\": null"));
+        assert!(no_transcript.contains("\"outcome\": \"cancelled\""));
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

@@ -5,18 +5,18 @@ pub const USAGE: &str = "\
 Usage: tiny-dictate <command>
 
 Commands:
-  start                                   Start recording
-  stop                                    Stop recording and transcribe
-  cancel                                  Cancel recording
-  toggle                                  Start if idle, stop if recording
-  status                                  Show status (idle or working)
-  session                                 List the kept sessions, or browse them on a terminal
-  session list                            List the kept sessions, newest first
-  session browse                          Browse the kept sessions on a terminal
-  session show <id|last>                  Show one session: its fields, its path and its transcript
-  session copy <id|last>                  Copy a session's transcript to the clipboard
-  session transcribe <id|last> [--print]  Transcribe a session again, to the clipboard or to stdout
-  session delete <id|last>                Remove exactly one session";
+  start                                          Start recording
+  stop                                           Stop recording and transcribe
+  cancel                                         Cancel recording
+  toggle                                         Start if idle, stop if recording
+  status                                         Show status (idle or working)
+  session                                        List the kept sessions, or browse them on a terminal
+  session list [--output text|json]              List the kept sessions, newest first
+  session browse                                 Browse the kept sessions on a terminal
+  session show <id|last> [--output text|json]    Show one session: its fields, its path and its transcript
+  session copy <id|last>                         Copy a session's transcript to the clipboard
+  session transcribe <id|last> [--print]         Transcribe a session again, to the clipboard or to stdout
+  session delete <id|last>                       Remove exactly one session";
 
 /// What one invocation asks the tool to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,12 +30,15 @@ pub enum Command {
     /// `session` alone: browses when stdout is a terminal, lists otherwise.
     Session,
     /// `session list`: the kept sessions, newest first.
-    SessionList,
+    SessionList {
+        output: Output,
+    },
     /// `session browse`: the kept sessions read on a terminal.
     SessionBrowse,
     /// `session show <id|last>`: one kept session read in full.
     SessionShow {
         target: String,
+        output: Output,
     },
     /// `session copy <id|last>`: the transcript of a kept session on the clipboard, transcribing
     /// it first when it has none.
@@ -51,6 +54,30 @@ pub enum Command {
     },
 }
 
+/// How a verb that shows a session renders it.
+///
+/// `text` is the human layout, and the default: a person reads a session the way every surface
+/// shows one. `json` renders the same view as one document, for a script. Only the verbs that
+/// show a session take it: `browse` owns a terminal, `status` is one word the bar reads, and
+/// `session transcribe --print` prints a transcript, not data.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Output {
+    #[default]
+    Text,
+    Json,
+}
+
+impl Output {
+    /// The format a `--output` value names; anything else is refused.
+    fn parse(value: &str) -> Result<Self, Error> {
+        match value {
+            "text" => Ok(Self::Text),
+            "json" => Ok(Self::Json),
+            other => Err(Error::BadOutput(other.to_owned())),
+        }
+    }
+}
+
 /// Why a command line cannot be run.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
@@ -60,6 +87,8 @@ pub enum Error {
     Conflicting,
     /// A verb missing what it needs.
     Missing(String),
+    /// A `--output` value that names no format.
+    BadOutput(String),
 }
 
 impl Error {
@@ -69,6 +98,7 @@ impl Error {
             Self::Unknown(word) => format!("Unknown argument: {word}"),
             Self::Conflicting => "Only one command can be provided".to_owned(),
             Self::Missing(message) => message.clone(),
+            Self::BadOutput(value) => format!("--output takes `text` or `json`, not `{value}`"),
         }
     }
 }
@@ -109,16 +139,74 @@ fn alone(command: Command, rest: &[String]) -> Result<Command, Error> {
 fn session(rest: &[String]) -> Result<Command, Error> {
     match rest.first().map(String::as_str) {
         None => Ok(Command::Session),
-        Some("list") => alone(Command::SessionList, &rest[1..]),
+        Some("list") => list(&rest[1..]),
         Some("browse") => alone(Command::SessionBrowse, &rest[1..]),
-        Some("show") => one_session(&rest[1..], "show", |target| Command::SessionShow { target }),
+        Some("show") => show(&rest[1..]),
         Some("copy") => copy(&rest[1..]),
         Some("transcribe") => transcribe(&rest[1..]),
-        Some("delete") => one_session(&rest[1..], "delete", |target| Command::SessionDelete {
-            target,
-        }),
+        Some("delete") => {
+            let target = one_session(&rest[1..], "delete")?;
+            Ok(Command::SessionDelete { target })
+        }
         Some(word) => Err(Error::Unknown(word.to_owned())),
     }
+}
+
+/// `session list [--output text|json]`: the kept sessions, as a person reads them or as data.
+fn list(rest: &[String]) -> Result<Command, Error> {
+    let (rest, output) = output_flag(rest)?;
+
+    match rest.first() {
+        None => Ok(Command::SessionList { output }),
+        Some(word) if is_verb(word) => Err(Error::Conflicting),
+        Some(word) => Err(Error::Unknown(word.clone())),
+    }
+}
+
+/// `session show <id|last> [--output text|json]`: one session, as a person reads it or as data.
+/// The flag may come before or after the id; each is read where it is found.
+fn show(rest: &[String]) -> Result<Command, Error> {
+    let (rest, output) = output_flag(rest)?;
+    let target = one_session(&rest, "show")?;
+
+    Ok(Command::SessionShow { target, output })
+}
+
+/// The `--output` flag, separated (`--output json`) or joined (`--output=json`), removed from the
+/// words; the words left are the verb's own. Omitting it means `text`, the format a person reads.
+/// A flag given twice is a conflict, a missing value and an unknown one are the errors they are
+/// anywhere else, and a verb that does not take the flag never calls this.
+fn output_flag(words: &[String]) -> Result<(Vec<String>, Output), Error> {
+    let mut rest = Vec::new();
+    let mut output: Option<Output> = None;
+    let mut index = 0;
+
+    while index < words.len() {
+        let word = &words[index];
+        let value = if word == "--output" {
+            index += 1;
+            match words.get(index) {
+                Some(value) => value,
+                None => {
+                    return Err(Error::Missing("--output needs `text` or `json`".to_owned()));
+                }
+            }
+        } else if let Some(value) = word.strip_prefix("--output=") {
+            value
+        } else {
+            rest.push(word.clone());
+            index += 1;
+            continue;
+        };
+
+        if output.is_some() {
+            return Err(Error::Conflicting);
+        }
+        output = Some(Output::parse(value)?);
+        index += 1;
+    }
+
+    Ok((rest, output.unwrap_or_default()))
 }
 
 /// `session transcribe <id|last> [--print]`.
@@ -165,13 +253,9 @@ fn copy(rest: &[String]) -> Result<Command, Error> {
 
 /// A verb that names exactly one session: one word, and no more. The single word is the session
 /// to read or to remove; more than one is a conflict, and none is the argument it needs.
-fn one_session(
-    rest: &[String],
-    verb: &str,
-    build: impl FnOnce(String) -> Command,
-) -> Result<Command, Error> {
+fn one_session(rest: &[String], verb: &str) -> Result<String, Error> {
     match rest {
-        [target] => Ok(build(target.clone())),
+        [target] => Ok(target.clone()),
         [] => Err(Error::Missing(format!(
             "session {verb} needs a session id or `last`"
         ))),
@@ -201,7 +285,12 @@ mod tests {
     #[test]
     fn the_session_group_reads_its_verbs() {
         assert_eq!(parse_words(&["session"]), Ok(Command::Session));
-        assert_eq!(parse_words(&["session", "list"]), Ok(Command::SessionList));
+        assert_eq!(
+            parse_words(&["session", "list"]),
+            Ok(Command::SessionList {
+                output: Output::Text
+            })
+        );
         assert_eq!(
             parse_words(&["session", "browse"]),
             Ok(Command::SessionBrowse)
@@ -235,14 +324,115 @@ mod tests {
         assert_eq!(
             parse_words(&["session", "show", "last"]),
             Ok(Command::SessionShow {
-                target: "last".to_owned()
+                target: "last".to_owned(),
+                output: Output::Text
             })
         );
         assert_eq!(
             parse_words(&["session", "show", "2026-10-07T19-05-22"]),
             Ok(Command::SessionShow {
-                target: "2026-10-07T19-05-22".to_owned()
+                target: "2026-10-07T19-05-22".to_owned(),
+                output: Output::Text
             })
+        );
+    }
+
+    #[test]
+    fn the_data_verbs_read_the_output_flag_in_both_forms() {
+        // The separated form, the joined one, and `text` written explicitly: the format is never
+        // implicit in a script that asks for it.
+        assert_eq!(
+            parse_words(&["session", "list", "--output", "text"]),
+            Ok(Command::SessionList {
+                output: Output::Text
+            })
+        );
+        assert_eq!(
+            parse_words(&["session", "list", "--output", "json"]),
+            Ok(Command::SessionList {
+                output: Output::Json
+            })
+        );
+        assert_eq!(
+            parse_words(&["session", "list", "--output=json"]),
+            Ok(Command::SessionList {
+                output: Output::Json
+            })
+        );
+        assert_eq!(
+            parse_words(&["session", "list", "--output=text"]),
+            Ok(Command::SessionList {
+                output: Output::Text
+            })
+        );
+
+        // An id and the flag are both the verb's own: the flag reads the same on either side of it.
+        for words in [
+            vec!["session", "show", "last", "--output", "json"],
+            vec!["session", "show", "--output", "json", "last"],
+            vec!["session", "show", "--output=json", "last"],
+        ] {
+            assert_eq!(
+                parse_words(&words),
+                Ok(Command::SessionShow {
+                    target: "last".to_owned(),
+                    output: Output::Json
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn the_output_flag_is_refused_where_it_means_nothing() {
+        // A value that names no format is refused with its own line, not as an unknown word.
+        assert_eq!(
+            parse_words(&["session", "list", "--output", "yaml"]),
+            Err(Error::BadOutput("yaml".to_owned()))
+        );
+        assert!(matches!(
+            parse_words(&["session", "show", "last", "--output="]),
+            Err(Error::BadOutput(_))
+        ));
+        assert!(matches!(
+            parse_words(&["session", "list", "--output"]),
+            Err(Error::Missing(_))
+        ));
+        assert!(matches!(
+            parse_words(&["session", "list", "--output", "json", "--output", "text"]),
+            Err(Error::Conflicting)
+        ));
+
+        // The verbs that show no session refuse the flag: a terminal, one word for the bar, and a
+        // transcript on stdout are not data documents.
+        for words in [
+            vec!["session", "browse", "--output", "json"],
+            vec!["session", "browse", "--output=json"],
+            vec!["status", "--output", "json"],
+            vec!["status", "--output=json"],
+            vec!["session", "--output", "json"],
+            vec!["session", "copy", "last", "--output", "json"],
+            vec!["session", "delete", "last", "--output", "json"],
+        ] {
+            assert!(
+                matches!(
+                    parse_words(&words),
+                    Err(Error::Unknown(_)) | Err(Error::Conflicting)
+                ),
+                "{words:?} must be refused"
+            );
+        }
+
+        // `--print` prints a transcript; the flag does not join it.
+        assert!(
+            parse_words(&[
+                "session",
+                "transcribe",
+                "last",
+                "--print",
+                "--output",
+                "json"
+            ])
+            .is_err()
         );
     }
 

@@ -131,8 +131,22 @@ impl Metadata {
         })
     }
 
-    /// The metadata as JSON, one field per line: a reader never has to guess the shape.
-    fn to_json(&self) -> String {
+    /// The metadata as JSON, one field per line: a reader never has to guess the shape. This is
+    /// the one writer of this object: `metadata.json` and the metadata inside a `--output json`
+    /// document both come from here, so the disk and stdout cannot disagree.
+    pub fn to_json(&self) -> String {
+        format!("{}\n", self.at(""))
+    }
+
+    /// The same object nested in a larger document drawn at `indent`: every line but the first is
+    /// drawn at the element's own indentation, so a listing can hold it without a second writer of
+    /// the metadata's shape.
+    pub fn to_json_at(&self, indent: &str) -> String {
+        self.at(indent)
+    }
+
+    fn at(&self, indent: &str) -> String {
+        let field = format!("{indent}  ");
         let id = json_string(&self.id);
         let started = self.started;
         let ended = optional_number(self.ended);
@@ -144,7 +158,7 @@ impl Metadata {
         let error = optional_string(self.error.as_deref());
 
         format!(
-            "{{\n  \"id\": {id},\n  \"started\": {started},\n  \"ended\": {ended},\n  \"duration\": {duration},\n  \"audio_bytes\": {audio_bytes},\n  \"outcome\": {outcome},\n  \"pasted\": {pasted},\n  \"transcriber\": {transcriber},\n  \"error\": {error}\n}}\n"
+            "{{\n{field}\"id\": {id},\n{field}\"started\": {started},\n{field}\"ended\": {ended},\n{field}\"duration\": {duration},\n{field}\"audio_bytes\": {audio_bytes},\n{field}\"outcome\": {outcome},\n{field}\"pasted\": {pasted},\n{field}\"transcriber\": {transcriber},\n{field}\"error\": {error}\n{indent}}}"
         )
     }
 }
@@ -422,8 +436,8 @@ fn optional_string(value: Option<&str>) -> String {
     value.map_or_else(|| "null".to_owned(), json_string)
 }
 
-/// A JSON string literal: the error and the transcriber path can hold anything.
-fn json_string(value: &str) -> String {
+/// A JSON string literal: an id, a path, the error and the transcriber path can hold anything.
+pub(crate) fn json_string(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
     out.push('"');
 

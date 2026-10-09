@@ -179,18 +179,18 @@ explicitly as `zsh -ic 'my-key-helper "Groq API key"'`.
 Usage: tiny-dictate <command>
 
 Commands:
-  start                                   Start recording
-  stop                                    Stop recording and transcribe
-  cancel                                  Cancel recording
-  toggle                                  Start if idle, stop if recording
-  status                                  Show status (idle or working)
-  session                                 List the kept sessions, or browse them on a terminal
-  session list                            List the kept sessions, newest first
-  session browse                          Browse the kept sessions on a terminal
-  session show <id|last>                  Show one session: its fields, its path and its transcript
-  session copy <id|last>                  Copy a session's transcript to the clipboard
-  session transcribe <id|last> [--print]  Transcribe a session again, to the clipboard or to stdout
-  session delete <id|last>                Remove exactly one session
+  start                                          Start recording
+  stop                                           Stop recording and transcribe
+  cancel                                         Cancel recording
+  toggle                                         Start if idle, stop if recording
+  status                                         Show status (idle or working)
+  session                                        List the kept sessions, or browse them on a terminal
+  session list [--output text|json]              List the kept sessions, newest first
+  session browse                                 Browse the kept sessions on a terminal
+  session show <id|last> [--output text|json]    Show one session: its fields, its path and its transcript
+  session copy <id|last>                         Copy a session's transcript to the clipboard
+  session transcribe <id|last> [--print]         Transcribe a session again, to the clipboard or to stdout
+  session delete <id|last>                       Remove exactly one session
 ```
 
 Every dictation is kept as a [session](docs/features/sessions.md): the recording, the transcript,
@@ -200,4 +200,6 @@ stdout is a terminal), `session show <id|last>` reads one in full (its fields, i
 transcript), `session copy` puts one's transcript on the clipboard, transcribing it first when it
 has none, `session transcribe` runs the transcriber again on one (copying the text to the
 clipboard, or printing it with `--print`), and `session delete` is the only command that destroys
-one. All of them run on a machine without the encoder or the clipboard tools.
+one. All of them run on a machine without the encoder or the clipboard tools. `session list` and
+`session show` take `--output text|json`: `text` is the default and `json` prints the same session
+as one document for a script.

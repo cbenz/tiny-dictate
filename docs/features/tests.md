@@ -83,6 +83,14 @@ presenter was asked to draw, the lifecycle of the processes, the exit codes.
   the ended, the human duration, the audio bytes, the pasted flag, the transcriber and the error --
   then its transcript, and says so when the session holds no transcript or its metadata cannot be
   read
+- `session list --output json` prints one document: an array, newest first, each element the id, the
+  path and the metadata `metadata.json` holds, or `null` for a session whose metadata cannot be read
+  -- the array is never shorter than the sessions directory, and the times and durations are the raw
+  seconds, never the human form; `session show --output json` prints one object, the same fields plus
+  the transcript or `null`
+- `--output text` prints byte for byte what the command prints by default, in both the separated and
+  the `=` form, and an unknown format or the flag on a verb that shows no session is an argument
+  error, the usage and a non-zero exit
 - `session browse` refuses a stdout that is not a terminal, and bare `session` lists a pipe where it
   browses a terminal
 - the browser opens on a pseudo-terminal, lists the kept sessions newest first, moves the selection
@@ -128,7 +136,8 @@ waveform, limit and elapsed time in, what to draw out, including the three bands
 bar), the prune selection (a list of sessions in, the ones to remove out, sharing one listing with
 `session list` and `last`), the browser's frame (the rows, the selection and the terminal's size in,
 the visible lines out), and, for the session surface, reading the metadata back, resolving a
-`<id|last>` argument, the human duration, the row of the listing and the fields of the detail.
+`<id|last>` argument, the human duration, the row of the listing, the fields of the detail and the
+JSON composition of the listing and the detail.
 
 ## Decisions
 
