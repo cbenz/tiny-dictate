@@ -9,7 +9,7 @@ pub mod frame;
 
 use std::io::{self, IsTerminal, Write};
 use std::panic;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use crossterm::cursor::{Hide, MoveTo, Show};
@@ -19,8 +19,8 @@ use crossterm::style::{Attribute, SetAttribute};
 use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 
 use crate::session::Runtime;
-use crate::view;
-use frame::List;
+use crate::view::{self, Detail};
+use frame::{List, Pane};
 
 /// `session browse`: the kept sessions on a terminal.
 ///
@@ -33,8 +33,7 @@ pub fn run() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let sessions = Runtime::from_env().sessions_directory();
-    let mut list = List::new(view::rows(&sessions));
+    let mut browser = Browser::new(Runtime::from_env().sessions_directory());
 
     let mut terminal = match Terminal::enter() {
         Ok(terminal) => terminal,
@@ -46,7 +45,7 @@ pub fn run() -> ExitCode {
 
     // The result is read before the terminal is given back, and the error is printed after: a
     // message and the shell prompt must not land on the alternate screen.
-    let result = browse(&mut terminal, &mut list, &sessions);
+    let result = browse(&mut terminal, &mut browser);
     drop(terminal);
 
     match result {
@@ -58,10 +57,95 @@ pub fn run() -> ExitCode {
     }
 }
 
+/// The browser's state between frames: the list, the detail pane that follows its selection, and
+/// the sessions directory the two are read from.
+struct Browser {
+    sessions: PathBuf,
+    list: List,
+    detail: Option<Detail>,
+    pane: Pane,
+}
+
+impl Browser {
+    /// A browser on the sessions directory, the selection on the newest session.
+    fn new(sessions: PathBuf) -> Self {
+        let list = List::new(view::rows(&sessions));
+        let detail = detail_of(&list, &sessions);
+
+        Self {
+            sessions,
+            list,
+            detail,
+            pane: Pane::new(),
+        }
+    }
+
+    /// Follow the selection: the pane is reloaded on the session it now sits on, from its top.
+    fn follow(&mut self) {
+        self.detail = detail_of(&self.list, &self.sessions);
+        self.pane.reset();
+    }
+
+    /// Reload the list, keeping the selection on the same session while it is there; the pane
+    /// follows it and keeps its place.
+    fn reload(&mut self) {
+        self.list.reload(view::rows(&self.sessions));
+        self.detail = detail_of(&self.list, &self.sessions);
+    }
+
+    fn select_previous(&mut self) {
+        self.list.select_previous();
+        self.follow();
+    }
+
+    fn select_next(&mut self) {
+        self.list.select_next();
+        self.follow();
+    }
+
+    fn select_first(&mut self) {
+        self.list.select_first();
+        self.follow();
+    }
+
+    /// Jump to the oldest session, and read its detail from its end.
+    fn select_last(&mut self, limit: usize) {
+        self.list.select_last();
+        self.follow();
+        self.pane.last(limit);
+    }
+
+    /// The page a scroll key moves by and the last offset the pane takes, for the terminal as it
+    /// is now; zero when the pane gives way or nothing is selected.
+    fn metrics(&self) -> (usize, usize) {
+        let Ok((width, height)) = terminal::size() else {
+            return (0, 0);
+        };
+        let (width, height) = (usize::from(width), usize::from(height));
+        let page = height.saturating_sub(2);
+
+        match (&self.detail, frame::panes(width, height)) {
+            (Some(detail), Some((_, pane_width))) => (
+                page,
+                frame::pane_lines(detail, pane_width)
+                    .len()
+                    .saturating_sub(page),
+            ),
+            _ => (page, 0),
+        }
+    }
+}
+
+/// The detail of the selected session, or nothing when the list is empty.
+fn detail_of(list: &List, sessions: &Path) -> Option<Detail> {
+    list.selected().map(|row| Detail::read(sessions, &row.id))
+}
+
 /// Read keys until the user leaves, drawing one frame before each.
-fn browse(terminal: &mut Terminal, list: &mut List, sessions: &Path) -> io::Result<()> {
+fn browse(terminal: &mut Terminal, browser: &mut Browser) -> io::Result<()> {
     loop {
-        terminal.draw(list)?;
+        terminal.draw(&browser.list, browser.detail.as_ref(), &browser.pane)?;
+        let (page, limit) = browser.metrics();
 
         match event::read()? {
             // A release carries the key that was pressed before it: acting on it would move the
@@ -71,11 +155,13 @@ fn browse(terminal: &mut Terminal, list: &mut List, sessions: &Path) -> io::Resu
                     return Ok(());
                 }
                 KeyCode::Char('q') => return Ok(()),
-                KeyCode::Char('r') => list.reload(view::rows(sessions)),
-                KeyCode::Up | KeyCode::Char('k') => list.select_previous(),
-                KeyCode::Down | KeyCode::Char('j') => list.select_next(),
-                KeyCode::Home => list.select_first(),
-                KeyCode::End => list.select_last(),
+                KeyCode::Char('r') => browser.reload(),
+                KeyCode::Up | KeyCode::Char('k') => browser.select_previous(),
+                KeyCode::Down | KeyCode::Char('j') => browser.select_next(),
+                KeyCode::Home => browser.select_first(),
+                KeyCode::End => browser.select_last(limit),
+                KeyCode::PageUp => browser.pane.page_up(page),
+                KeyCode::PageDown => browser.pane.page_down(page, limit),
                 _ => {}
             },
             _ => {}
@@ -99,16 +185,33 @@ impl Terminal {
         Ok(Self)
     }
 
-    /// Draw one frame: the whole screen, from the top left.
-    fn draw(&self, list: &List) -> io::Result<()> {
+    /// Draw one frame: the whole screen, from the top left, the list beside the detail pane.
+    fn draw(&self, list: &List, detail: Option<&Detail>, pane: &Pane) -> io::Result<()> {
         let (width, height) = terminal::size()?;
-        let frame = frame::frame(list, usize::from(width), usize::from(height));
+        let frame = frame::frame(
+            list,
+            detail,
+            pane.scroll(),
+            usize::from(width),
+            usize::from(height),
+        );
 
         let mut out = io::stdout();
         execute!(out, Clear(ClearType::All), MoveTo(0, 0))?;
-        write_line(&mut out, &frame.title, false)?;
-        for line in &frame.lines {
-            write_line(&mut out, &line.text, line.selected)?;
+        write!(out, "{}\r\n", frame.title)?;
+        for (index, line) in frame.lines.iter().enumerate() {
+            // The selection reads at a glance: the row is drawn in reverse video.
+            if line.selected {
+                execute!(out, SetAttribute(Attribute::Reverse))?;
+            }
+            write!(out, "{}", frame::pad(&line.text, frame.list_width))?;
+            if line.selected {
+                execute!(out, SetAttribute(Attribute::Reset))?;
+            }
+            if let Some(right) = frame.pane.get(index) {
+                write!(out, "{}{}", frame::SEPARATOR, right)?;
+            }
+            write!(out, "\r\n")?;
         }
         execute!(out, MoveTo(0, height.saturating_sub(1)))?;
         write!(out, "{}", frame.footer)?;
@@ -121,19 +224,6 @@ impl Drop for Terminal {
     fn drop(&mut self) {
         restore();
     }
-}
-
-/// One drawn line, the selected one in reverse video so the selection reads at a glance.
-fn write_line(out: &mut impl Write, text: &str, selected: bool) -> io::Result<()> {
-    if selected {
-        execute!(out, SetAttribute(Attribute::Reverse))?;
-    }
-    write!(out, "{text}\r\n")?;
-    if selected {
-        execute!(out, SetAttribute(Attribute::Reset))?;
-    }
-
-    Ok(())
 }
 
 /// Give the terminal back: raw mode off, the alternate screen left, the cursor shown.
