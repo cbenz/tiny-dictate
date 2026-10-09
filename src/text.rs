@@ -3,8 +3,9 @@
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -21,6 +22,10 @@ const DEFAULT_HOLD: &str = "0.04";
 const OFFER_DEADLINE: Duration = Duration::from_millis(500);
 /// The interval between two reads of the selection while the offer is awaited.
 const OFFER_POLL: Duration = Duration::from_millis(5);
+/// How long a stopped transcriber is given to die, and the step the wait polls on: bounded like
+/// every wait in the tool, so a wedged collaborator cannot hold the surface that signalled it.
+const STOP_STEP: Duration = Duration::from_millis(50);
+const STOP_STEPS: u32 = 40;
 
 /// Resolve the transcriber command: `$TINY_DICTATE_TRANSCRIBE` when set, else
 /// `tiny-dictate-transcribe` on `PATH`.
@@ -90,29 +95,141 @@ pub fn limit_from_bytes(bytes: u64) -> Option<Duration> {
     ))
 }
 
-/// Run the transcriber: the audio file as `$1`, the session directory as `$2`, the text on
-/// stdout, the errors on stderr, a non-zero exit a failure.
-pub fn transcribe(
-    command: &Path,
-    audio: &Path,
-    session: &Path,
-    error_file: &Path,
-) -> Result<String, ()> {
-    let mut child = Command::new(command);
-    child.arg(audio).arg(session).stdout(Stdio::piped());
+/// The transcriber, running: a child process whose answer and errors land in files rather than
+/// pipes, so a caller can poll it and signal it instead of blocking on a pipe that may fill.
+///
+/// One runner for every surface: a live dictation, `session transcribe` and `session copy` wait
+/// it out, and the browser polls it and cancels it. The contract is the same either way — `$1` the
+/// audio file, `$2` the session directory, the text on stdout, the errors on stderr, a non-zero
+/// exit a failure.
+pub struct Transcriber {
+    child: Child,
+    /// Where the answer is read from: the errors' path with `.out` instead of `.err`, so the two
+    /// share one lifetime and one owner.
+    answer: PathBuf,
+    errors: PathBuf,
+    /// Whether the child leads a process group of its own: a signal then takes down whatever the
+    /// transcriber started, which is what a browser that leaves nothing behind needs.
+    isolated: bool,
+}
 
-    if let Ok(file) = fs::File::create(error_file) {
-        child.stderr(Stdio::from(file));
+impl Transcriber {
+    /// Start the transcriber on the audio, its answer and its errors landing beside `errors`.
+    pub fn start(command: &Path, audio: &Path, session: &Path, errors: &Path) -> Option<Self> {
+        Self::spawn(command, audio, session, errors, false)
     }
 
-    let output = child.output().map_err(|_| ())?;
-    if !output.status.success() {
-        return Err(());
+    /// The same, in a process group of its own: one signal takes the whole tree down.
+    pub fn start_isolated(
+        command: &Path,
+        audio: &Path,
+        session: &Path,
+        errors: &Path,
+    ) -> Option<Self> {
+        Self::spawn(command, audio, session, errors, true)
     }
 
-    // Command substitution strips the trailing newlines; the transcript is the text itself.
-    let text = String::from_utf8_lossy(&output.stdout);
-    Ok(text.trim_end_matches(['\n', '\r']).to_owned())
+    fn spawn(
+        command: &Path,
+        audio: &Path,
+        session: &Path,
+        errors: &Path,
+        isolated: bool,
+    ) -> Option<Self> {
+        let answer = errors.with_extension("out");
+        let mut command_line = Command::new(command);
+        command_line
+            .arg(audio)
+            .arg(session)
+            // The transcriber's stdin is closed rather than inherited: a browser in raw mode
+            // keeps the terminal to itself.
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(fs::File::create(&answer).ok()?))
+            .stderr(Stdio::from(fs::File::create(errors).ok()?));
+        if isolated {
+            command_line.process_group(0);
+        }
+        let child = command_line.spawn().ok()?;
+
+        Some(Self {
+            child,
+            answer,
+            errors: errors.to_owned(),
+            isolated,
+        })
+    }
+
+    /// Whether it has exited, without blocking.
+    pub fn exited(&mut self) -> Option<bool> {
+        self.child
+            .try_wait()
+            .ok()
+            .flatten()
+            .map(|status| status.success())
+    }
+
+    /// Signal it — its whole process group when it was started isolated.
+    pub fn signal(&self, signal: libc::c_int) {
+        let pid = if self.isolated {
+            -(self.child.id() as libc::pid_t)
+        } else {
+            self.child.id() as libc::pid_t
+        };
+
+        // Safety: `kill` with a valid signal number is as safe as the shell's `kill`.
+        unsafe {
+            libc::kill(pid, signal);
+        }
+    }
+
+    /// Reap it, blocking until it has exited, and say whether it succeeded.
+    pub fn wait(&mut self) -> bool {
+        self.child
+            .wait()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+
+    /// Stop it and reap it, bounded: a transcriber that ignores the signal is killed rather than
+    /// holding the caller, and its tree goes with it.
+    pub fn stop(&mut self) {
+        self.signal(libc::SIGTERM);
+        for _ in 0..STOP_STEPS {
+            if self.exited().is_some() {
+                return;
+            }
+            sleep(STOP_STEP);
+        }
+
+        self.signal(libc::SIGKILL);
+        let _ = self.child.wait();
+    }
+
+    /// What the run produced: the answer on stdout when it succeeded, the collapsed errors
+    /// otherwise — the same one-line error every surface shows.
+    pub fn answer(&self, success: bool) -> Result<String, String> {
+        if success {
+            // Command substitution strips the trailing newlines; the transcript is the text
+            // itself.
+            let text = fs::read_to_string(&self.answer).unwrap_or_default();
+            return Ok(text.trim_end_matches(['\n', '\r']).to_owned());
+        }
+
+        Err(self.collapsed_error())
+    }
+
+    /// The errors this run wrote, flattened into the one line a failure is shown as.
+    pub fn collapsed_error(&self) -> String {
+        fs::read_to_string(&self.errors)
+            .map(|text| format_error(&text))
+            .unwrap_or_else(|_| "Unknown error".to_owned())
+    }
+
+    /// Remove the two files the run wrote: they belong to the run, not to the session.
+    pub fn clean(&self) {
+        let _ = fs::remove_file(&self.answer);
+        let _ = fs::remove_file(&self.errors);
+    }
 }
 
 /// Run the transcriber and collapse its stderr into the one line a failure is shown as.
@@ -125,11 +242,14 @@ pub fn transcribe_collapsed(
     session: &Path,
     error_file: &Path,
 ) -> Result<String, String> {
-    transcribe(command, audio, session, error_file).map_err(|()| {
-        fs::read_to_string(error_file)
-            .map(|text| format_error(&text))
-            .unwrap_or_else(|_| "Unknown error".to_owned())
-    })
+    let Some(mut transcriber) = Transcriber::start(command, audio, session, error_file) else {
+        return Err("Unknown error".to_owned());
+    };
+    let success = transcriber.wait();
+    let result = transcriber.answer(success);
+    transcriber.clean();
+
+    result
 }
 
 /// Flatten an error into the one line the user is shown: whitespace runs collapsed, trimmed,

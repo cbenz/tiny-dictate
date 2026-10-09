@@ -149,7 +149,14 @@ if [ "${1:-}" = "--print-audio-limit" ]; then
 fi
 cp "${1:?}" "$WORK/transcribe-received" 2>/dev/null
 wc -c < "$WORK/transcribe-received" > "$WORK/transcribe-size"
-[ -n "${TRANSCRIBE_SLEEP:-}" ] && sleep "$TRANSCRIBE_SLEEP"
+# One line per run, so a test can tell how many times the transcriber was asked. The browser must
+# never start a second one while the first runs.
+printf 'transcribe %s at %s\n' "$$" "$(date +%s.%N)" >> "$WORK/transcribe-report"
+# A slow transcriber runs the slow part in a process of its own, so a signal that reached only
+# this script would leave the worker behind: the browser signals the whole tree it started.
+if [ -n "${TRANSCRIBE_SLEEP:-}" ]; then
+    "$BIN/transcribe-worker" "$TRANSCRIBE_SLEEP"
+fi
 if [ -n "${TRANSCRIBE_FAIL:-}" ]; then
     printf 'groq: Error code: 401 - invalid api key\n' >&2
     exit 1
@@ -165,6 +172,13 @@ STUB
 # Stand-in for the reference transcriber's only collaborator: prints a canned provider body on
 # stdout and honours `--output <file>` the way the real curl does, which is how the transcriber
 # keeps the raw answer next to the transcript.
+cat > "$BIN/transcribe-worker" <<'STUB'
+#!/usr/bin/env bash
+# The slow part of the transcriber, in a process of its own: a signal must take it down with the
+# transcriber that started it, or it outlives the browser.
+sleep "$1"
+STUB
+
 cat > "$BIN/curl" <<'STUB'
 #!/usr/bin/env bash
 out=""
@@ -674,8 +688,9 @@ reset_run() {
     : > "$WORK/pactl.log"
     : > "$WORK/wl-copy.log"
     : > "$WORK/wl-copy-parent.log"
-    rm -f "$WORK/transcribe-size" "$WORK/transcribe-received" "$WORK/clipboard" \
-        "$WORK/arecord-report" "$WORK/lame-report" "$WORK/journal.err" "$WORK/waybar-report"
+    rm -f "$WORK/transcribe-size" "$WORK/transcribe-received" "$WORK/transcribe-report" \
+        "$WORK/clipboard" "$WORK/arecord-report" "$WORK/lame-report" "$WORK/journal.err" \
+        "$WORK/waybar-report"
     rm -f "$WORK"/clipboard.staged.*
 }
 
@@ -886,6 +901,10 @@ no_leftover_process() {
     ! pgrep -f "$WORK/bin/" >/dev/null 2>&1 && ! pgrep -f 'arecord -D null' >/dev/null 2>&1
 }
 
+# No transcriber of this run survives: the stub and the worker it started are the only processes
+# matching this run's own bin directory, so the check is blind to a concurrent suite's dictation.
+no_transcriber_left() { ! pgrep -f "$WORK/bin/transcribe" >/dev/null 2>&1; }
+
 # Nothing is left reading the waveform channel once the recording is over. The pump's argv
 # carries this run's own waveform path, which pins the match: a dictation the user happens to be
 # running for real, on the real runtime directory, is none of this test's business.
@@ -1031,6 +1050,9 @@ write_session() { # write_session <id> <outcome> [summary]
     mkdir -p "$(sessions_dir)/$id"
     printf '{\n  "id": "%s",\n  "started": 1759855522.12,\n  "ended": 1759855601.45,\n  "duration": 79.33,\n  "audio_bytes": 365720,\n  "outcome": "%s",\n  "pasted": true,\n  "transcriber": null,\n  "error": null\n}\n' \
         "$id" "$outcome" > "$(sessions_dir)/$id/metadata.json"
+    # A kept session always holds its recording: a transcriber handed a missing one would fail
+    # before it could say what the test asked it to say.
+    printf 'audio' > "$(sessions_dir)/$id/audio.mp3"
     [ -n "$summary" ] && printf '%s' "$summary" > "$(sessions_dir)/$id/transcript.txt"
     return 0
 }
@@ -2136,19 +2158,158 @@ test_browse_copy_with_nothing_selected() {
     check "nothing was injected" [ ! -s "$WORK/ydotool.log" ]
 }
 
-# A session whose transcript is missing or holds no word is reported rather than copied empty: the
-# browser copies what is on disk and never transcribes a session itself.
-test_browse_copy_without_a_transcript() {
-    start_test "the browser reports a session with no transcript instead of copying nothing"
+# A transcript that exists but holds no word is reported rather than paid for twice: `session
+# copy` runs no transcriber for it, and neither does the browser.
+test_browse_reports_an_empty_transcript() {
+    start_test "the browser reports an empty transcript instead of running the transcriber"
     write_session 2026-10-09T10-00-00 cancelled
+    : > "$(sessions_dir)/2026-10-09T10-00-00/transcript.txt"
 
     rm -f "$WORK/clipboard"
+    : > "$WORK/transcribe-report"
     pty 'c,q' "$WORK/browse-copy-none.out" session browse > "$WORK/browse-copy-none.summary"
 
     check "the browser exits zero" grep -q '^EXIT=0$' "$WORK/browse-copy-none.summary"
     check "the status line says there is nothing to copy" \
         grep -q 'nothing to copy' "$WORK/browse-copy-none.out"
     check "nothing reached the clipboard" [ ! -e "$WORK/clipboard" ]
+    check "no transcriber was run" [ ! -s "$WORK/transcribe-report" ]
+}
+
+# `t` runs the transcriber again on the selected session, even when it already has a transcript: a
+# changed transcriber is the reason to ask. The transcript and the metadata are rewritten exactly
+# as `session transcribe` writes them, through the same runner.
+test_browse_transcribes_again() {
+    start_test "the browser transcribes a session again on t, rewriting the transcript and metadata"
+    write_session 2026-10-09T10-00-00 transcribed "old text"
+
+    : > "$WORK/transcribe-report"
+    rm -f "$WORK/clipboard"
+    TRANSCRIBE_TEXT="new text" TRANSCRIBE_SLEEP=0.3 \
+        pty 't,WAIT,q' "$WORK/browse-transcribe.out" session browse > "$WORK/browse-transcribe.summary"
+
+    local dir
+    dir="$(sessions_dir)/2026-10-09T10-00-00"
+    check "the browser exits zero" grep -q '^EXIT=0$' "$WORK/browse-transcribe.summary"
+    check "the terminal is back to its previous state" \
+        grep -q '^TERMIOS=restored$' "$WORK/browse-transcribe.summary"
+    check "the transcriber ran once" [ "$(grep -c . "$WORK/transcribe-report")" -eq 1 ]
+    check "the transcript is rewritten" [ "$(cat "$dir/transcript.txt")" = "new text" ]
+    check "the outcome is transcribed" [ "$(metadata_value "$dir" outcome)" = '"transcribed"' ]
+    check "the transcriber is recorded" \
+        [ "$(metadata_value "$dir" transcriber)" = "\"$BIN/transcribe\"" ]
+    check "no error is recorded" [ "$(metadata_value "$dir" error)" = "null" ]
+    check "the status line says the session was transcribed" \
+        grep -q 'transcribed 2026-10-09T10-00-00' "$WORK/browse-transcribe.out"
+    check "nothing was injected" [ ! -s "$WORK/ydotool.log" ]
+    check "no transcriber left behind" no_transcriber_left
+}
+
+# `c` on a session with no transcript transcribes it first, exactly as `session copy` does, then
+# offers the text: the user never has to know which verb comes first.
+test_browse_copy_transcribes_a_session_without_a_transcript() {
+    start_test "the browser's c transcribes a session without a transcript, then copies the text"
+    write_session 2026-10-09T10-00-00 cancelled
+
+    : > "$WORK/transcribe-report"
+    rm -f "$WORK/clipboard"
+    TRANSCRIBE_TEXT="fresh text" TRANSCRIBE_SLEEP=0.3 \
+        pty 'c,WAIT,q' "$WORK/browse-copy-transcribe.out" session browse \
+        > "$WORK/browse-copy-transcribe.summary"
+
+    local dir
+    dir="$(sessions_dir)/2026-10-09T10-00-00"
+    check "the browser exits zero" grep -q '^EXIT=0$' "$WORK/browse-copy-transcribe.summary"
+    check "the transcriber ran once" [ "$(grep -c . "$WORK/transcribe-report")" -eq 1 ]
+    check "the transcript is written" [ "$(cat "$dir/transcript.txt")" = "fresh text" ]
+    check "the outcome became transcribed" [ "$(metadata_value "$dir" outcome)" = '"transcribed"' ]
+    check "the text is on the clipboard" wait_pasted_text "fresh text"
+    check "the status line says the transcript was copied" \
+        grep -q 'transcript copied to the clipboard' "$WORK/browse-copy-transcribe.out"
+    check "nothing was injected" [ ! -s "$WORK/ydotool.log" ]
+    check "no transcriber left behind" no_transcriber_left
+}
+
+# `ctrl-c` during a transcription signals the child, reaps it, keeps the browser open and shows a
+# verdict; the session's transcript and metadata are byte for byte what they were before, and no
+# second transcription can be started while the first runs.
+test_browse_cancels_a_transcription() {
+    start_test "ctrl-c cancels a transcription in flight, leaving the session untouched"
+    write_session 2026-10-08T10-00-00 transcribed "older text"
+    write_session 2026-10-09T10-00-00 transcribed "old text"
+
+    cp "$(sessions_dir)/2026-10-09T10-00-00/metadata.json" "$WORK/cancel-metadata.before"
+    : > "$WORK/transcribe-report"
+    rm -f "$WORK/clipboard"
+    # The transcriber is slow, so the cancelling keys land while it runs; `t` and `c` pressed there
+    # must start nothing, and `DOWN` after the cancel proves the browser stayed open.
+    TRANSCRIBE_TEXT="never written" TRANSCRIBE_SLEEP=5 \
+        pty 't,WAIT,t,c,WAIT,C-C,DOWN,q' "$WORK/browse-cancel.out" session browse \
+        > "$WORK/browse-cancel.summary"
+
+    local dir marked
+    dir="$(sessions_dir)/2026-10-09T10-00-00"
+    check "the browser exits zero" grep -q '^EXIT=0$' "$WORK/browse-cancel.summary"
+    check "the terminal is back to its previous state" \
+        grep -q '^TERMIOS=restored$' "$WORK/browse-cancel.summary"
+    check "the transcriber was started" [ -s "$WORK/transcribe-report" ]
+    check "no second transcription started" [ "$(grep -c . "$WORK/transcribe-report")" -eq 1 ]
+    check "the transcript is byte for byte what it was" [ "$(cat "$dir/transcript.txt")" = "old text" ]
+    check "the metadata is byte for byte what it was" \
+        cmp -s "$WORK/cancel-metadata.before" "$dir/metadata.json"
+    check "the status line carries the verdict" \
+        grep -q 'transcription cancelled: 2026-10-09T10-00-00' "$WORK/browse-cancel.out"
+    check "nothing was copied while the transcription ran" [ ! -e "$WORK/clipboard" ]
+    marked="$(grep -ao '> 2026-[0-9T-]*' "$WORK/browse-cancel.out" | sed 's/^> //' | tail -1)"
+    check "the browser stayed open after the cancel and moved the selection" \
+        [ "$marked" = "2026-10-08T10-00-00" ]
+    check "no transcriber survives the cancel" no_transcriber_left
+}
+
+# `q` during a transcription signals the child before leaving, so no transcriber outlives the
+# browser, and the session is left exactly as it was.
+test_browse_leaves_on_q_during_a_transcription() {
+    start_test "q during a transcription signals the transcriber and leaves nothing behind"
+    write_session 2026-10-09T10-00-00 transcribed "old text"
+
+    : > "$WORK/transcribe-report"
+    TRANSCRIBE_TEXT="never written" TRANSCRIBE_SLEEP=5 \
+        pty 't,WAIT,q' "$WORK/browse-quit.out" session browse > "$WORK/browse-quit.summary"
+
+    local dir
+    dir="$(sessions_dir)/2026-10-09T10-00-00"
+    check "the browser exits zero" grep -q '^EXIT=0$' "$WORK/browse-quit.summary"
+    check "the terminal is back to its previous state" \
+        grep -q '^TERMIOS=restored$' "$WORK/browse-quit.summary"
+    check "the transcriber was started" [ -s "$WORK/transcribe-report" ]
+    check "the transcript is untouched" [ "$(cat "$dir/transcript.txt")" = "old text" ]
+    check "no transcriber outlives the browser" no_transcriber_left
+}
+
+# A transcription that fails shows the collapsed one-line error on the status line, records the
+# failure the transcriber's own run wrote, and leaves the browser out of the running state.
+test_browse_a_failing_transcription() {
+    start_test "a failing transcription shows its one-line error and leaves the running state"
+    write_session 2026-10-09T10-00-00 transcribed "old text"
+
+    rm -f "$WORK/clipboard"
+    TRANSCRIBE_FAIL=1 pty 't,WAIT,i,q' "$WORK/browse-fail.out" session browse \
+        > "$WORK/browse-fail.summary"
+
+    local dir
+    dir="$(sessions_dir)/2026-10-09T10-00-00"
+    check "the browser exits zero" grep -q '^EXIT=0$' "$WORK/browse-fail.summary"
+    check "the terminal is back to its previous state" \
+        grep -q '^TERMIOS=restored$' "$WORK/browse-fail.summary"
+    check "the collapsed error is on the status line" \
+        grep -q 'transcription failed: groq: Error code: 401 - invalid api key' "$WORK/browse-fail.out"
+    check "the outcome records the failure" [ "$(metadata_value "$dir" outcome)" = '"failed"' ]
+    check "the error is recorded" \
+        [ "$(metadata_error "$dir")" = '"groq: Error code: 401 - invalid api key"' ]
+    check "the transcript is what it was" [ "$(cat "$dir/transcript.txt")" = "old text" ]
+    check "the id key works again, so the browser left the running state" \
+        wait_pasted_text "2026-10-09T10-00-00"
+    check "no transcriber left behind" no_transcriber_left
 }
 
 # The browser reads files only and takes no command lock: the dictation shortcuts still work while
@@ -3406,7 +3567,12 @@ run_test test_browse_an_empty_history_is_not_an_error
 run_test test_browse_shows_an_unreadable_session
 run_test test_browse_copies_the_transcript_the_id_and_the_path
 run_test test_browse_copy_with_nothing_selected
-run_test test_browse_copy_without_a_transcript
+run_test test_browse_reports_an_empty_transcript
+run_test test_browse_transcribes_again
+run_test test_browse_copy_transcribes_a_session_without_a_transcript
+run_test test_browse_cancels_a_transcription
+run_test test_browse_leaves_on_q_during_a_transcription
+run_test test_browse_a_failing_transcription
 run_test test_browse_holds_no_command_lock
 run_test test_transcribe_copies_and_rewrites
 run_test test_transcribe_print

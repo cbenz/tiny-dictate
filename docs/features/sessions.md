@@ -61,8 +61,10 @@ same listing when its stdout is a pipe, and opens the [browser](browse.md) when 
 - `tiny-dictate session browse` reads the kept sessions on a terminal: the list, the selection,
 the selected session's fields and transcript in a pane beside it, and the keys that move through
 both. `c`, `i` and `p` copy the selected session's transcript, its id and its path through the same
-clipboard path `session copy` uses. It takes no command lock and reads files only, so it opens while
-a dictation runs, and looking at the sessions never needs the encoder or the clipboard tools.
+clipboard path `session copy` uses, and `t` runs the transcriber again, through the same runner
+`session transcribe` uses; `ctrl-c` cancels a transcription in flight. It takes no command lock and
+reads files only, so it opens while a dictation runs, and looking at the sessions never needs the
+encoder or the clipboard tools.
 - `tiny-dictate session show <id|last> [--output text|json]` reads one session in full: its fields,
   one per line, then
   its transcript. The fields are the shared view's, in the one order every surface renders them --

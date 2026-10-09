@@ -23,6 +23,10 @@ const FOOTER: &str = "↑/↓ move  PgUp/PgDn scroll  c copy  i id  p path  r re
 /// still move the list.
 const NARROW_FOOTER: &str = "↑/↓ move  Home/End jump  c copy  i id  p path  r reload  q quit";
 
+/// The footer while a transcription runs: only `ctrl-c` means something until it returns, and the
+/// footer names only that.
+const RUNNING_FOOTER: &str = "ctrl-c cancel";
+
 /// The column between the list and the detail pane.
 pub const SEPARATOR: char = '│';
 
@@ -34,6 +38,15 @@ const PANE_MIN_WIDTH: usize = 24;
 
 /// The shortest terminal that shows both panes: the title, the footer and two body rows.
 const MIN_PANE_HEIGHT: usize = 4;
+
+/// What the browser is doing, as one frame draws it: the keys that mean something depend on it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Run {
+    /// Nothing runs: navigation, the copy actions and `t` all mean something.
+    Idle,
+    /// A transcription is in flight: only `ctrl-c` means anything until it returns.
+    Transcribing,
+}
 
 /// The list state: the rows on disk and the one the selection sits on.
 pub struct List {
@@ -183,13 +196,15 @@ pub fn panes(width: usize, height: usize) -> Option<(usize, usize)> {
 /// What one frame draws, for a terminal `width` columns wide and `height` rows tall.
 ///
 /// The title, the footer and, when there is one, the status line take a line each; the body uses
-/// the rest. The list is scrolled so its selection is always visible, the detail pane is windowed
+/// the rest. The footer follows `run`: a transcription in flight names only the key that cancels
+/// it, because the other keys mean nothing until it returns. The list is scrolled so its selection is always visible, the detail pane is windowed
 /// by `scroll`, and the two are drawn side by side. On a terminal too small for both, the pane
 /// gives way and the list keeps the whole width. A line is cut to the pane's width, counting a
 /// wide character as two columns, so the cut never lands inside one.
 pub fn frame(
     list: &List,
     detail: Option<&Detail>,
+    run: Run,
     status: &str,
     scroll: usize,
     width: usize,
@@ -240,10 +255,10 @@ pub fn frame(
         list_width: split.map_or(0, |(list_width, _)| list_width),
         status: truncate(status, width),
         footer: truncate(
-            if split.is_some() {
-                FOOTER
-            } else {
-                NARROW_FOOTER
+            match (run, split.is_some()) {
+                (Run::Transcribing, _) => RUNNING_FOOTER,
+                (Run::Idle, true) => FOOTER,
+                (Run::Idle, false) => NARROW_FOOTER,
             },
             width,
         ),
@@ -464,7 +479,15 @@ mod tests {
     fn a_status_line_sits_above_the_footer_and_takes_one_row_from_the_list() {
         let list = List::new(vec![row("d"), row("c"), row("b"), row("a")]);
 
-        let frame = frame(&list, None, "id copied to the clipboard", 0, 80, 5);
+        let frame = frame(
+            &list,
+            None,
+            Run::Idle,
+            "id copied to the clipboard",
+            0,
+            80,
+            5,
+        );
 
         // The title and the footer take a line each, the status line one more: two rows fit.
         assert_eq!(frame.status, "id copied to the clipboard");
@@ -477,17 +500,29 @@ mod tests {
     fn a_frame_without_a_status_draws_no_status_line_and_keeps_the_whole_height_for_the_rows() {
         let list = List::new(vec![row("d"), row("c"), row("b"), row("a")]);
 
-        let frame = frame(&list, None, "", 0, 80, 5);
+        let frame = frame(&list, None, Run::Idle, "", 0, 80, 5);
 
         assert!(frame.status.is_empty());
         assert_eq!(frame.lines.len(), 3);
     }
 
     #[test]
+    fn a_transcription_in_flight_names_only_the_key_that_cancels() {
+        let list = List::new(vec![row("c")]);
+
+        let idle = frame(&list, None, Run::Idle, "", 0, 80, 24);
+        let running = frame(&list, None, Run::Transcribing, "transcribing c", 0, 80, 24);
+
+        assert!(idle.footer.contains("c copy"));
+        assert_eq!(running.footer, "ctrl-c cancel");
+        assert_eq!(running.status, "transcribing c");
+    }
+
+    #[test]
     fn a_frame_lists_one_line_per_session_newest_first_with_the_first_selected() {
         let list = List::new(vec![row("2026-10-09T17-00-00"), row("2026-10-08T17-00-00")]);
 
-        let frame = frame(&list, None, "", 0, 80, 24);
+        let frame = frame(&list, None, Run::Idle, "", 0, 80, 24);
 
         assert_eq!(frame.title, "sessions");
         assert_eq!(frame.lines.len(), 2);
@@ -541,7 +576,7 @@ mod tests {
     fn an_empty_history_is_an_empty_list_and_not_an_error() {
         let list = List::new(Vec::new());
 
-        let frame = frame(&list, None, "", 0, 80, 24);
+        let frame = frame(&list, None, Run::Idle, "", 0, 80, 24);
 
         assert_eq!(frame.title, "no kept sessions");
         assert!(frame.lines.is_empty());
@@ -554,7 +589,7 @@ mod tests {
         list.select_last();
 
         // The title and the footer take a line each: one row is all a three-line terminal holds.
-        let frame = frame(&list, None, "", 0, 80, 3);
+        let frame = frame(&list, None, Run::Idle, "", 0, 80, 3);
 
         assert_eq!(frame.lines.len(), 1);
         assert_eq!(frame.lines[0].text, "> a  0:01  transcribed  hello");
@@ -571,7 +606,7 @@ mod tests {
         }]);
 
         // "> c  0:00  x  日本" is 18 columns; at 17 the second ideograph does not fit whole.
-        let frame = frame(&list, None, "", 0, 17, 24);
+        let frame = frame(&list, None, Run::Idle, "", 0, 17, 24);
 
         assert_eq!(frame.lines[0].text, "> c  0:00  x  日");
         assert!(UnicodeWidthStr::width(frame.lines[0].text.as_str()) <= 17);
@@ -726,9 +761,9 @@ mod tests {
         let detail = detail("hello");
 
         // Too short: the title, the footer and two body rows are the least two panes need.
-        let short = frame(&list, Some(&detail), "", 0, 100, 3);
+        let short = frame(&list, Some(&detail), Run::Idle, "", 0, 100, 3);
         // Too narrow: the list pane may not go below 40 columns.
-        let narrow = frame(&list, Some(&detail), "", 0, 40, 24);
+        let narrow = frame(&list, Some(&detail), Run::Idle, "", 0, 40, 24);
 
         for frame in [&short, &narrow] {
             assert!(frame.pane.is_empty());
@@ -748,7 +783,7 @@ mod tests {
         let newest = detail("newer text");
         let oldest = detail("older text");
 
-        let first = frame(&list, Some(&newest), "", 0, 100, 10);
+        let first = frame(&list, Some(&newest), Run::Idle, "", 0, 100, 10);
 
         assert_eq!(first.list_width, 66);
         assert_eq!(first.lines.len(), 8);
@@ -758,7 +793,7 @@ mod tests {
 
         // The selection moves: the pane is reloaded on the row it now sits on.
         list.select_next();
-        let second = frame(&list, Some(&oldest), "", 0, 100, 10);
+        let second = frame(&list, Some(&oldest), Run::Idle, "", 0, 100, 10);
 
         assert!(second.pane.iter().any(|line| line == "older text"));
         assert!(!second.pane.iter().any(|line| line == "newer text"));

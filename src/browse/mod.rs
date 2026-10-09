@@ -13,6 +13,7 @@ use std::io::{self, IsTerminal, Write};
 use std::panic;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
 use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -21,14 +22,20 @@ use crossterm::style::{Attribute, SetAttribute};
 use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 
 use crate::config;
+use crate::rescue;
 use crate::session::Runtime;
 use crate::store;
 use crate::text;
 use crate::view::{self, Detail};
-use frame::{List, Pane};
+use frame::{List, Pane, Run};
 
 /// What the status line says when an action is asked for and the list holds nothing to act on.
 const NO_SELECTION: &str = "no session selected";
+
+/// How long the browser waits for a key between two looks at a transcription in flight: short
+/// enough that a run which returns on its own is noticed without a keypress, long enough not to
+/// spin.
+const POLL: Duration = Duration::from_millis(50);
 
 /// `session browse`: the kept sessions on a terminal.
 ///
@@ -80,6 +87,26 @@ struct Browser {
     status: String,
     /// The lease every copy carries, read once from the configuration.
     clipboard_seconds: u64,
+    /// The transcription in flight, when one runs: the keys are then inert but for the ones that
+    /// cancel and leave.
+    running: Option<Transcription>,
+}
+
+/// What the browser does with a successful transcription: `c` copies the text, `t` only rewrites
+/// the session.
+enum Intent {
+    /// `t`: transcribe again, whatever transcript the session holds.
+    Again,
+    /// `c`: transcribe because the session has no transcript, then copy the text.
+    Copy,
+}
+
+/// A transcription in flight, started from the browser: the runner, the session it writes into,
+/// and what the user asked for.
+struct Transcription {
+    session: store::Session,
+    running: rescue::Running,
+    intent: Intent,
 }
 
 impl Browser {
@@ -95,6 +122,21 @@ impl Browser {
             pane: Pane::new(),
             status: String::new(),
             clipboard_seconds,
+            running: None,
+        }
+    }
+
+    /// Whether a transcription is in flight: the keys, and the footer, follow it.
+    fn transcribing(&self) -> bool {
+        self.running.is_some()
+    }
+
+    /// The browser's run state, as the frame draws it.
+    fn run(&self) -> Run {
+        if self.transcribing() {
+            Run::Transcribing
+        } else {
+            Run::Idle
         }
     }
 
@@ -159,22 +201,123 @@ impl Browser {
         }
     }
 
-    /// `c`: the selected session's stored transcript on the clipboard, through the one writer
-    /// `session copy` and a live dictation use. It reads only what is on disk: a session that has
-    /// no transcript is reported rather than copied empty, and never transcribed here.
-    fn copy_transcript(&self) -> String {
+    /// `c`: the selected session's transcript on the clipboard, through the one writer `session
+    /// copy` and a live dictation use. A transcript already on disk is offered as it is; a session
+    /// that has none is transcribed first, exactly as `session copy` does, and the text is offered
+    /// when the run returns. A transcript that exists but holds no word is reported rather than
+    /// paid for twice.
+    fn copy_transcript(&mut self) {
         let Some(row) = self.list.selected() else {
-            return NO_SELECTION.to_owned();
+            self.status = NO_SELECTION.to_owned();
+            return;
+        };
+        let id = row.id.clone();
+
+        match fs::read_to_string(self.sessions.join(&id).join(store::TRANSCRIPT_FILE)) {
+            Ok(transcript) if !transcript.trim().is_empty() => {
+                self.status = offer(&transcript, "transcript", self.clipboard_seconds);
+            }
+            Ok(_) => {
+                self.status = format!("nothing to copy: {id} has no transcript");
+            }
+            // No transcript on disk: run the transcriber first, as `session copy` does, and offer
+            // what it writes when it returns.
+            Err(_) => self.start_transcription(Intent::Copy),
+        }
+    }
+
+    /// `t`: run the transcriber again on the selected session, even when it already has a
+    /// transcript -- a changed transcriber is the reason to ask.
+    fn transcribe_again(&mut self) {
+        self.start_transcription(Intent::Again);
+    }
+
+    /// Start the transcriber on the selected session, through the runner `session transcribe`
+    /// and `session copy` use; nothing is written until it returns, so a run that is cancelled
+    /// leaves the session exactly as it was.
+    fn start_transcription(&mut self, intent: Intent) {
+        let Some(row) = self.list.selected() else {
+            self.status = NO_SELECTION.to_owned();
+            return;
+        };
+        let Some(mut session) = store::Session::load(&self.sessions, &row.id) else {
+            // A session whose metadata cannot be read has no audio to hand the transcriber and no
+            // metadata to rewrite: `session transcribe` refuses it too.
+            self.status = format!("cannot read the session's metadata: {}", row.id);
+            return;
         };
 
-        let transcript =
-            fs::read_to_string(self.sessions.join(&row.id).join(store::TRANSCRIPT_FILE))
-                .unwrap_or_default();
-        if transcript.trim().is_empty() {
-            return format!("nothing to copy: {} has no transcript", row.id);
+        match rescue::start_transcription(&mut session) {
+            Ok(running) => {
+                self.status = format!("transcribing {}", row.id);
+                self.running = Some(Transcription {
+                    session,
+                    running,
+                    intent,
+                });
+            }
+            Err(rescue::NotStarted::NoTranscriber) => {
+                self.status = "no transcription command".to_owned();
+            }
+            Err(rescue::NotStarted::Failed(error)) => {
+                self.status = format!("transcription failed: {error}");
+            }
         }
+    }
 
-        offer(&transcript, "transcript", self.clipboard_seconds)
+    /// Look at the transcription in flight: when it has returned, finish it.
+    fn poll_transcription(&mut self) {
+        let Some(transcription) = self.running.as_mut() else {
+            return;
+        };
+
+        if let Some(success) = transcription.running.exited() {
+            self.finish_transcription(success);
+        }
+    }
+
+    /// A transcription has returned: write what it produced and say what happened. Whatever the
+    /// run wrote, the pane reads it back, so a rewritten transcript or metadata never waits for a
+    /// reload key.
+    fn finish_transcription(&mut self, success: bool) {
+        let Some(Transcription {
+            mut session,
+            running,
+            intent,
+        }) = self.running.take()
+        else {
+            return;
+        };
+        let id = session.id.clone();
+        let result = running.finish(&mut session, success);
+        self.follow();
+
+        self.status = match result {
+            rescue::Transcription::Text(text) => match intent {
+                Intent::Again => format!("transcribed {id}"),
+                Intent::Copy if text.trim().is_empty() => {
+                    format!("nothing to copy: {id} has no transcript")
+                }
+                Intent::Copy => offer(&text, "transcript", self.clipboard_seconds),
+            },
+            rescue::Transcription::Failed(error) => format!("transcription failed: {error}"),
+            // The transcriber resolved when the run started, so a finished run that names no
+            // command cannot happen; reported rather than silently ignored.
+            rescue::Transcription::NoTranscriber => "no transcription command".to_owned(),
+        };
+    }
+
+    /// `ctrl-c` during a transcription: signal the child, reap it and keep the browser open on
+    /// the verdict. Nothing it wrote is kept: the session stays exactly as it was.
+    fn cancel_transcription(&mut self) {
+        let Some(Transcription {
+            session, running, ..
+        }) = self.running.take()
+        else {
+            return;
+        };
+        running.cancel();
+        self.status = format!("transcription cancelled: {}", session.id);
     }
 
     /// `i`: the selected session's id on the clipboard.
@@ -220,10 +363,36 @@ fn offer(value: &str, what: &str, clipboard_seconds: u64) -> String {
 }
 
 /// Read keys until the user leaves, drawing one frame before each.
+///
+/// A transcription in flight does not block the loop: the child is polled between the keys, so
+/// the browser notices it return without a keypress, and only the keys that cancel mean anything
+/// until it does. A second transcription can never start: no key sequence reaches the start
+/// while one runs.
 fn browse(terminal: &mut Terminal, browser: &mut Browser) -> io::Result<()> {
     loop {
         terminal.draw(browser)?;
         let (page, limit) = browser.metrics();
+
+        if browser.transcribing() {
+            if event::poll(POLL)? {
+                match event::read()? {
+                    Event::Key(key) if key.kind != KeyEventKind::Release => match key.code {
+                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            browser.cancel_transcription();
+                        }
+                        KeyCode::Char('q') => {
+                            browser.cancel_transcription();
+                            return Ok(());
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }
+
+            browser.poll_transcription();
+            continue;
+        }
 
         match event::read()? {
             // A release carries the key that was pressed before it: acting on it would move the
@@ -240,9 +409,10 @@ fn browse(terminal: &mut Terminal, browser: &mut Browser) -> io::Result<()> {
                 KeyCode::End => browser.select_last(limit),
                 KeyCode::PageUp => browser.pane.page_up(page),
                 KeyCode::PageDown => browser.pane.page_down(page, limit),
-                KeyCode::Char('c') => browser.status = browser.copy_transcript(),
+                KeyCode::Char('c') => browser.copy_transcript(),
                 KeyCode::Char('i') => browser.status = browser.copy_id(),
                 KeyCode::Char('p') => browser.status = browser.copy_path(),
+                KeyCode::Char('t') => browser.transcribe_again(),
                 _ => {}
             },
             _ => {}
@@ -273,6 +443,7 @@ impl Terminal {
         let frame = frame::frame(
             &browser.list,
             browser.detail.as_ref(),
+            browser.run(),
             &browser.status,
             browser.pane.scroll(),
             usize::from(width),

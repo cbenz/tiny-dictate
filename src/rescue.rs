@@ -8,6 +8,7 @@
 
 use std::fs;
 use std::io::IsTerminal;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use crate::browse;
@@ -106,7 +107,7 @@ pub fn session_copy(target: &str) -> ExitCode {
         Ok(transcript) => transcript,
         Err(_) => match transcribe_and_write(&mut session) {
             Transcription::Text(transcript) => transcript,
-            Transcription::NoTranscriber | Transcription::Failed => return ExitCode::FAILURE,
+            Transcription::NoTranscriber | Transcription::Failed(_) => return ExitCode::FAILURE,
         },
     };
 
@@ -144,7 +145,7 @@ pub fn transcribe_session(target: &str, print: bool) -> ExitCode {
 
     let transcript = match transcribe_and_write(&mut session) {
         Transcription::Text(transcript) => transcript,
-        Transcription::NoTranscriber | Transcription::Failed => return ExitCode::FAILURE,
+        Transcription::NoTranscriber | Transcription::Failed(_) => return ExitCode::FAILURE,
     };
 
     if print {
@@ -156,65 +157,149 @@ pub fn transcribe_session(target: &str, print: bool) -> ExitCode {
 }
 
 /// What one run of the transcriber leaves behind.
-enum Transcription {
+pub enum Transcription {
     /// The transcriber's text, already written to the session with its metadata.
     Text(String),
     /// No transcriber command resolves; nothing ran, and the session is untouched.
     NoTranscriber,
-    /// The transcriber ran and failed; the metadata records the failure.
-    Failed,
+    /// The transcriber ran and failed; the metadata records the failure, and the message is the
+    /// collapsed one-line error every surface shows.
+    Failed(String),
+}
+
+/// Why a transcription never started: the reason a caller shows, the session untouched. No
+/// command resolves, or the command resolved but could not be started.
+pub enum NotStarted {
+    NoTranscriber,
+    Failed(String),
+}
+
+/// A transcription in flight: the transcriber child and the command that ran. `session
+/// transcribe` and `session copy` wait it out; the browser polls it, cancels it and reaps it.
+///
+/// The browser adds the signalling, never a second way to run a transcriber: a finished run is
+/// written through `finish`, the one writer of a rescued transcript and its metadata.
+pub struct Running {
+    /// The command that ran, recorded in the metadata whichever way the run ends.
+    transcriber: PathBuf,
+    child: text::Transcriber,
+}
+
+impl Running {
+    /// Whether the transcriber has exited, without blocking.
+    pub fn exited(&mut self) -> Option<bool> {
+        self.child.exited()
+    }
+
+    /// Reap it, blocking until it has exited, and say whether it succeeded.
+    pub fn wait(&mut self) -> bool {
+        self.child.wait()
+    }
+
+    /// Stop it and reap it: the whole tree it started is signalled, and nothing is written into
+    /// the session. A cancelled transcription leaves the session exactly as it was.
+    pub fn cancel(mut self) {
+        self.child.stop();
+        self.child.clean();
+    }
+
+    /// Write what a finished run produced into the session, exactly as `session transcribe`
+    /// writes it: the transcript first, then the metadata; a failed run records the failure and
+    /// writes no transcript. A cancelled run never gets here, so only a successful run ever
+    /// writes one.
+    pub fn finish(self, session: &mut store::Session, success: bool) -> Transcription {
+        let answer = self.child.answer(success);
+        self.child.clean();
+
+        match answer {
+            Ok(transcript) => {
+                // The transcript reaches the session before any clipboard write, as in a live
+                // dictation: a text that only lived in the clipboard is a text that can be lost.
+                let _ = fs::write(session.transcript(), &transcript);
+                session.metadata.outcome = store::Outcome::Transcribed;
+                session.metadata.error = None;
+                session.metadata.transcriber = Some(self.transcriber.display().to_string());
+                let _ = session.save();
+                Transcription::Text(transcript)
+            }
+            Err(error) => {
+                record_failure(session, &error);
+                Transcription::Failed(error)
+            }
+        }
+    }
+}
+
+/// Start the transcriber on a session, as a child process the caller can wait out or signal.
+///
+/// The command and the file its stderr lands in are resolved here, so every surface runs the
+/// same transcriber the same way. Nothing is written into the session: `Running::finish` writes
+/// what a run that started leaves behind.
+pub fn start_transcription(session: &mut store::Session) -> Result<Running, NotStarted> {
+    let Some(transcriber) = text::resolve_transcriber() else {
+        return Err(NotStarted::NoTranscriber);
+    };
+    // The metadata records the command before the run: a run that never returns still names what
+    // it would have run.
+    session.metadata.transcriber = Some(transcriber.display().to_string());
+
+    // The transcriber's stderr is collapsed into the one line a failure is shown as, exactly
+    // like a live dictation. It is written outside the session directory: a rescue leaves no
+    // trace of its own in the session it rescues.
+    let errors = std::env::temp_dir().join(format!(
+        "tiny-dictate-transcribe-{}-{}.err",
+        std::process::id(),
+        session.id
+    ));
+    // The transcriber runs in a process group of its own: cancelling it takes down the whole
+    // tree it started, so no transcriber outlives the browser.
+    let child = text::Transcriber::start_isolated(
+        &transcriber,
+        &session.audio(),
+        &session.directory,
+        &errors,
+    )
+    .ok_or_else(|| NotStarted::Failed("Unknown error".to_owned()))?;
+
+    Ok(Running { transcriber, child })
+}
+
+/// Record a failed run in the session: the outcome and the collapsed error. The command that
+/// ran was recorded when the run started, and no transcript is touched.
+fn record_failure(session: &mut store::Session, error: &str) {
+    session.metadata.outcome = store::Outcome::Failed;
+    session.metadata.error = Some(error.to_owned());
+    let _ = session.save();
 }
 
 /// Run the transcriber on a session and write what it produced exactly as `session transcribe`
 /// does: the transcript first, then the metadata. `session copy` runs the same function, so the
 /// two verbs cannot drift.
 fn transcribe_and_write(session: &mut store::Session) -> Transcription {
-    let Some(transcriber) = text::resolve_transcriber() else {
-        // The session is known here, so the failure line names it (ADR-0008).
-        log::line(
-            Some(&session.id),
-            "failure: No transcription command. Set TINY_DICTATE_TRANSCRIBE or install tiny-dictate-transcribe",
-        );
-        return Transcription::NoTranscriber;
+    let mut running = match start_transcription(session) {
+        Ok(running) => running,
+        Err(NotStarted::NoTranscriber) => {
+            // The session is known here, so the failure line names it (ADR-0008).
+            log::line(
+                Some(&session.id),
+                "failure: No transcription command. Set TINY_DICTATE_TRANSCRIBE or install tiny-dictate-transcribe",
+            );
+            return Transcription::NoTranscriber;
+        }
+        Err(NotStarted::Failed(error)) => {
+            record_failure(session, &error);
+            log::line(Some(&session.id), &format!("failure: {error}"));
+            return Transcription::Failed(error);
+        }
     };
 
-    // The transcriber's stderr is collapsed into the one line a failure is shown as, exactly
-    // like a live dictation. It is written outside the session directory: a rescue leaves no
-    // trace of its own in the session it rescues.
-    let error_file = std::env::temp_dir().join(format!(
-        "tiny-dictate-transcribe-{}-{}.err",
-        std::process::id(),
-        session.id
-    ));
-    let result = text::transcribe_collapsed(
-        &transcriber,
-        &session.audio(),
-        &session.directory,
-        &error_file,
-    );
-    let _ = fs::remove_file(&error_file);
-
-    match result {
-        Ok(transcript) => {
-            // The transcript reaches the session before any clipboard write, as in a live
-            // dictation: a text that only lived in the clipboard is a text that can be lost.
-            let _ = fs::write(session.transcript(), &transcript);
-            session.metadata.outcome = store::Outcome::Transcribed;
-            session.metadata.error = None;
-            session.metadata.transcriber = Some(transcriber.display().to_string());
-            let _ = session.save();
-            Transcription::Text(transcript)
-        }
-        Err(error) => {
-            session.metadata.outcome = store::Outcome::Failed;
-            session.metadata.error = Some(error.clone());
-            session.metadata.transcriber = Some(transcriber.display().to_string());
-            let _ = session.save();
-
-            log::line(Some(&session.id), &format!("failure: {error}"));
-            Transcription::Failed
-        }
+    let success = running.wait();
+    let result = running.finish(session, success);
+    if let Transcription::Failed(error) = &result {
+        log::line(Some(&session.id), &format!("failure: {error}"));
     }
+
+    result
 }
 
 /// Offer one transcript on both selections, through the one clipboard write path a live dictation
