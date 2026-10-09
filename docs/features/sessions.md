@@ -82,7 +82,11 @@ rewrites its bytes. By default it offers the text on the clipboard, through the 
 normal dictation uses, and says so on stderr; `--print` writes it to stdout instead, and needs no
 clipboard tool at all.
 - `tiny-dictate session delete <id|last>` removes exactly one session directory. It is the only verb
-  that destroys a recording; cancelling never does.
+  that destroys a recording; cancelling never does. It refuses the session in flight -- the id the
+  runtime directory publishes while a dictation runs -- reporting the refusal on stderr, exiting
+  non-zero and removing nothing; the guard reads the runtime directory's files only, so it takes no
+  command lock and never signals the live dictation. An older session still deletes while a
+  dictation runs, and the session in flight deletes normally once its dictation has ended.
 
 A verb that touches a session is not available anywhere else: `history` and `transcribe` used to
 live at the root, and they are unknown arguments now. `last` is the newest session. An id that no

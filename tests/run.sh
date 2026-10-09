@@ -1844,6 +1844,91 @@ test_session_delete_removes_one() {
     check "the sessions directory is empty" [ "$(session_count)" -eq 0 ]
 }
 
+# The dictation in flight writes its transcript and its metadata into its session directory: the
+# delete path refuses it, by `last` and by its id, without removing anything, taking the command
+# lock or signalling a process. An older session still deletes while the dictation runs, and the
+# same id deletes normally once the dictation has ended.
+test_session_delete_refuses_the_session_in_flight() {
+    start_test "session delete refuses the session in flight"
+
+    TRANSCRIBE_TEXT="older text" td start
+    sleep 0.4
+    td stop
+    check "the older session finishes" wait_idle
+
+    local older
+    older="$(newest_session_id)"
+
+    td start
+    sleep 0.4
+    check "the dictation is recording" [ "$(td status)" = "working" ]
+
+    local in_flight dir
+    in_flight="$(newest_session_id)"
+    dir="$(sessions_dir)/$in_flight"
+    check "the dictation in flight is the newest session" [ "$in_flight" != "$older" ]
+    check "the runtime directory publishes its id" \
+        [ "$(cat "$RUN/tiny-dictate/session/session.id")" = "$in_flight" ]
+
+    # `last` resolves to the newest session, which is the one in flight.
+    td session delete last 2> "$WORK/in-flight-last.err"
+    check "deleting the session in flight exits non-zero" [ "$?" -ne 0 ]
+    check "the refusal names the session it refused" \
+        grep -q "tiny-dictate: $in_flight: failure: the session in flight cannot be deleted" \
+        "$WORK/in-flight-last.err"
+    check "the in-flight session is untouched" test -f "$dir/metadata.json"
+    check "its recording is untouched" test -s "$dir/audio.mp3"
+
+    # The id form takes the same rule: the guard is in the delete path, not in a caller.
+    td session delete "$in_flight" 2> "$WORK/in-flight-id.err"
+    check "deleting the in-flight id exits non-zero" [ "$?" -ne 0 ]
+    check "the in-flight session is still untouched" test -d "$dir"
+
+    # The refusal reads files only: the dictation runs on, its recorder lives, and no command lock
+    # was taken.
+    check "the dictation is still recording" [ "$(td status)" = "working" ]
+    check "the recorder still lives" recorder_alive
+    check "the refused delete took no command lock" [ ! -e "$RUN/tiny-dictate/command.lock" ]
+
+    # An older session is not the one in flight: it deletes normally while the dictation runs.
+    td session delete "$older" 2> "$WORK/in-flight-other.err"
+    check "an older session is still deletable" [ "$?" -eq 0 ]
+    check "the older session is gone" [ ! -e "$(sessions_dir)/$older" ]
+
+    td stop
+    check "the dictation finishes" wait_idle
+    check "the session survives the dictation" test -d "$dir"
+
+    td session delete "$in_flight" 2> "$WORK/after-end.err"
+    check "the same id deletes once the dictation has ended" [ "$?" -eq 0 ]
+    check "the session is gone" [ ! -e "$dir" ]
+    check "nothing is left in the sessions directory" [ "$(session_count)" -eq 0 ]
+}
+
+# A dictation killed by a signal leaves its runtime directory behind, its id still published. It is
+# over, so its session stays deletable: the guard reads the dictation's liveness, not the file
+# alone.
+test_session_delete_after_a_killed_dictation() {
+    start_test "session delete deletes a dictation killed by a signal"
+
+    td start
+    sleep 0.4
+
+    local id dir
+    id="$(newest_session_id)"
+    dir="$(sessions_dir)/$id"
+
+    kill_run
+
+    check "the killed dictation published its id" \
+        [ "$(cat "$RUN/tiny-dictate/session/session.id")" = "$id" ]
+
+    td session delete "$id" 2> "$WORK/killed-delete.err"
+    check "the killed dictation's session deletes" [ "$?" -eq 0 ]
+    check "the session is gone" [ ! -e "$dir" ]
+    check "nothing is left in the sessions directory" [ "$(session_count)" -eq 0 ]
+}
+
 # An unknown id is an error on stderr, exit non-zero, and nothing is removed or written.
 test_unknown_session_id() {
     start_test "an unknown session id is reported and changes nothing"
@@ -2766,6 +2851,8 @@ run_test test_session_copy_reports_an_empty_transcript
 run_test test_session_copy_retries_a_failed_transcription
 run_test test_session_copy_transcribes_a_cancelled_session
 run_test test_session_delete_removes_one
+run_test test_session_delete_refuses_the_session_in_flight
+run_test test_session_delete_after_a_killed_dictation
 run_test test_unknown_session_id
 run_test test_rescue_without_encoder_or_clipboard
 run_test test_command_line

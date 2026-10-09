@@ -215,6 +215,19 @@ pub fn session_delete(target: &str) -> ExitCode {
         return unknown_session(target);
     };
 
+    // The dictation in flight writes its transcript and its metadata into this very directory:
+    // the one verb that destroys a session refuses it. The rule lives here, in the delete path,
+    // so every surface that deletes takes the same one. The guard reads files only — the id the
+    // runtime directory publishes and the pidfiles — takes no command lock and signals nothing,
+    // so a refusal leaves a live dictation untouched.
+    if runtime.is_in_flight(&id) {
+        log::line(
+            Some(&id),
+            "failure: the session in flight cannot be deleted",
+        );
+        return ExitCode::FAILURE;
+    }
+
     match fs::remove_dir_all(sessions.join(&id)) {
         Ok(()) => {
             // ADR-0008: `session delete` is one of the events that carry no session id.

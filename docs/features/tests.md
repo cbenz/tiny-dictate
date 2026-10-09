@@ -83,6 +83,9 @@ presenter was asked to draw, the lifecycle of the processes, the exit codes.
   -- runs the transcriber first, writes the transcript and the metadata, and offers the text; a
   transcript that holds no word is reported and runs no transcriber
 - `session delete` removes exactly one session and leaves the others
+- `session delete` refuses the session in flight -- by `last` and by its id -- without removing
+  anything, taking the command lock or signalling the recorder, while an older session still
+  deletes, and the same id deletes normally once the dictation has ended or was killed
 - an unknown id is reported and removes or writes nothing
 - `history` and `transcribe` at the root print the usage and exit non-zero, and so does an unknown
   sub-verb of `session`
