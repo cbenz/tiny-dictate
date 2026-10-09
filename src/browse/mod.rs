@@ -21,11 +21,12 @@ use crossterm::style::{Attribute, SetAttribute};
 use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 
 use crate::config;
+use crate::rescue;
 use crate::session::Runtime;
 use crate::store;
 use crate::text;
 use crate::view::{self, Detail};
-use frame::{List, Pane};
+use frame::{Answer, Confirm, List, Pane};
 
 /// What the status line says when an action is asked for and the list holds nothing to act on.
 const NO_SELECTION: &str = "no session selected";
@@ -41,11 +42,11 @@ pub fn run() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let sessions = Runtime::from_env().sessions_directory();
+    let runtime = Runtime::from_env();
     // The clipboard lease is read once, as a live dictation reads it once: every copy the browser
     // makes carries the same duration as `session copy` and a dictation's paste.
     let config = config::load();
-    let mut browser = Browser::new(sessions, config.clipboard_seconds);
+    let mut browser = Browser::new(runtime, config.clipboard_seconds);
 
     let mut terminal = match Terminal::enter() {
         Ok(terminal) => terminal,
@@ -70,12 +71,18 @@ pub fn run() -> ExitCode {
 }
 
 /// The browser's state between frames: the list, the detail pane that follows its selection, the
-/// status line the last action left, and the sessions directory the two are read from.
+/// status line the last action left, the pending confirmation, and the sessions directory the two
+/// are read from.
 struct Browser {
-    sessions: PathBuf,
+    /// The runtime directory, read for the delete guard: the id the dictation in flight publishes
+    /// and the pidfiles it holds. The browser takes no command lock and signals nothing.
+    runtime: Runtime,
     list: List,
     detail: Option<Detail>,
     pane: Pane,
+    /// The confirmation `d` asked for, while it stands: the status line draws its question and
+    /// only `y` or `n` answers it.
+    confirm: Option<Confirm>,
     /// What the last action did, above the footer; empty until one runs.
     status: String,
     /// The lease every copy carries, read once from the configuration.
@@ -84,31 +91,75 @@ struct Browser {
 
 impl Browser {
     /// A browser on the sessions directory, the selection on the newest session.
-    fn new(sessions: PathBuf, clipboard_seconds: u64) -> Self {
+    fn new(runtime: Runtime, clipboard_seconds: u64) -> Self {
+        let sessions = runtime.sessions_directory();
         let list = List::new(view::rows(&sessions));
         let detail = detail_of(&list, &sessions);
 
         Self {
-            sessions,
+            runtime,
             list,
             detail,
             pane: Pane::new(),
+            confirm: None,
             status: String::new(),
             clipboard_seconds,
         }
     }
 
+    /// The root the kept sessions are read from, and the one a delete removes from.
+    fn sessions(&self) -> PathBuf {
+        self.runtime.sessions_directory()
+    }
+
     /// Follow the selection: the pane is reloaded on the session it now sits on, from its top.
     fn follow(&mut self) {
-        self.detail = detail_of(&self.list, &self.sessions);
+        self.detail = detail_of(&self.list, &self.sessions());
         self.pane.reset();
     }
 
     /// Reload the list, keeping the selection on the same session while it is there; the pane
     /// follows it and keeps its place.
     fn reload(&mut self) {
-        self.list.reload(view::rows(&self.sessions));
-        self.detail = detail_of(&self.list, &self.sessions);
+        self.list.reload(view::rows(&self.sessions()));
+        self.detail = detail_of(&self.list, &self.sessions());
+        self.status.clear();
+    }
+
+    /// `d`: ask whether to destroy the selected session. Nothing is removed until the question is
+    /// answered, and the answer a key gives is decided by the pure `Confirm`.
+    fn ask_delete(&mut self) {
+        let Some(row) = self.list.selected() else {
+            self.status = NO_SELECTION.to_owned();
+            return;
+        };
+
+        self.status.clear();
+        self.confirm = Some(Confirm::ask(&row.id));
+    }
+
+    /// Answer the pending question with `y`: destroy the session it names, through the one guard
+    /// `session delete` takes, then reload the list so the row is gone without leaving the
+    /// browser. A refusal leaves the session on disk and says why on the status line.
+    fn delete(&mut self) {
+        let Some(confirm) = self.confirm.take() else {
+            return;
+        };
+        let id = confirm.id().to_owned();
+
+        match rescue::remove_session(&self.runtime, &id) {
+            Ok(()) => {
+                self.list.reload(view::rows(&self.sessions()));
+                self.follow();
+                self.status = format!("{id} deleted");
+            }
+            Err(refusal) => self.status = format!("{id}: {refusal}"),
+        }
+    }
+
+    /// Answer the pending question with `n`: the browser is where it was, the session untouched.
+    fn keep(&mut self) {
+        self.confirm = None;
         self.status.clear();
     }
 
@@ -146,7 +197,8 @@ impl Browser {
             return (0, 0);
         };
         let (width, height) = (usize::from(width), usize::from(height));
-        let page = height.saturating_sub(2 + usize::from(!self.status.is_empty()));
+        let page = height
+            .saturating_sub(2 + usize::from(self.confirm.is_some() || !self.status.is_empty()));
 
         match (&self.detail, frame::panes(width, height)) {
             (Some(detail), Some((_, pane_width))) => (
@@ -168,7 +220,7 @@ impl Browser {
         };
 
         let transcript =
-            fs::read_to_string(self.sessions.join(&row.id).join(store::TRANSCRIPT_FILE))
+            fs::read_to_string(self.sessions().join(&row.id).join(store::TRANSCRIPT_FILE))
                 .unwrap_or_default();
         if transcript.trim().is_empty() {
             return format!("nothing to copy: {} has no transcript", row.id);
@@ -194,7 +246,7 @@ impl Browser {
         };
 
         offer(
-            &self.sessions.join(&row.id).display().to_string(),
+            &self.sessions().join(&row.id).display().to_string(),
             "path",
             self.clipboard_seconds,
         )
@@ -228,23 +280,43 @@ fn browse(terminal: &mut Terminal, browser: &mut Browser) -> io::Result<()> {
         match event::read()? {
             // A release carries the key that was pressed before it: acting on it would move the
             // selection twice per press wherever the terminal reports releases.
-            Event::Key(key) if key.kind != KeyEventKind::Release => match key.code {
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    return Ok(());
+            Event::Key(key) if key.kind != KeyEventKind::Release => {
+                // A pending confirmation owns the keyboard: only `y` and `n` answer it, and every
+                // other key, `q` included, answers nothing and leaves the question standing, so a
+                // stray key can never destroy a recording.
+                if let Some(confirm) = &browser.confirm {
+                    let answer = match key.code {
+                        KeyCode::Char(character) => confirm.answer(character),
+                        _ => Answer::Nothing,
+                    };
+
+                    match answer {
+                        Answer::Yes => browser.delete(),
+                        Answer::No => browser.keep(),
+                        Answer::Nothing => {}
+                    }
+                    continue;
                 }
-                KeyCode::Char('q') => return Ok(()),
-                KeyCode::Char('r') => browser.reload(),
-                KeyCode::Up | KeyCode::Char('k') => browser.select_previous(),
-                KeyCode::Down | KeyCode::Char('j') => browser.select_next(),
-                KeyCode::Home => browser.select_first(),
-                KeyCode::End => browser.select_last(limit),
-                KeyCode::PageUp => browser.pane.page_up(page),
-                KeyCode::PageDown => browser.pane.page_down(page, limit),
-                KeyCode::Char('c') => browser.status = browser.copy_transcript(),
-                KeyCode::Char('i') => browser.status = browser.copy_id(),
-                KeyCode::Char('p') => browser.status = browser.copy_path(),
-                _ => {}
-            },
+
+                match key.code {
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        return Ok(());
+                    }
+                    KeyCode::Char('q') => return Ok(()),
+                    KeyCode::Char('r') => browser.reload(),
+                    KeyCode::Char('d') => browser.ask_delete(),
+                    KeyCode::Up | KeyCode::Char('k') => browser.select_previous(),
+                    KeyCode::Down | KeyCode::Char('j') => browser.select_next(),
+                    KeyCode::Home => browser.select_first(),
+                    KeyCode::End => browser.select_last(limit),
+                    KeyCode::PageUp => browser.pane.page_up(page),
+                    KeyCode::PageDown => browser.pane.page_down(page, limit),
+                    KeyCode::Char('c') => browser.status = browser.copy_transcript(),
+                    KeyCode::Char('i') => browser.status = browser.copy_id(),
+                    KeyCode::Char('p') => browser.status = browser.copy_path(),
+                    _ => {}
+                }
+            }
             _ => {}
         }
     }
@@ -274,6 +346,7 @@ impl Terminal {
             &browser.list,
             browser.detail.as_ref(),
             &browser.status,
+            browser.confirm.as_ref(),
             browser.pane.scroll(),
             usize::from(width),
             usize::from(height),

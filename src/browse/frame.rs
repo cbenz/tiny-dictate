@@ -17,11 +17,16 @@ const TITLE: &str = "sessions";
 const EMPTY_TITLE: &str = "no kept sessions";
 
 /// The keys that mean something right now, with the detail pane beside the list.
-const FOOTER: &str = "↑/↓ move  PgUp/PgDn scroll  c copy  i id  p path  r reload  q quit";
+const FOOTER: &str = "↑/↓ move  PgUp/PgDn scroll  c copy  i id  p path  d delete  r reload  q quit";
 
 /// The same on a terminal too small for the pane: the page keys mean nothing there, the jump keys
 /// still move the list.
-const NARROW_FOOTER: &str = "↑/↓ move  Home/End jump  c copy  i id  p path  r reload  q quit";
+const NARROW_FOOTER: &str =
+    "↑/↓ move  Home/End jump  c copy  i id  p path  d delete  r reload  q quit";
+
+/// The only two keys a pending confirmation reads: while the question stands, every other key is
+/// ignored, so the footer names these two and nothing else.
+const CONFIRM_FOOTER: &str = "y delete  n cancel";
 
 /// The column between the list and the detail pane.
 pub const SEPARATOR: char = '│';
@@ -166,6 +171,52 @@ impl Default for Pane {
     }
 }
 
+/// What a key answered to a pending confirmation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Answer {
+    /// `y`: destroy the session the question names.
+    Yes,
+    /// `n`: keep the session.
+    No,
+    /// Any other key: the question stands and nothing is decided.
+    Nothing,
+}
+
+/// The pending confirmation: the session a `d` asked about before anything is destroyed.
+///
+/// It holds the id alone, so the question it draws and the answer a key gives are pure functions
+/// of it: what `d` asks is testable without a terminal and without a filesystem.
+pub struct Confirm {
+    id: String,
+}
+
+impl Confirm {
+    /// Ask before destroying the session `id` names.
+    pub fn ask(id: &str) -> Self {
+        Self { id: id.to_owned() }
+    }
+
+    /// The session the question names.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// The line the question draws: the session's id and the two keys that answer it.
+    pub fn question(&self) -> String {
+        format!("delete {}? y/n", self.id)
+    }
+
+    /// What `key` answers: `y` and `n` answer, every other key answers nothing, so the question
+    /// stands until it is answered on purpose.
+    pub fn answer(&self, key: char) -> Answer {
+        match key {
+            'y' => Answer::Yes,
+            'n' => Answer::No,
+            _ => Answer::Nothing,
+        }
+    }
+}
+
 /// The widths the list pane and the detail pane take on a terminal `width` columns by `height`
 /// rows, or `None` when it is too small for both: the pane then gives way and the list keeps the
 /// whole width.
@@ -186,15 +237,23 @@ pub fn panes(width: usize, height: usize) -> Option<(usize, usize)> {
 /// the rest. The list is scrolled so its selection is always visible, the detail pane is windowed
 /// by `scroll`, and the two are drawn side by side. On a terminal too small for both, the pane
 /// gives way and the list keeps the whole width. A line is cut to the pane's width, counting a
-/// wide character as two columns, so the cut never lands inside one.
+/// wide character as two columns, so the cut never lands inside one. A pending `confirm` replaces
+/// the status line with its question: what `d` asked is what the user reads.
 pub fn frame(
     list: &List,
     detail: Option<&Detail>,
     status: &str,
+    confirm: Option<&Confirm>,
     scroll: usize,
     width: usize,
     height: usize,
 ) -> Frame {
+    // The question a pending confirmation asks takes the status line, so a stale action's line
+    // never sits under the keys that would answer it.
+    let status = match confirm {
+        Some(confirm) => confirm.question(),
+        None => status.to_owned(),
+    };
     let capacity = height.saturating_sub(2 + usize::from(!status.is_empty()));
     let split = detail.and_then(|_| panes(width, height));
     let list_width = split.map_or(width, |(list_width, _)| list_width);
@@ -238,12 +297,12 @@ pub fn frame(
         lines,
         pane,
         list_width: split.map_or(0, |(list_width, _)| list_width),
-        status: truncate(status, width),
+        status: truncate(&status, width),
         footer: truncate(
-            if split.is_some() {
-                FOOTER
-            } else {
-                NARROW_FOOTER
+            match confirm {
+                Some(_) => CONFIRM_FOOTER,
+                None if split.is_some() => FOOTER,
+                None => NARROW_FOOTER,
             },
             width,
         ),
@@ -464,7 +523,7 @@ mod tests {
     fn a_status_line_sits_above_the_footer_and_takes_one_row_from_the_list() {
         let list = List::new(vec![row("d"), row("c"), row("b"), row("a")]);
 
-        let frame = frame(&list, None, "id copied to the clipboard", 0, 80, 5);
+        let frame = frame(&list, None, "id copied to the clipboard", None, 0, 80, 5);
 
         // The title and the footer take a line each, the status line one more: two rows fit.
         assert_eq!(frame.status, "id copied to the clipboard");
@@ -474,10 +533,42 @@ mod tests {
     }
 
     #[test]
+    fn a_delete_asks_before_destroying_and_only_y_and_n_answer() {
+        let confirm = Confirm::ask("2026-10-09T10-00-00");
+
+        assert_eq!(confirm.id(), "2026-10-09T10-00-00");
+        assert_eq!(confirm.question(), "delete 2026-10-09T10-00-00? y/n");
+        assert_eq!(confirm.answer('y'), Answer::Yes);
+        assert_eq!(confirm.answer('n'), Answer::No);
+        assert_eq!(confirm.answer('x'), Answer::Nothing);
+        assert_eq!(confirm.answer('q'), Answer::Nothing);
+        assert_eq!(confirm.answer(' '), Answer::Nothing);
+    }
+
+    #[test]
+    fn the_pending_question_takes_the_status_line_of_the_frame() {
+        let list = List::new(vec![row("2026-10-09T10-00-00")]);
+        let confirm = Confirm::ask("2026-10-09T10-00-00");
+
+        let frame = frame(
+            &list,
+            None,
+            "id copied to the clipboard",
+            Some(&confirm),
+            0,
+            80,
+            5,
+        );
+
+        assert_eq!(frame.status, "delete 2026-10-09T10-00-00? y/n");
+        assert_eq!(frame.footer, "y delete  n cancel");
+    }
+
+    #[test]
     fn a_frame_without_a_status_draws_no_status_line_and_keeps_the_whole_height_for_the_rows() {
         let list = List::new(vec![row("d"), row("c"), row("b"), row("a")]);
 
-        let frame = frame(&list, None, "", 0, 80, 5);
+        let frame = frame(&list, None, "", None, 0, 80, 5);
 
         assert!(frame.status.is_empty());
         assert_eq!(frame.lines.len(), 3);
@@ -487,7 +578,7 @@ mod tests {
     fn a_frame_lists_one_line_per_session_newest_first_with_the_first_selected() {
         let list = List::new(vec![row("2026-10-09T17-00-00"), row("2026-10-08T17-00-00")]);
 
-        let frame = frame(&list, None, "", 0, 80, 24);
+        let frame = frame(&list, None, "", None, 0, 80, 24);
 
         assert_eq!(frame.title, "sessions");
         assert_eq!(frame.lines.len(), 2);
@@ -541,7 +632,7 @@ mod tests {
     fn an_empty_history_is_an_empty_list_and_not_an_error() {
         let list = List::new(Vec::new());
 
-        let frame = frame(&list, None, "", 0, 80, 24);
+        let frame = frame(&list, None, "", None, 0, 80, 24);
 
         assert_eq!(frame.title, "no kept sessions");
         assert!(frame.lines.is_empty());
@@ -554,7 +645,7 @@ mod tests {
         list.select_last();
 
         // The title and the footer take a line each: one row is all a three-line terminal holds.
-        let frame = frame(&list, None, "", 0, 80, 3);
+        let frame = frame(&list, None, "", None, 0, 80, 3);
 
         assert_eq!(frame.lines.len(), 1);
         assert_eq!(frame.lines[0].text, "> a  0:01  transcribed  hello");
@@ -571,7 +662,7 @@ mod tests {
         }]);
 
         // "> c  0:00  x  日本" is 18 columns; at 17 the second ideograph does not fit whole.
-        let frame = frame(&list, None, "", 0, 17, 24);
+        let frame = frame(&list, None, "", None, 0, 17, 24);
 
         assert_eq!(frame.lines[0].text, "> c  0:00  x  日");
         assert!(UnicodeWidthStr::width(frame.lines[0].text.as_str()) <= 17);
@@ -726,9 +817,9 @@ mod tests {
         let detail = detail("hello");
 
         // Too short: the title, the footer and two body rows are the least two panes need.
-        let short = frame(&list, Some(&detail), "", 0, 100, 3);
+        let short = frame(&list, Some(&detail), "", None, 0, 100, 3);
         // Too narrow: the list pane may not go below 40 columns.
-        let narrow = frame(&list, Some(&detail), "", 0, 40, 24);
+        let narrow = frame(&list, Some(&detail), "", None, 0, 40, 24);
 
         for frame in [&short, &narrow] {
             assert!(frame.pane.is_empty());
@@ -748,7 +839,7 @@ mod tests {
         let newest = detail("newer text");
         let oldest = detail("older text");
 
-        let first = frame(&list, Some(&newest), "", 0, 100, 10);
+        let first = frame(&list, Some(&newest), "", None, 0, 100, 10);
 
         assert_eq!(first.list_width, 66);
         assert_eq!(first.lines.len(), 8);
@@ -758,7 +849,7 @@ mod tests {
 
         // The selection moves: the pane is reloaded on the row it now sits on.
         list.select_next();
-        let second = frame(&list, Some(&oldest), "", 0, 100, 10);
+        let second = frame(&list, Some(&oldest), "", None, 0, 100, 10);
 
         assert!(second.pane.iter().any(|line| line == "older text"));
         assert!(!second.pane.iter().any(|line| line == "newer text"));
