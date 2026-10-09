@@ -27,7 +27,7 @@ dictation — a headset came or went — is the source set, and the source recor
 | command | why |
 |---------|-----|
 | `pactl list sources` | read the source's `Base Volume:` line |
-| `pactl set-source-volume @DEFAULT_SOURCE@ <raw>` | write the base back |
+| `pactl set-source-volume @DEFAULT_SOURCE@ <raw>` | write the base back, or the configured percentage when the server publishes none |
 | `pactl set-source-mute @DEFAULT_SOURCE@ 0` | unmute the source |
 
 The base is read raw and written raw: `pactl list sources` prints it as
@@ -42,11 +42,19 @@ no configuration key guards it, because a tool that cannot take the microphone c
 ## When the server answers badly
 
 `pactl`'s output is parsed, not trusted, and an unreadable answer is a normal outcome rather than an
-error. A server that answers without a base volume line, or with a line the parser cannot read,
-leaves the level alone: no volume is written, the source is still unmuted, and one log line says
-why. A server that cannot be reached at all — no `pactl` on `PATH`, no server running — writes
-nothing either, and the dictation runs as usual: a missing audio server command never costs a
-dictation.
+error. A server that answers without a base volume line, or with a line the parser cannot read, is
+answered with the configured [`input_level_pct`](configuration.md) — written as a percentage — so the
+recording never starts at the level the user last left it at. The key is never the target: when the
+server publishes a base, that raw value is what is written. The source is unmuted all the same, so a
+bad answer from the server is never silence, and never a refusal.
+
+A server that cannot be reached at all — no `pactl` on `PATH`, no server running — writes nothing:
+no volume and no unmute command are attempted, one log line says so, and the dictation records as
+usual. A missing audio server command never costs a dictation.
+
+A percentage is a stand-in for a base the server would not publish, not a level the user prefers: it
+gives a different gain on every machine, which is exactly why it is the fallback and not the target
+([ADR-0014](../adr/0014-the-microphone-at-its-base-volume.md)).
 
 ## The journal
 
@@ -56,7 +64,7 @@ One line per dictation says what became of the level, and it carries the session
 | line | event |
 |------|-------|
 | `microphone set to base volume <raw>` | the default source was set to the base the server published |
-| `microphone left at its level: no base volume published` | the server answered without a readable base |
+| `microphone set to input level <pct>%: no readable base volume` | the server answered without a base the parser could read, and the configured level stood in |
 | `microphone left at its level: no audio server answered` | `pactl` could not be run, or did not answer |
 
 ## Decisions

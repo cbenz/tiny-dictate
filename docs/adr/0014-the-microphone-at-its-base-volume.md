@@ -17,4 +17,5 @@ pipewire-pulse does.
 
 The change persists: WirePlumber writes it to `default-routes` and reapplies it at boot, so the tool
 leaves a durable mark on the machine. The base is read as the raw value on `pactl`'s `Base Volume:`
-line, and `input_level_pct` (10 by default) stands in only when that line is missing.
+line, and `input_level_pct` (10 by default) stands in only when that line is missing or the parser
+cannot read it.
