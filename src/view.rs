@@ -24,6 +24,12 @@ const NONE: &str = "-";
 /// What a row shows where the view knows nothing: a session whose metadata cannot be read.
 const UNKNOWN: &str = "?";
 
+/// What a session whose metadata cannot be read says, wherever it is shown.
+const METADATA_UNREADABLE: &str = "the metadata cannot be read";
+
+/// What a session holding no word of transcript says, wherever it is shown.
+const NO_TRANSCRIPT: &str = "no transcript";
+
 /// One row of the listing: `<id>  <duration>  <outcome>  <summary>`.
 pub struct Row {
     /// The session's id: the name of the directory it lives in.
@@ -151,27 +157,51 @@ impl Detail {
     }
 }
 
-impl fmt::Display for Detail {
-    /// The fields, one per line, then the transcript -- or what the session has instead of one.
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for field in &self.fields {
-            writeln!(
-                formatter,
-                "{:<width$}  {}",
-                field.label,
-                field.value,
-                width = LABEL_WIDTH
-            )?;
-        }
+impl Detail {
+    /// The detail as the lines every surface renders: the fields in their one order, the verdict
+    /// when the metadata cannot be read, then the transcript -- or what the session has instead of
+    /// one. The command line prints them as they are; the browser's pane wraps and scrolls them.
+    pub fn lines(&self) -> Vec<String> {
+        let mut lines: Vec<String> = self
+            .fields
+            .iter()
+            .map(|field| {
+                format!(
+                    "{:<width$}  {}",
+                    field.label,
+                    field.value,
+                    width = LABEL_WIDTH
+                )
+            })
+            .collect();
 
         if !self.metadata_reads {
-            writeln!(formatter, "the metadata cannot be read")?;
+            lines.push(METADATA_UNREADABLE.to_owned());
         }
 
+        lines.push(String::new());
+
         match &self.transcript {
-            Some(text) => write!(formatter, "\n{text}"),
-            None => write!(formatter, "\nno transcript"),
+            Some(text) => lines.extend(text.lines().map(str::to_owned)),
+            None => lines.push(NO_TRANSCRIPT.to_owned()),
         }
+
+        lines
+    }
+}
+
+impl fmt::Display for Detail {
+    /// The lines every surface renders, one per line, and no trailing blank one. Both this and the
+    /// browser's pane come from `lines`, so the two surfaces cannot drift.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (index, line) in self.lines().iter().enumerate() {
+            if index > 0 {
+                writeln!(formatter)?;
+            }
+            write!(formatter, "{line}")?;
+        }
+
+        Ok(())
     }
 }
 
@@ -292,6 +322,60 @@ mod tests {
         }
 
         root
+    }
+
+    #[test]
+    fn the_detail_lines_are_the_fields_the_blank_line_and_the_transcript() {
+        let detail = Detail {
+            fields: vec![
+                Field {
+                    label: "id",
+                    value: "2026-10-07T19-05-22".to_owned(),
+                },
+                Field {
+                    label: "path",
+                    value: "/sessions/2026-10-07T19-05-22".to_owned(),
+                },
+            ],
+            metadata_reads: true,
+            transcript: Some("hello\nworld".to_owned()),
+        };
+
+        assert_eq!(
+            detail.lines(),
+            [
+                "id           2026-10-07T19-05-22",
+                "path         /sessions/2026-10-07T19-05-22",
+                "",
+                "hello",
+                "world",
+            ]
+        );
+        assert_eq!(detail.to_string(), detail.lines().join("\n"));
+    }
+
+    #[test]
+    fn the_detail_lines_carry_the_verdict_and_the_missing_transcript_where_the_surfaces_show_them()
+    {
+        let detail = Detail {
+            fields: vec![Field {
+                label: "id",
+                value: "2026-10-07T19-05-22".to_owned(),
+            }],
+            metadata_reads: false,
+            transcript: None,
+        };
+
+        assert_eq!(
+            detail.lines(),
+            [
+                "id           2026-10-07T19-05-22",
+                "the metadata cannot be read",
+                "",
+                "no transcript",
+            ]
+        );
+        assert_eq!(detail.to_string(), detail.lines().join("\n"));
     }
 
     #[test]
