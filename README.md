@@ -84,9 +84,9 @@ The full page is [`docs/features/configuration.md`](docs/features/configuration.
 
 ### Waybar module (optional)
 
-`contrib/waybar/tiny-dictate-module.jsonc` puts the dictation state in the bar: the module reads the
-session state file, maps the word it holds to an icon, a tooltip and a CSS class, and treats a
-missing file as idle. A click runs `tiny-dictate toggle`.
+`contrib/waybar/tiny-dictate-module.jsonc` puts the dictation state in the bar: `tiny-dictate status`
+prints `idle` or `working`, and the module maps either to an icon, a tooltip and a CSS class. A click
+runs `tiny-dictate toggle`.
 
 ```bash
 cp contrib/waybar/tiny-dictate-module.jsonc ~/.config/waybar/
