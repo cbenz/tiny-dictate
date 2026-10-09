@@ -89,7 +89,7 @@ fi
 # The absolute path is required, otherwise exec would re-enter this very stub.
 # Caveat: the null device is not clocked, it produces data as fast as it is read, hence
 # the trick in the lame stub below.
-printf '%s\\n' "arecord stub pid=\$$ args=\$*" >> "\$WORK/arecord-report"
+printf '%s\\n' "arecord stub pid=\$$ args=\$* at \$(date +%s.%N)" >> "\$WORK/arecord-report"
 exec "$REAL_ARECORD" -D null "\$@"
 STUB
 
@@ -262,21 +262,30 @@ printf '%s\n' "$(cat "$WORK/clipboard" 2>/dev/null)" >> "$WORK/clipboard-at-chor
 exit 0
 STUB
 
-cat > "$BIN/wpctl" <<'STUB'
-#!/usr/bin/env bash
-[ -n "${MIC_MUTED:-}" ] && { echo "Volume: 0.50 [MUTED]"; exit 0; }
-echo "Volume: 0.50"
-STUB
-
 cat > "$BIN/pactl" <<'STUB'
 #!/usr/bin/env bash
-[ -n "${MIC_MUTED:-}" ] && { echo "Mute: yes"; exit 0; }
-echo "Mute: no"
-STUB
-
-cat > "$BIN/amixer" <<'STUB'
-#!/usr/bin/env bash
-echo "[on]"
+# Stand-in for the audio server's control command, the only command the microphone module runs.
+# `list sources` publishes the source's base volume (PACTL_NO_BASE omits it) and its mute state
+# (PACTL_MUTED reports it as muted). Every call is logged with the instant it was made, so the
+# suite can check which commands ran, with which arguments, and in which order against the
+# recorder. `get-source-mute` and `get-source-volume` stay answered because they are the probes a
+# tool that checks before writing would run: the muted-source case asserts that only `set-` calls
+# were made.
+printf 'pactl %s at %s\n' "$*" "$(date +%s.%N)" >> "$WORK/pactl.log"
+case "$1" in
+    list)
+        printf 'Source #0\n'
+        [ -n "${PACTL_MUTED:-}" ] && printf '\tMute: yes\n'
+        [ -z "${PACTL_NO_BASE:-}" ] && printf '\tBase Volume: 6554 / 10%% / -60.00 dB\n'
+        ;;
+    get-source-mute)
+        [ -n "${PACTL_MUTED:-}" ] && echo "Mute: yes" || echo "Mute: no"
+        ;;
+    get-source-volume)
+        echo "Volume: front-left: 32768 / 50% / -30.00 dB"
+        ;;
+esac
+exit 0
 STUB
 
 # The build toolchain `install.sh` drives and checks: a `cargo` that fakes the release binary it
@@ -478,6 +487,7 @@ reset_run() {
     : > "$WORK/events.log"
     : > "$WORK/ydotool.log"
     : > "$WORK/clipboard-at-chord"
+    : > "$WORK/pactl.log"
     : > "$WORK/wl-copy.log"
     : > "$WORK/wl-copy-parent.log"
     rm -f "$WORK/transcribe-size" "$WORK/transcribe-received" "$WORK/clipboard" \
@@ -705,6 +715,29 @@ no_waveform_channel_process() {
 }
 
 session_dir_gone() { [ ! -e "$RUN/tiny-dictate/session" ]; }
+
+# ─────────────────────── the microphone, at the process seam ───────────────────────
+
+# One `pactl` command, with its arguments, was run: the stub logs every call it answered.
+pactl_called() { # pactl_called <command line>
+    grep -qF "pactl $1 at " "$WORK/pactl.log"
+}
+
+# How many times one `pactl` command ran.
+pactl_calls() { # pactl_calls <command>
+    grep -c "^pactl $1 " "$WORK/pactl.log" 2>/dev/null || true
+}
+
+# The source was set before the recorder opened: both stubs stamp their lines with the instant they
+# ran, so the two are comparable.
+source_written_before_recorder() {
+    local written recorded
+
+    written="$(awk '/^pactl set-source-volume/{print $NF}' "$WORK/pactl.log" | tail -1)"
+    recorded="$(awk '/^arecord stub/{print $NF}' "$WORK/arecord-report" | tail -1)"
+    [ -n "$written" ] && [ -n "$recorded" ] &&
+        awk -v written="$written" -v recorded="$recorded" 'BEGIN { exit !(written < recorded) }'
+}
 
 # ─────────────────────── the journal, on stderr ───────────────────────
 
@@ -1086,6 +1119,75 @@ test_cancel_during_transcription() {
     check "session directory removed" session_dir_gone
 }
 
+# The default source is set before the recorder opens: the tool reads the base volume the audio
+# server publishes, writes it back raw, unmutes the source and says so in one line naming the
+# session ([ADR-0014](../adr/0014-the-microphone-at-its-base-volume.md)).
+test_microphone_base_volume() {
+    start_test "the default source is set to its base volume before the recorder opens"
+    td start 2>> "$JOURNAL"
+    sleep 0.4
+    check "the base volume is read from the server" pactl_called "list sources"
+    check "the base volume is written back raw" \
+        pactl_called "set-source-volume @DEFAULT_SOURCE@ 6554"
+    check "the level is written before the recorder opens" source_written_before_recorder
+    check "the dictation is recording" [ "$(td status)" = "working" ]
+    td stop 2>> "$JOURNAL"
+    check "session finishes" wait_idle
+    check "transcription pasted" [ "$(pasted_text)" = "text transcribed" ]
+
+    local id
+    id="$(basename "$(single_session_dir)")"
+    check "one line names the level it set and the session" \
+        journal_line_names_session "$id" 'microphone set to base volume 6554'
+    check "the level is set once for the dictation" [ "$(pactl_calls set-source-volume)" -eq 1 ]
+    check "no presentation left behind" presenter_left
+    check "no leftover process" no_leftover_process
+    check "session directory removed" session_dir_gone
+}
+
+# A source the server publishes as muted is no longer a refusal: the tool unmutes it and dictates,
+# and it never reads the mute state to decide anything ([ADR-0014](../adr/0014-the-microphone-at-its-base-volume.md)).
+test_microphone_muted_source_records() {
+    start_test "a muted source is unmuted instead of refused"
+    PACTL_MUTED=1 td start 2>> "$JOURNAL"
+    sleep 0.4
+    check "the dictation is recording, muted or not" [ "$(td status)" = "working" ]
+    check "the source is unmuted" pactl_called "set-source-mute @DEFAULT_SOURCE@ 0"
+    check "the mute state is never read" \
+        bash -c '! grep -q "^pactl get-source-mute" "$1"' _ "$WORK/pactl.log"
+    check "the base volume is still set" \
+        pactl_called "set-source-volume @DEFAULT_SOURCE@ 6554"
+    td stop 2>> "$JOURNAL"
+    check "session finishes" wait_idle
+    check "transcription pasted" [ "$(pasted_text)" = "text transcribed" ]
+    check "nothing was notified" no_notification_at_all
+    check "no muted refusal was logged" journal_lacks 'the microphone is muted'
+    check "no leftover process" no_leftover_process
+    check "session directory removed" session_dir_gone
+}
+
+# A server that answers but publishes no base volume is not silence: the level is left alone and
+# the journal says why, and the source is unmuted all the same.
+test_microphone_without_a_base_volume() {
+    start_test "a server that publishes no base volume leaves the level alone"
+    PACTL_NO_BASE=1 td start 2>> "$JOURNAL"
+    sleep 0.4
+    check "the server was asked" pactl_called "list sources"
+    check "no volume is written" \
+        bash -c '! grep -q "^pactl set-source-volume" "$1"' _ "$WORK/pactl.log"
+    check "the source is still unmuted" pactl_called "set-source-mute @DEFAULT_SOURCE@ 0"
+    td stop 2>> "$JOURNAL"
+    check "session finishes" wait_idle
+    check "transcription pasted" [ "$(pasted_text)" = "text transcribed" ]
+
+    local id
+    id="$(basename "$(single_session_dir)")"
+    check "one line names the session and why nothing was set" \
+        journal_line_names_session "$id" 'microphone left at its level: no base volume published'
+    check "no leftover process" no_leftover_process
+    check "session directory removed" session_dir_gone
+}
+
 test_second_start_refused() {
     start_test "a second start is refused while recording"
     td start
@@ -1096,6 +1198,8 @@ test_second_start_refused() {
         grep -q "tiny-dictate: $(cat "$RUN/tiny-dictate/session/session.id"): failure: already busy" \
         "$WORK/second-start.err"
     check "recording still running" [ "$(td status)" = "working" ]
+    check "the refused start wrote nothing to the source" \
+        [ "$(pactl_calls set-source-volume)" -eq 1 ]
     td cancel
     check "session finishes" wait_idle
     check "no presentation left behind" presenter_left
@@ -2217,6 +2321,9 @@ run_test test_default_commands
 run_test test_cancel
 run_test test_chain_after_cancel
 run_test test_cancel_during_transcription
+run_test test_microphone_base_volume
+run_test test_microphone_muted_source_records
+run_test test_microphone_without_a_base_volume
 run_test test_second_start_refused
 run_test test_command_lock
 run_test test_toggle_during_transcription

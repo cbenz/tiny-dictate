@@ -1,51 +1,92 @@
-//! Whether the default source is muted.
+//! The audio server's default source: the base volume it publishes and the mute state the tool
+//! clears.
 //!
-//! Best effort, like the shell: three probes, each optional, and an unreadable answer means "not
-//! muted", so a dictation is never refused on a guess.
+//! `pactl` is the only command this module runs. It publishes the base volume — the level at which
+//! the server adds no gain, the neutral point of that machine's hardware — and it clears the mute
+//! state of the same source. The tool sets the default source to that base and unmutes it before
+//! every dictation, after the claim and before the recorder opens, so the level the recorder gets
+//! is the level the server was told
+//! ([ADR-0014](../../docs/adr/0014-the-microphone-at-its-base-volume.md)).
 
-use std::process::Command;
+use std::process::{Command, Output};
 
-/// Whether the default source is muted.
-pub fn muted() -> bool {
-    if let Ok(output) = Command::new("wpctl")
-        .args(["get-volume", "@DEFAULT_AUDIO_SOURCE@"])
+use crate::log;
+
+/// The source the recorder opens: the ALSA `default` PCM routes to it, so setting it is setting
+/// the level recorded.
+const SOURCE: &str = "@DEFAULT_SOURCE@";
+
+/// Put the default source at its base volume and unmute it, and say so in one line naming the
+/// session.
+///
+/// Called once per dictation, after the claim and once the durable session exists: the claim is
+/// the exclusive hold on the microphone, and touching the source while another dictation records
+/// would disturb it ([ADR-0009](../../docs/adr/0009-the-claim.md)). Best effort, like the shell: a
+/// server that answers badly leaves the level alone and one line says why, and a server that
+/// cannot be reached writes nothing at all — a dictation is never refused on it.
+pub fn set_base_volume(session_id: &str) {
+    let Some(sources) = list_sources() else {
+        log::line(
+            Some(session_id),
+            "microphone left at its level: no audio server answered",
+        );
+        return;
+    };
+
+    if let Some(raw) = base_volume(&sources) {
+        set_source_volume(&raw);
+        log::line(
+            Some(session_id),
+            &format!("microphone set to base volume {raw}"),
+        );
+    } else {
+        log::line(
+            Some(session_id),
+            "microphone left at its level: no base volume published",
+        );
+    }
+
+    unmute();
+}
+
+/// Run one `pactl` command, its output captured so a server that fails cannot chatter in the
+/// journal. `None` when the command cannot be run or answers non-zero.
+fn pactl(arguments: &[&str]) -> Option<Output> {
+    Command::new("pactl")
+        .args(arguments)
         .output()
-    {
-        let text = String::from_utf8_lossy(&output.stdout);
-        if !text.trim().is_empty() {
-            return text.contains("[MUTED]");
-        }
-    }
+        .ok()
+        .filter(|output| output.status.success())
+}
 
-    if let Ok(output) = Command::new("pactl")
-        .args(["get-source-mute", "@DEFAULT_SOURCE@"])
-        .output()
-    {
-        let text = String::from_utf8_lossy(&output.stdout);
-        if text.contains("Mute: yes") {
-            return true;
-        }
-        if text.contains("Mute: no") {
-            return false;
-        }
-    }
+/// What `pactl list sources` publishes about the sources.
+fn list_sources() -> Option<String> {
+    let output = pactl(&["list", "sources"])?;
 
-    for control in ["Capture", "Mic"] {
-        if let Ok(output) = Command::new("amixer")
-            .args(["-D", "default", "sget", control])
-            .output()
-        {
-            let text = String::from_utf8_lossy(&output.stdout);
-            if !text.trim().is_empty() {
-                if text.contains("[on]") {
-                    return false;
-                }
-                if text.contains("[off]") {
-                    return true;
-                }
-            }
-        }
-    }
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
 
-    false
+/// The raw value on the `Base Volume:` line, e.g. `6554` on
+/// `Base Volume: 6554 / 10% / -60.00 dB`.
+///
+/// Read raw and written raw, with no round trip through the rounded percentage or the dB string.
+/// The shape of the line varies with the server version, so an absent, empty or non-numeric value
+/// is `None` rather than an error.
+fn base_volume(sources: &str) -> Option<String> {
+    sources
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("Base Volume:"))
+        .and_then(|value| value.split_whitespace().next())
+        .filter(|raw| !raw.is_empty() && raw.bytes().all(|byte| byte.is_ascii_digit()))
+        .map(str::to_owned)
+}
+
+fn set_source_volume(raw: &str) {
+    let _ = pactl(&["set-source-volume", SOURCE, raw]);
+}
+
+/// Clear the source's mute state. Unconditional: no configuration key guards it, because a tool
+/// that cannot take the microphone cannot dictate.
+fn unmute() {
+    let _ = pactl(&["set-source-mute", SOURCE, "0"]);
 }

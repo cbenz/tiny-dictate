@@ -35,7 +35,7 @@ suite loudly rather than silently test nothing.
 Every command the tool runs is written into a temporary `bin` directory prepended to `PATH`: a
 recorder that installs a real `SIGINT` handler on the ALSA null device, an encoder that writes a
 plausible amount of audio slowly, a transcriber, a presenter that leaves by the three doors the real
-one has, `notify-send`, `wl-copy`, `wl-paste`, `ydotool`, and the microphone mute probes.
+one has, `notify-send`, `wl-copy`, `wl-paste`, `ydotool`, and the audio server's `pactl`.
 Assertions are made on the state file, on a log of the events the stubs appended to, and on `pgrep`
 for process lifetimes.
 
@@ -51,6 +51,9 @@ presenter was asked to draw, the lifecycle of the processes, the exit codes.
 - the normal flow: start, record, stop, paste
 - the waveform channel carries the recording to the pill, and hands the pill the waveform file and
   the command to run
+- the default source of the audio server is set to the base volume it publishes before the recorder
+  opens, the source is unmuted instead of refused, and the level is left alone when the server
+  answers without a base volume
 - a waveform meter that dies mid-recording does not end the recording: the guarantee the `tee -p`
   pipeline used to carry, kept as a regression scenario even though the in-process slicer no longer
   calls the stub the scenario breaks
