@@ -30,6 +30,32 @@ pub fn session_list() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// `session show <id|last>`: one kept session read in full -- the fields every surface shows it by,
+/// its path, and its transcript.
+///
+/// It reads files and nothing else: no encoder, no clipboard tool, no microphone.
+pub fn session_show(target: &str) -> ExitCode {
+    let runtime = Runtime::from_env();
+    let sessions = runtime.sessions_directory();
+
+    let Some(id) = store::resolve_id(&sessions, target) else {
+        return unknown_session(target);
+    };
+
+    let detail = view::Detail::read(&sessions, &id);
+    println!("{detail}");
+
+    if detail.metadata_reads {
+        return ExitCode::SUCCESS;
+    }
+
+    // The listing can always show a `?` row, but a command asked to read one session and unable
+    // to read it fails. The block above already says what could not be read; this is the log line,
+    // named by the session (ADR-0008).
+    log::line(Some(&id), "cannot read the session's metadata");
+    ExitCode::FAILURE
+}
+
 /// `session transcribe <id|last> [--print]`: run the transcriber again on a kept session, rewrite
 /// `transcript.txt` and its metadata, then offer the text on the clipboard -- or print it.
 ///
