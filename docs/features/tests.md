@@ -71,6 +71,10 @@ presenter was asked to draw, the lifecycle of the processes, the exit codes.
 - `session list` prints the kept sessions newest first, with the id, the human duration, the
   outcome and the first words of the transcript or the error, and shows a session whose metadata
   cannot be read as a row of `?` instead of skipping it
+- `session show` prints the fields of one session -- the id, the path, the outcome, the started,
+  the ended, the human duration, the audio bytes, the pasted flag, the transcriber and the error --
+  then its transcript, and says so when the session holds no transcript or its metadata cannot be
+  read
 - `session transcribe last` re-runs the transcriber, rewrites the transcript and the raw response,
   and copies the text to the clipboard, saying so
 - `session transcribe --print` writes the text to stdout and touches no clipboard
@@ -100,7 +104,7 @@ pure functions the seam cannot see are unit-tested instead: the pill's frame com
 waveform, limit and elapsed time in, what to draw out, including the three bands of the progress
 bar), the prune selection (a list of sessions in, the ones to remove out, sharing one listing with
 `session list` and `last`), and, for the session surface, reading the metadata back, resolving a
-`<id|last>` argument, the human duration and the row of the listing.
+`<id|last>` argument, the human duration, the row of the listing and the fields of the detail.
 
 ## Decisions
 

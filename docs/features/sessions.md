@@ -55,6 +55,15 @@ be read is a row of its own, its id and `?` where the other fields would be, rat
 line: it is exactly the session `session delete` can remove. The line is plain text on stdout, and
 `session list` reads nothing but the sessions directory. `tiny-dictate session` on its own is the
 same listing.
+- `tiny-dictate session show <id|last>` reads one session in full: its fields, one per line, then
+  its transcript. The fields are the shared view's, in the one order every surface renders them --
+  `id`, `path`, `outcome`, `started`, `ended`, `duration`, `audio bytes`, `pasted`, `transcriber`,
+  `error` -- so this command and the browser's pane cannot drift. `duration` is the human one,
+  `started` and `ended` are the raw epoch seconds `metadata.json` holds, `pasted` reads `yes` or
+  `no`, and a field the session has nothing for is `-`. A session that holds no word of transcript
+  says `no transcript` rather than printing an empty block; a directory whose metadata cannot be
+  read prints its id and its path, says the metadata cannot be read, and exits non-zero. The
+  command reads files only: no encoder, no clipboard tool, no microphone.
 - `tiny-dictate session transcribe <id|last> [--print]` runs the transcriber command again on the
   session's `audio.mp3`, with the same contract a live dictation uses: `$1` the audio, `$2` the
 session directory, the text on stdout, the error on stderr. It rewrites `transcript.txt` and the
@@ -71,7 +80,7 @@ live at the root, and they are unknown arguments now. `last` is the newest sessi
 kept session answers to is reported on stderr, exits non-zero, and removes or writes nothing.
 
 Every one of those surfaces reads the session through the same view, one module that owns the row of
-the listing and the human duration, so the surfaces cannot drift apart.
+the listing, the fields of the detail and the human duration, so the surfaces cannot drift apart.
 
 ## What survives
 
