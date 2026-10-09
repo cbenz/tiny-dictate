@@ -85,10 +85,10 @@ impl Runtime {
     /// Whether a dictation is in flight: its session process or its recorder lives.
     ///
     /// The `working` state covers both recording and transcribing, so either pidfile being
-    /// alive is enough.
+    /// alive is enough. The pidfiles come from `Paths`, so renaming one stays a one-place edit.
     pub fn dictating(&self) -> bool {
-        pidfile_lives(&self.session_directory().join("session.pid"))
-            || pidfile_lives(&self.session_directory().join("arecord.pid"))
+        let paths = self.paths();
+        pidfile_lives(&paths.session_pid) || pidfile_lives(&paths.recorder_pid)
     }
 }
 
@@ -116,6 +116,8 @@ pub struct Paths {
     pub recorder_error: PathBuf,
     /// The encoder's stderr.
     pub encoder_error: PathBuf,
+    /// The presenter's stderr.
+    pub presenter_error: PathBuf,
     /// The transcriber's stderr.
     pub transcribe_error: PathBuf,
 }
@@ -132,6 +134,7 @@ impl Paths {
             waveform: session.join("waveform"),
             recorder_error: session.join("arecord.err"),
             encoder_error: session.join("lame.err"),
+            presenter_error: session.join("presenter.err"),
             transcribe_error: session.join("transcribe.err"),
             session,
         }

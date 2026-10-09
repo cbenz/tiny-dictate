@@ -42,11 +42,11 @@ The session kills the encoder with `SIGTERM` if it is still alive, waits out `VE
 down. Taking it down writes `stop` into the state file, waits — bounded — for the presenter to leave,
 and kills it if it is wedged.
 
-A new dictation does not wait that second out. `claim_session` reads the `cancelled` verdict, asks
-the session to wrap up with `SIGUSR1`, and waits, bounded, for it to be gone. The session traps the
-signal, cuts the dwell short, stops the presenter and removes its directory; the claim is then free
-and the new dictation records. `start` and `toggle` both take that path, so pressing the shortcut
-again right after a cancel records immediately.
+A new dictation does not wait that second out. `claim::claim` (`src/claim.rs`) reads the `cancelled`
+verdict, asks the session to wrap up with `SIGUSR1`, and waits, bounded, for it to be gone. The
+session traps the signal, cuts the dwell short, stops the presenter and removes its directory; the
+claim is then free and the new dictation records. `start` and `toggle` both take that path, so
+pressing the shortcut again right after a cancel records immediately.
 
 `SIGUSR1` is sent only to a session that has already been cancelled, never by `cancel` itself, and
 never to a session that is recording or transcribing.

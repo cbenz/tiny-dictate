@@ -8,7 +8,7 @@ The runtime directory of the dictation in flight *is* the claim on the microphon
 can never run at once, whatever the two commands do. There is no lockfile to read, no pid to check
 first, and no window between the test and the take.
 
-`claim_session` therefore has three outcomes:
+`claim::claim` (`src/claim.rs`) therefore has three outcomes:
 
 1. `mkdir` succeeds: the microphone is ours.
 2. The directory exists and holds the `cancelled` verdict: a cancelled session is waiting out its
@@ -18,7 +18,8 @@ first, and no window between the test and the take.
    the session process nor the recorder recorded in its pidfiles is alive. A stale directory (a
    session killed by a signal, a crash) can be reclaimed; a live one never.
 
-When the claim cannot be taken, `start` prints `tiny-dictate is already busy` on stderr, exits
+When the claim cannot be taken, `start` writes `failure: already busy` to the journal — the full
+line is `tiny-dictate: <id>: failure: already busy`, naming the session it collided with — exits
 non-zero, and notifies nothing: the running session's pill already shows what is going on. The pill
 never writes the state file — the session and `cancel`'s verdict are its only writers — and it is
 the only writer of the screen.
@@ -49,9 +50,9 @@ keep them:
 
 ## Stale claims and cleanup
 
-`session_cleanup` removes the directory only when the pidfile still holds the session's own
-`$BASHPID`. A newer session may have reclaimed the same paths after a crash; its files and its
-presenter are not ours to remove.
+`SessionGuard` (`src/session.rs`) removes the directory only when the pidfile still holds the
+session's own pid. A newer session may have reclaimed the same paths after a crash; its files and
+its presenter are not ours to remove.
 
 ## Decisions
 

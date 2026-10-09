@@ -217,12 +217,14 @@ pub struct Pill {
 }
 
 impl Pill {
-    pub fn new(command: bool) -> Self {
+    /// `received_command` is whether the presenter was given a command for its buttons: a pill
+    /// without one draws no buttons.
+    pub fn new(received_command: bool) -> Self {
         Self {
             known: None,
             calibration: Calibration::default(),
             spinner: 0,
-            command,
+            command: received_command,
         }
     }
 

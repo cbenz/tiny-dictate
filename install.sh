@@ -107,7 +107,10 @@ install_dev() {
 }
 
 # The main worktree's path: the first entry of the porcelain listing, never a branch name, so the
-# script keeps working once the port is merged into main.
+# script names the same worktree whatever branch it is on. `restore` deliberately points back at
+# that worktree's bash install (`src/tiny-dictate`, `src/presenters/layer-shell`); once the port is
+# merged into main those files are gone, and the target check below names them and exits non-zero
+# instead of half-installing.
 main_worktree() {
     git -C "$root" worktree list --porcelain |
         awk '/^worktree / { sub(/^worktree /, ""); print; exit }'

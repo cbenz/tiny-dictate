@@ -6,7 +6,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitCode};
+use std::process::{Child, Command, ExitCode, Stdio};
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -105,6 +105,14 @@ fn spawn(paths: &Paths, limit: Option<Duration>, color: &str) -> Option<Child> {
         // The 6th argument is the pill's colour, read from the configuration by the session; an
         // empty argument means the default, and the presenter parses it.
         .arg(color)
+        // The pill's own chatter stays out of the journal, like the recorder's and the encoder's
+        // (`arecord.err`, `lame.err`): it goes to `presenter.err`. A file that cannot be created
+        // costs the pill its stderr and nothing else — the dictation must never fail over it —
+        // and dropping the output keeps a collaborator's chatter out of the journal either way.
+        .stderr(match fs::File::create(&paths.presenter_error) {
+            Ok(file) => Stdio::from(file),
+            Err(_) => Stdio::null(),
+        })
         // The cairo renderer puts the window on screen in about a tenth of a second instead of a
         // third: the one reason the pill is drawn by this binary. It is set on this child only,
         // never by the pill for itself and never for the interactive modes.

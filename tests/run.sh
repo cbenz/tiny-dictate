@@ -16,11 +16,10 @@
 SCRIPT="${SCRIPT:-$(cd "$(dirname "$0")/.." && pwd)/target/release/tiny-dictate}"
 OLD_SCRIPT="${OLD_SCRIPT:-}"
 # The waybar module belongs to the bar, not to the binary; the suite reads it to keep the bar going
-# through the command line instead of reading the state file.
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-WAYBAR_MODULE="$REPO_ROOT/contrib/waybar/tiny-dictate-module.jsonc"
-# The checkout the suite runs from: `install.sh` is read from here, not from the built binary.
+# through the command line instead of reading the state file. The checkout the suite runs from is the
+# same: `install.sh` is read from here, not from the built binary.
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
+WAYBAR_MODULE="$REPO/contrib/waybar/tiny-dictate-module.jsonc"
 RACE_ITERATIONS="${RACE_ITERATIONS:-25}"
 ONLY="${ONLY:-}"
 DIAG="${DIAG:-}"
@@ -163,6 +162,25 @@ fi
 printf '%s' "${TRANSCRIBE_TEXT:-text transcribed}"
 STUB
 
+# Stand-in for the reference transcriber's only collaborator: prints a canned provider body on
+# stdout and honours `--output <file>` the way the real curl does, which is how the transcriber
+# keeps the raw answer next to the transcript.
+cat > "$BIN/curl" <<'STUB'
+#!/usr/bin/env bash
+out=""
+previous=""
+for arg in "$@"; do
+    [ "$previous" = "--output" ] && out="$arg"
+    previous="$arg"
+done
+body='{"text":"canned transcription"}'
+if [ -n "$out" ]; then
+    printf '%s' "$body" > "$out"
+else
+    printf '%s' "$body"
+fi
+STUB
+
 cat > "$BIN/llm" <<'STUB'
 #!/usr/bin/env bash
 # Only needed by the previous implementation, when comparing the recorder race.
@@ -194,6 +212,9 @@ cat > "$BIN/present" <<'STUB'
 state_file="$1"
 owner="$2"
 waveform_file="$3"
+# Real GTK warns on stderr. The tool must keep the presenter's chatter out of the journal, so the
+# stub says something the suite can look for while the dictation runs.
+printf 'presenter: stub chatter\n' >&2
 printf 'PRESENT start color=%s owner=%s file=%s waveform=%s caller=%s limit=%s command=%s\n' "${6:-}" "$owner" "$state_file" "$waveform_file" "$PPID" "${5:-}" "${4:-}" >> "$WORK/events.log"
 state=""
 while :; do
@@ -1049,7 +1070,9 @@ test_second_start_refused() {
     sleep 0.2
     td start 2> "$WORK/second-start.err"
     check "second start exits non-zero" [ "$?" -ne 0 ]
-    check "reason printed on stderr" grep -q 'already busy' "$WORK/second-start.err"
+    check "the refusal names the session it collided with" \
+        grep -q "tiny-dictate: $(cat "$RUN/tiny-dictate/session/session.id"): failure: already busy" \
+        "$WORK/second-start.err"
     check "recording still running" [ "$(td status)" = "working" ]
     td cancel
     check "session finishes" wait_idle
@@ -1890,22 +1913,55 @@ test_journal_late_cancel() {
     check "nothing was pasted" [ -z "$(pasted_text)" ]
 }
 
-# The journal is the tool's own timeline: the encoder's and the recorder's own output is kept out
-# of it, in the files the failure path reads -- `arecord.err` and `lame.err`.
+# The journal is the tool's own timeline: the encoder's, the recorder's and the presenter's own
+# output is kept out of it, in the files the failure path reads -- `arecord.err`, `lame.err` and
+# `presenter.err`.
 test_journal_no_collaborator_chatter() {
-    start_test "the encoder's and the recorder's chatter stays out of the journal"
+    start_test "the collaborators' chatter stays out of the journal"
     td start 2>> "$JOURNAL"
     sleep 0.4
     check "the encoder's chatter went to lame.err" \
         grep -q 'LAME' "$RUN/tiny-dictate/session/lame.err"
     check "the recorder's chatter went to arecord.err" \
         grep -q 'arecord: stub chatter' "$RUN/tiny-dictate/session/arecord.err"
+    check "the presenter's chatter went to presenter.err" \
+        grep -q 'presenter: stub chatter' "$RUN/tiny-dictate/session/presenter.err"
     td stop 2>> "$JOURNAL"
     check "session finishes" wait_idle
     check "transcription pasted" [ "$(pasted_text)" = "text transcribed" ]
     check "the dictation wrote its own lines" journal_holds_only_tool_lines
     check "the encoder's banner is not in the journal" journal_lacks 'LAME'
     check "the recorder's banner is not in the journal" journal_lacks 'arecord'
+    check "the presenter's chatter is not in the journal" journal_lacks 'presenter: stub chatter'
+}
+
+# The reference transcriber's contract: `$1` the audio file, `$2` the session directory it may
+# leave the provider's own answer in as `transcript.raw.json`, stdout the transcript. The provider
+# is stubbed at `curl`, so the body is canned and the test is hermetic.
+test_reference_transcriber() {
+    start_test "the reference transcriber honours \$1, \$2 and stdout"
+    local session="$WORK/transcriber-session"
+    local audio="$WORK/transcriber-audio.mp3"
+    local expected='{"text":"canned transcription"}'
+    local out rc
+    rm -rf "$session"
+    mkdir -p "$session"
+    printf 'raw audio bytes' > "$audio"
+
+    rc=0
+    out="$(PATH="$BIN:$PATH" GROQ_API_KEY=stub "$REPO/transcribers/groq" "$audio" "$session")" || rc=$?
+    check "the transcriber exits zero" [ "$rc" -eq 0 ]
+    check "the provider's body is the transcript on stdout" [ "$out" = "$expected" ]
+    check "the raw answer is kept verbatim in \$2" \
+        [ "$(cat "$session/transcript.raw.json")" = "$expected" ]
+
+    # `$2` is optional: without it the transcriber still transcribes, and leaves nothing behind.
+    rm -f "$session/transcript.raw.json"
+    rc=0
+    out="$(PATH="$BIN:$PATH" GROQ_API_KEY=stub "$REPO/transcribers/groq" "$audio")" || rc=$?
+    check "the transcriber works without \$2" [ "$rc" -eq 0 ]
+    check "the body is still the transcript" [ "$out" = "$expected" ]
+    check "nothing is written without \$2" [ ! -e "$session/transcript.raw.json" ]
 }
 
 test_race_loop() {
@@ -2074,6 +2130,7 @@ run_test test_journal_recording_failure
 run_test test_journal_toggle
 run_test test_journal_late_cancel
 run_test test_journal_no_collaborator_chatter
+run_test test_reference_transcriber
 run_test test_history_lists_sessions_newest_first
 run_test test_transcribe_copies_and_rewrites
 run_test test_transcribe_print

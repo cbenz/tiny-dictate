@@ -4,6 +4,8 @@
 #
 # Contract (see docs/features/transcriber.md):
 #   $1      path to the recorded audio file
+#   $2      session directory; when given, the provider's own answer is also left there as
+#           transcript.raw.json, verbatim
 #   stdout  the transcribed text
 #   exit 0  on success; any other status means failure and stderr is shown to the user
 #
@@ -45,9 +47,10 @@ if [ "${1:-}" = "--print-audio-limit" ]; then
 fi
 
 audio_file="${1:-}"
+session_dir="${2:-}"
 
 if [ -z "$audio_file" ]; then
-    printf 'usage: %s <audio file>\n' "${0##*/}" >&2
+    printf 'usage: %s <audio file> [session directory]\n' "${0##*/}" >&2
     exit 2
 fi
 
@@ -77,6 +80,16 @@ if [ -n "$prompt" ]; then
     form+=(--form-string "prompt=$prompt")
 fi
 
-curl --silent --show-error --fail --max-time 300 "$API_URL" \
-    --header "Authorization: Bearer $GROQ_API_KEY" \
-    "${form[@]}"
+# The provider's answer is the transcript, and the very same bytes are what a given `$2` keeps as
+# the raw answer. `--output` writes them to the file, and `cat` prints them, so neither the file nor
+# stdout is transformed by shell capture.
+request=(curl --silent --show-error --fail --max-time 300 "$API_URL" \
+    --header "Authorization: Bearer $GROQ_API_KEY")
+request+=("${form[@]}")
+
+if [ -n "$session_dir" ]; then
+    "${request[@]}" --output "$session_dir/transcript.raw.json"
+    cat "$session_dir/transcript.raw.json"
+else
+    "${request[@]}"
+fi
