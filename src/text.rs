@@ -219,7 +219,7 @@ impl Transcriber {
     }
 
     /// The errors this run wrote, flattened into the one line a failure is shown as.
-    pub fn collapsed_error(&self) -> String {
+    fn collapsed_error(&self) -> String {
         fs::read_to_string(&self.errors)
             .map(|text| format_error(&text))
             .unwrap_or_else(|_| "Unknown error".to_owned())
