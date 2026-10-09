@@ -8,3 +8,7 @@ and removes nothing.
 Dependency checks move into the commands that need them, so `history` and `transcribe` run on a
 machine without the encoder or the clipboard tools. A command that cannot run without a dependency
 reports it when it runs, not when the binary starts.
+
+The verb names above are superseded by [ADR-0016](0016-the-session-group.md): every verb that
+touches a session lives under `session` now, and `history` and `transcribe` are not root verbs any
+more.

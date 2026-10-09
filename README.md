@@ -179,18 +179,19 @@ explicitly as `zsh -ic 'my-key-helper "Groq API key"'`.
 Usage: tiny-dictate <command>
 
 Commands:
-  start                           Start recording
-  stop                            Stop recording and transcribe
-  cancel                          Cancel recording
-  toggle                          Start if idle, stop if recording
-  status                          Show status (idle or working)
-  history                         List the kept sessions, newest first
-  transcribe <id|last> [--print]  Transcribe a session again, to the clipboard or to stdout
-  session delete <id|last>        Remove exactly one session
+  start                                   Start recording
+  stop                                    Stop recording and transcribe
+  cancel                                  Cancel recording
+  toggle                                  Start if idle, stop if recording
+  status                                  Show status (idle or working)
+  session                                 List the kept sessions, newest first
+  session list                            List the kept sessions, newest first
+  session transcribe <id|last> [--print]  Transcribe a session again, to the clipboard or to stdout
+  session delete <id|last>                Remove exactly one session
 ```
 
 Every dictation is kept as a [session](docs/features/sessions.md): the recording, the transcript,
-the provider's raw response and the metadata. `history` lists them newest first, `transcribe` runs
-the transcriber again on one (copying the text to the clipboard, or printing it with `--print`), and
-`session delete` is the only command that destroys one. Both `history` and `transcribe` run on a
+the provider's raw response and the metadata. `session list` prints them newest first, `session
+transcribe` runs the transcriber again on one (copying the text to the clipboard, or printing it
+with `--print`), and `session delete` is the only command that destroys one. All of them run on a
 machine without the encoder or the clipboard tools.

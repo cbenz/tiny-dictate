@@ -6,4 +6,4 @@ being recorded is never removed.
 
 Tying the prune to the successful end of a dictation is what keeps the directory bounded without a
 timer, a daemon or a background job, and makes a failure the moment when nothing is deleted. It also
-keeps a failed session for `tiny-dictate transcribe` even when `keep` has been reached.
+keeps a failed session for `tiny-dictate session transcribe` even when `keep` has been reached.
