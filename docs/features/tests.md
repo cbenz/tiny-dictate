@@ -74,6 +74,10 @@ presenter was asked to draw, the lifecycle of the processes, the exit codes.
 - `session transcribe last` re-runs the transcriber, rewrites the transcript and the raw response,
   and copies the text to the clipboard, saying so
 - `session transcribe --print` writes the text to stdout and touches no clipboard
+- `session copy` offers the stored transcript through the same offer, without re-transcribing it,
+  and on a session whose transcript was removed -- or that a failure or a cancel left without one
+  -- runs the transcriber first, writes the transcript and the metadata, and offers the text; a
+  transcript that holds no word is reported and runs no transcriber
 - `session delete` removes exactly one session and leaves the others
 - an unknown id is reported and removes or writes nothing
 - `history` and `transcribe` at the root print the usage and exit non-zero, and so does an unknown

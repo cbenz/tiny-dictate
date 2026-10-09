@@ -39,7 +39,7 @@ depends on.
 The duration is `clipboard_seconds`, read from the [configuration file](configuration.md), `60` by
 default; `0` means no expiry, and then no `timeout` wrapper at all. The text is written to the
 session before any clipboard write, and every clipboard write goes through the one function, so
-`session transcribe` gets the same lease as a dictation.
+`session copy` and `session transcribe` get the same lease as a dictation.
 
 ## Waiting for the offer
 
@@ -57,6 +57,8 @@ hold the previous text, and the failure takes the path a failed paste already ta
 — losing the paste would cost more than the ordering is worth.
 
 `session transcribe` writes through the same offer and does not wait: no chord follows its write.
+`session copy` does the same, on the transcript already on disk, running the transcriber first only
+when the session has none.
 
 ## The injected keypress
 
