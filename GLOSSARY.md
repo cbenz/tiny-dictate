@@ -102,6 +102,11 @@ _Avoid_: alert, toast
 The list of kept sessions, newest first.
 _Avoid_: journal (the journal is where the log lines land)
 
+**Browser**:
+The surface that draws the kept sessions on a terminal: the list, the selection and the keys that
+move through it. It draws the History; it is not the History.
+_Avoid_: history (the browser draws it, it is not it), TUI, dashboard
+
 **Keep**:
 The number of past sessions retained.
 _Avoid_: history size

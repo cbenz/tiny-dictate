@@ -39,8 +39,9 @@ Commands:
   cancel                                  Cancel recording
   toggle                                  Start if idle, stop if recording
   status                                  Show status (idle or working)
-  session                                 List the kept sessions, newest first
+  session                                 List the kept sessions, or browse them on a terminal
   session list                            List the kept sessions, newest first
+  session browse                          Browse the kept sessions on a terminal
   session transcribe <id|last> [--print]  Transcribe a session again, to the clipboard or to stdout
   session delete <id|last>                Remove exactly one session
 ```
@@ -53,13 +54,16 @@ non-zero. `start`, `stop`, `cancel` and `toggle` take an exclusive command lock 
 the command, so two shortcuts pressed at once cannot interleave. `status` takes no lock.
 
 The `session` group carries every verb that touches a kept [session](features/sessions.md), and no
-verb that touches one lives anywhere else: `session` on its own lists the kept sessions, `session
-list` does the same, `session transcribe <id|last> [--print]` runs the transcriber again on one, and
-`session delete <id|last>` is the only verb that destroys one. Each of them is given an id, with
-`last` meaning the newest session; the two verbs that used to live at the root, `history` and
-`transcribe`, are unknown arguments now, so the usage is what teaches their new name. Dependency
-checks live in the commands that need them, so the `session` verbs run on a machine without the
-encoder or the clipboard tools.
+verb that touches one lives anywhere else: `session list` prints the kept sessions newest first,
+`session browse` reads them on a terminal and bare `session` does one or the other depending on
+whether its stdout is a terminal, `session transcribe <id|last> [--print]` runs the transcriber
+again on one, and `session delete <id|last>` is the only verb that destroys one. Each of the verbs
+that names a session is given an id, with `last` meaning the newest session; the two verbs that used
+to live at the root, `history` and `transcribe`, are unknown arguments now, so the usage is what
+teaches their new name. `session browse` takes no command lock, so a dictation still starts while it
+is open. Dependency checks live in the commands that need them, so the `session` verbs run on a
+machine without the encoder or the clipboard tools; the [browser](features/browse.md) needs nothing
+but a terminal.
 
 ## Plugins
 
@@ -126,6 +130,7 @@ These hold whatever implementation runs them, and a port is expected to keep the
 ## Features
 
 - [Sessions on disk](features/sessions.md)
+- [The browser](features/browse.md)
 - [The dictation lifecycle](features/dictation-lifecycle.md)
 - [The claim](features/claim.md)
 - [The microphone](features/microphone.md)
