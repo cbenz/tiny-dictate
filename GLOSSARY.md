@@ -67,6 +67,14 @@ _Avoid_: cap, timeout
 **Progress bar**:
 The bar under the waveform showing how much of the audio limit has elapsed.
 
+## The microphone
+
+**Base volume**:
+The input level at which the audio server adds no gain to the microphone — the neutral point of that
+machine's audio hardware. The tool sets the default source to it before a dictation: above it the
+recording saturates, and a saturated recording transcribes badly.
+_Avoid_: gain, default level, 20 %
+
 ## The result
 
 **Paste**:
