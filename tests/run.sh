@@ -2097,6 +2097,84 @@ test_browse_shows_an_unreadable_session() {
     check "the terminal is back to its previous state" grep -q '^TERMIOS=restored$' "$WORK/browse-unreadable.summary"
 }
 
+# `d` asks before destroying anything: the question names the session and the two keys that answer
+# it, and only `y` removes the directory, reloading the list so the row is gone without the browser
+# leaving the screen. The question and the answer are the pure `Confirm` state, unit-tested beside
+# the frame; this is the one place the adapter is observed.
+test_browse_delete_confirms_and_removes() {
+    start_test "the browser deletes a session behind a confirmation"
+
+    write_session 2026-10-09T10-00-00 transcribed "text"
+
+    pty 'd,y,q' "$WORK/browse-delete.out" session browse > "$WORK/browse-delete.summary"
+
+    check "the browser exits zero" grep -q '^EXIT=0$' "$WORK/browse-delete.summary"
+    check "the terminal is back to its previous state" \
+        grep -q '^TERMIOS=restored$' "$WORK/browse-delete.summary"
+    check "the confirmation names the session and the two keys" \
+        bash -c 'grep -q "delete 2026-10-09T10-00-00? y/n" "$1"' _ "$WORK/browse-delete.out"
+    check "the confirmed delete removed the session directory" \
+        [ ! -e "$(sessions_dir)/2026-10-09T10-00-00" ]
+    check "nothing is kept any more" [ "$(session_count)" -eq 0 ]
+    check "the row is gone from the list without leaving the browser" \
+        bash -c 'grep -q "no kept sessions" "$1"' _ "$WORK/browse-delete.out"
+    check "the status line says the session was deleted" \
+        grep -q '2026-10-09T10-00-00 deleted' "$WORK/browse-delete.out"
+}
+
+# Only `y` and `n` answer the question: `n` keeps the session, and any other key answers nothing --
+# the question stands, so a later `y` still destroys. A key that dismissed the question would leave
+# the second run's session in place, so the two runs together pin the rule.
+test_browse_delete_is_answered_by_y_or_n_only() {
+    start_test "the browser's confirmation is answered by y or n and by nothing else"
+
+    write_session 2026-10-09T10-00-00 transcribed "text"
+
+    pty 'd,n,q' "$WORK/browse-keep.out" session browse > "$WORK/browse-keep.summary"
+    check "n leaves the browser open on the same list" grep -q '^EXIT=0$' "$WORK/browse-keep.summary"
+    check "n left the session untouched" test -d "$(sessions_dir)/2026-10-09T10-00-00"
+
+    # A stray key does not answer: after it the question still stands, and the `y` that follows
+    # removes the session.
+    pty 'd,x,y,q' "$WORK/browse-stray-key.out" session browse > "$WORK/browse-stray-key.summary"
+    check "the browser exits zero" grep -q '^EXIT=0$' "$WORK/browse-stray-key.summary"
+    check "a stray key did not answer the question" \
+        [ ! -e "$(sessions_dir)/2026-10-09T10-00-00" ]
+}
+
+# The browser removes a session through the same guard `session delete` takes: the dictation in
+# flight is refused with a message on the status line, its directory stays, and no command lock is
+# taken. The other side of the guard is asserted by test_session_delete_refuses_the_session_in_flight.
+test_browse_delete_refuses_the_session_in_flight() {
+    start_test "the browser refuses to delete the session in flight"
+
+    td start
+    sleep 0.4
+    check "the dictation is recording" [ "$(td status)" = "working" ]
+
+    local in_flight dir
+    in_flight="$(newest_session_id)"
+    dir="$(sessions_dir)/$in_flight"
+
+    pty 'd,y,q' "$WORK/browse-in-flight.out" session browse > "$WORK/browse-in-flight.summary"
+
+    check "the browser exits zero" grep -q '^EXIT=0$' "$WORK/browse-in-flight.summary"
+    check "the terminal is back to its previous state" \
+        grep -q '^TERMIOS=restored$' "$WORK/browse-in-flight.summary"
+    check "the confirmation named the session in flight" \
+        bash -c "grep -q 'delete $in_flight? y/n' \"\$1\"" _ "$WORK/browse-in-flight.out"
+    check "the refusal says the session in flight cannot be deleted" \
+        grep -q 'the session in flight cannot be deleted' "$WORK/browse-in-flight.out"
+    check "the in-flight session is untouched" test -d "$dir"
+    check "its metadata is still there" test -f "$dir/metadata.json"
+    check "the dictation is still recording" [ "$(td status)" = "working" ]
+    check "the refused delete took no command lock" path_absent "$RUN/tiny-dictate/command.lock"
+
+    td cancel 2>> "$JOURNAL"
+    check "the dictation ends" wait_idle
+    check "no leftover process" no_leftover_process
+}
+
 # `c`, `i` and `p` copy the selected session's transcript, its id and its path through the one
 # clipboard writer `session copy` and a live dictation use: both selections, the password hint,
 # under the configured lease. Nothing is injected, and the browser stays open.
@@ -3565,6 +3643,9 @@ run_test test_browse_leaves_on_ctrl_c
 run_test test_browse_a_failed_run_restores_the_terminal
 run_test test_browse_an_empty_history_is_not_an_error
 run_test test_browse_shows_an_unreadable_session
+run_test test_browse_delete_confirms_and_removes
+run_test test_browse_delete_is_answered_by_y_or_n_only
+run_test test_browse_delete_refuses_the_session_in_flight
 run_test test_browse_copies_the_transcript_the_id_and_the_path
 run_test test_browse_copy_with_nothing_selected
 run_test test_browse_reports_an_empty_transcript

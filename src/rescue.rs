@@ -6,6 +6,7 @@
 //! else: no encoder, no clipboard tool, no microphone, so a machine that cannot dictate can still
 //! rescue what was kept.
 
+use std::fmt;
 use std::fs;
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -324,28 +325,56 @@ pub fn session_delete(target: &str) -> ExitCode {
         return unknown_session(target);
     };
 
-    // The dictation in flight writes its transcript and its metadata into this very directory:
-    // the one verb that destroys a session refuses it. The rule lives here, in the delete path,
-    // so every surface that deletes takes the same one. The guard reads files only — the id the
-    // runtime directory publishes and the pidfiles — takes no command lock and signals nothing,
-    // so a refusal leaves a live dictation untouched.
-    if runtime.is_in_flight(&id) {
-        log::line(
-            Some(&id),
-            "failure: the session in flight cannot be deleted",
-        );
-        return ExitCode::FAILURE;
-    }
-
-    match fs::remove_dir_all(sessions.join(&id)) {
+    match remove_session(&runtime, &id) {
         Ok(()) => {
             // ADR-0008: `session delete` is one of the events that carry no session id.
             log::line(None, "session deleted");
             ExitCode::SUCCESS
         }
-        Err(error) => {
-            log::line(None, &format!("could not delete the session: {error}"));
+        // The refusal names the session it refused (ADR-0008); the failure to remove the
+        // directory is the directory's, not the session's, so it carries no id.
+        Err(refusal @ Refusal::InFlight) => {
+            log::line(Some(&id), &format!("failure: {refusal}"));
             ExitCode::FAILURE
+        }
+        Err(refusal) => {
+            log::line(None, &refusal.to_string());
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Remove one session directory, and nothing else: the one place a session is destroyed, taken by
+/// `session delete` and by the browser's confirmed `d`, so both surfaces refuse the same session
+/// through one guard.
+///
+/// The dictation in flight writes its transcript and its metadata into this very directory, so it
+/// is refused. The guard reads files only -- the id the runtime directory publishes and the
+/// pidfiles -- takes no command lock and signals nothing, so a refusal leaves a live dictation
+/// untouched.
+pub fn remove_session(runtime: &Runtime, id: &str) -> Result<(), Refusal> {
+    if runtime.is_in_flight(id) {
+        return Err(Refusal::InFlight);
+    }
+
+    fs::remove_dir_all(runtime.sessions_directory().join(id))
+        .map_err(|error| Refusal::Io(error.to_string()))
+}
+
+/// Why a session was not removed, in the one sentence both surfaces say it.
+#[derive(Debug)]
+pub enum Refusal {
+    /// The dictation in flight is writing into this very session directory.
+    InFlight,
+    /// The directory could not be removed.
+    Io(String),
+}
+
+impl fmt::Display for Refusal {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InFlight => write!(formatter, "the session in flight cannot be deleted"),
+            Self::Io(error) => write!(formatter, "could not delete the session: {error}"),
         }
     }
 }

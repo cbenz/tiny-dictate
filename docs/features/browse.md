@@ -1,9 +1,10 @@
 # The browser
 
 `tiny-dictate session browse` reads the kept sessions on a terminal: the list on the left, the
-selected session's detail in a pane on the right, and the keys that move through both and copy what
-a session holds. `tiny-dictate session` on its own is the same surface when stdout is a terminal,
-and the plain listing when it is a pipe, so one command serves a shortcut and a script.
+selected session's detail in a pane on the right, and the keys that move through both, copy what a
+session holds and delete one behind a confirmation. `tiny-dictate session` on its own is the same
+surface when stdout is a terminal, and the plain listing when it is a pipe, so one command serves a
+shortcut and a script.
 
 ## The list
 
@@ -57,6 +58,7 @@ covers the rows or the pane.
 | `i` | copy its id |
 | `p` | copy its path |
 | `t` | transcribe the selected session again |
+| `d` | ask to delete the selected session, behind a confirmation |
 | `r` | reload the list, keeping the selection on the same session while it is there |
 | `q`, `ctrl-c` | leave; a transcription in flight is cancelled first |
 
@@ -81,6 +83,24 @@ metadata only once the child has returned, so a cancelled run writes neither, an
 session had stays. A transcription that fails shows the collapsed one-line error on the status line
 and records the failure the transcriber's own run wrote; the browser itself never writes a
 transcript.
+
+## Deleting a session
+
+`d` destroys nothing on its own: it asks first. The question names the selected session's id and
+offers the two keys that answer it, `delete <id>? y/n`, and the footer narrows to those two keys
+while it stands. Answering is a pure decision of the frame's `Confirm` state: only `y` and `n`
+answer, and every other key answers nothing — the question stands, so a stray key can never destroy
+a recording. `q` included: a pending question must be answered before the browser leaves.
+
+`n` answers nothing at all: the question goes and the browser is where it was, the session
+untouched. `y` removes the session directory and reloads the list, so the row disappears without
+leaving the browser, and the status line names the session that went.
+
+The removal is `rescue::remove_session`, the one place a session is destroyed: `session delete`
+calls it too, so the dictation in flight is refused by one guard, in one sentence, on both surfaces.
+The browser shows the refusal on the status line and removes nothing; it takes no command lock and
+signals nothing, and the dictation runs on. A session whose metadata cannot be read is deletable
+like any other, because the guard reads the session directory, not the metadata.
 
 An empty history is an empty screen and not an error: the browser says nothing is kept and leaves on
 `q` with exit code 0.
