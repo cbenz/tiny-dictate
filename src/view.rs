@@ -213,6 +213,12 @@ fn field(label: &'static str, value: impl Into<String>) -> Field {
     }
 }
 
+/// Whether a transcript holds a word: a transcript that is empty, or only blank space, is not a
+/// transcript at all, and every surface reports it rather than showing it or offering it.
+pub fn holds_a_word(transcript: &str) -> bool {
+    !transcript.trim().is_empty()
+}
+
 /// The transcript a session holds, trimmed of the blank space around it, or `None` when the file
 /// is missing or holds no word: a session with nothing to read says so rather than printing an
 /// empty block.
@@ -220,11 +226,7 @@ fn read_transcript(path: &Path) -> Option<String> {
     let text = fs::read_to_string(path).ok()?;
     let text = text.trim();
 
-    if text.is_empty() {
-        None
-    } else {
-        Some(text.to_owned())
-    }
+    holds_a_word(text).then(|| text.to_owned())
 }
 
 /// The kept sessions as rows, newest first.
@@ -611,6 +613,15 @@ mod tests {
 
         let _ = fs::remove_dir_all(&blank);
         let _ = fs::remove_dir_all(&missing);
+    }
+
+    // A transcript without a word is not a transcript: the predicate every surface reports a
+    // session by, `rescue::session_copy` and the browser's copy actions included.
+    #[test]
+    fn a_transcript_without_a_word_is_not_a_transcript() {
+        assert!(holds_a_word("hello"));
+        assert!(!holds_a_word(""));
+        assert!(!holds_a_word("\n \t"));
     }
 
     #[test]

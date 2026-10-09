@@ -112,7 +112,7 @@ pub fn session_copy(target: &str) -> ExitCode {
         },
     };
 
-    if transcript.trim().is_empty() {
+    if !view::holds_a_word(&transcript) {
         log::line(
             Some(&session.id),
             "nothing to copy: the transcript is empty",
