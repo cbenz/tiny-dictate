@@ -90,6 +90,15 @@ impl Runtime {
         let paths = self.paths();
         pidfile_lives(&paths.session_pid) || pidfile_lives(&paths.recorder_pid)
     }
+
+    /// Whether the dictation in flight is writing into this very session: the id `start`
+    /// published in the runtime directory, and a session process or a recorder still alive.
+    ///
+    /// A dictation killed by a signal leaves its runtime directory behind, the id still
+    /// published there; it is over, so its session stays deletable.
+    pub fn is_in_flight(&self, id: &str) -> bool {
+        self.dictating() && current_session_id(&self.paths()).as_deref() == Some(id)
+    }
 }
 
 /// The files one dictation owns, laid out under the claim directory.
