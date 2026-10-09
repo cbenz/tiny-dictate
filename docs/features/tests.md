@@ -104,6 +104,11 @@ presenter was asked to draw, the lifecycle of the processes, the exit codes.
   clipboard through the same writer `session copy` uses — both selections, the password hint, the
   configured lease — injecting nothing, saying on the status line what was copied, and saying so
   when no session is selected or the session on disk holds no transcript
+- the browser's `d` asks before destroying anything: the question names the session, `n` and a stray
+  key leave the session and the list untouched while a later `y` still deletes, and `y` removes the
+  session directory and its row without leaving the browser
+- the browser deletes through the same guard `session delete` takes: the dictation in flight is
+  refused with a message on the status line and nothing is removed
 - the browser holds no command lock: a shortcut starts a dictation while it is open
 - `session transcribe last` re-runs the transcriber, rewrites the transcript and the raw response,
   and copies the text to the clipboard, saying so
