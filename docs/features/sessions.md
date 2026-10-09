@@ -42,7 +42,8 @@ resolved command, and `error` is the failure on one line, or `null`.
 Every command that touches a kept session lives under `tiny-dictate session`, and none of them
 touches the microphone, the encoder or the pill:
 
-- `tiny-dictate session list` lists the kept sessions, newest first, one line per session:
+- `tiny-dictate session list [--output text|json]` lists the kept sessions, newest first, one line
+  per session:
 
   ```text
   <id>  <duration>  <outcome>  <summary>
@@ -53,12 +54,15 @@ session died mid-recording; the outcome in the vocabulary above; and the summary
 when there is one, else the first words of the transcript, else `-`. A session whose metadata cannot
 be read is a row of its own, its id and `?` where the other fields would be, rather than a skipped
 line: it is exactly the session `session delete` can remove. The line is plain text on stdout, and
-`session list` reads nothing but the sessions directory. `tiny-dictate session` on its own is the
+`session list` reads nothing but the sessions directory; `--output json` prints the same sessions as
+one document instead (see [the same session as data](#the-same-session-as-data)). `tiny-dictate
+session` on its own is the
 same listing when its stdout is a pipe, and opens the [browser](browse.md) when it is a terminal.
 - `tiny-dictate session browse` reads the kept sessions on a terminal: the list, the selection and
 the keys that move through it. It takes no command lock and reads files only, so it opens while a
 dictation runs, and it works on a machine without the encoder or the clipboard tools.
-- `tiny-dictate session show <id|last>` reads one session in full: its fields, one per line, then
+- `tiny-dictate session show <id|last> [--output text|json]` reads one session in full: its fields,
+  one per line, then
   its transcript. The fields are the shared view's, in the one order every surface renders them --
   `id`, `path`, `outcome`, `started`, `ended`, `duration`, `audio bytes`, `pasted`, `transcriber`,
   `error` -- so this command and the browser's pane cannot drift. `duration` is the human one,
@@ -94,6 +98,39 @@ clipboard tool at all.
 A verb that touches a session is not available anywhere else: `history` and `transcribe` used to
 live at the root, and they are unknown arguments now. `last` is the newest session. An id that no
 kept session answers to is reported on stderr, exits non-zero, and removes or writes nothing.
+
+## The same session as data
+
+`session list` and `session show` take `--output text|json`, in the separated (`--output json`) and
+the `=` (`--output=json`) form. `text` is the default and may be written explicitly, so the format is
+never implicit in a script. `json` renders the same view as one document. Times and durations stay
+the raw seconds `metadata.json` holds -- `started`, `ended` and `duration` are epoch seconds, never
+`1:04:32`.
+
+`session list --output json` prints one array, newest first, one element per session -- the same
+sessions and the same order as the listing:
+
+```json
+[
+  { "id": "2026-10-07T19-05-22", "path": "/…/sessions/2026-10-07T19-05-22", "metadata": { … } },
+  { "id": "2026-10-07T18-02-10", "path": "/…/sessions/2026-10-07T18-02-10", "metadata": null }
+]
+```
+
+Each element carries the session's `id`, its `path`, and its `metadata`: the object the same writer
+writes into `metadata.json`, so the disk and stdout cannot disagree. A directory whose metadata
+cannot be read is an element with `"metadata": null`, never a missing one: the array is never
+shorter than the sessions directory, because it is exactly the session `session delete` can remove.
+
+`session show <id|last> --output json` prints one object: the element above plus `"transcript"`, the
+text the session holds or `null` when it holds none. A session whose metadata cannot be read is
+still refused, as it is in the text format -- `"metadata": null`, an exit non-zero, and the failure
+logged with the session.
+
+`--output` belongs to the verbs that print a session as data and to no other: `session browse` owns
+a terminal, `status` is the one word the bar reads, and `session transcribe --print` prints a
+transcript, not data. On any of them the flag is an argument error, like any unknown value such as
+`--output yaml`: the usage is printed and the exit is non-zero.
 
 Every one of those surfaces reads the session through the same view, one module that owns the row of
 the listing, the fields of the detail and the human duration, so the surfaces cannot drift apart.

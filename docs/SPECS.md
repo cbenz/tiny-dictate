@@ -34,18 +34,18 @@ partials that get revised, key injection while speaking), not an extension of th
 Usage: tiny-dictate <command>
 
 Commands:
-  start                                   Start recording
-  stop                                    Stop recording and transcribe
-  cancel                                  Cancel recording
-  toggle                                  Start if idle, stop if recording
-  status                                  Show status (idle or working)
-  session                                 List the kept sessions, or browse them on a terminal
-  session list                            List the kept sessions, newest first
-  session browse                          Browse the kept sessions on a terminal
-  session show <id|last>                  Show one session: its fields, its path and its transcript
-  session copy <id|last>                  Copy a session's transcript to the clipboard
-  session transcribe <id|last> [--print]  Transcribe a session again, to the clipboard or to stdout
-  session delete <id|last>                Remove exactly one session
+  start                                          Start recording
+  stop                                           Stop recording and transcribe
+  cancel                                         Cancel recording
+  toggle                                         Start if idle, stop if recording
+  status                                         Show status (idle or working)
+  session                                        List the kept sessions, or browse them on a terminal
+  session list [--output text|json]              List the kept sessions, newest first
+  session browse                                 Browse the kept sessions on a terminal
+  session show <id|last> [--output text|json]    Show one session: its fields, its path and its transcript
+  session copy <id|last>                         Copy a session's transcript to the clipboard
+  session transcribe <id|last> [--print]         Transcribe a session again, to the clipboard or to stdout
+  session delete <id|last>                       Remove exactly one session
 ```
 
 `status` queries only: it never perturbs a live session. It prints `idle` or `working`, and the
@@ -63,7 +63,12 @@ whether its stdout is a terminal, `session show <id|last>` reads one in full, `s
 transcribe <id|last> [--print]` runs the transcriber again on one, and `session delete <id|last>` is
 the only verb that destroys one. `session show` prints the fields every surface shows a session by
 -- the same ones, in the same order -- then the transcript, and says so when a session holds no
-transcript or its metadata cannot be read. Each of the verbs that names a session is given an id,
+transcript or its metadata cannot be read. `session list` and `session show` take
+`--output text|json`, in the separated and the `=` form: `text` is the default and may be written
+explicitly, and `json` renders the same view as one document -- an array newest first for the
+listing, one object with the transcript for the show -- whose metadata object is the one that writes
+`metadata.json`, with times and durations in the raw seconds it holds. `--output` is an argument
+error on every other verb. Each of the verbs that names a session is given an id,
 with `last` meaning the newest session; the two verbs that used to live at the root, `history` and
 `transcribe`, are unknown arguments now, so the usage is what teaches their new name. `session
 browse` takes no command lock, so a dictation still starts while it is open. Dependency checks live
