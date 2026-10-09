@@ -317,17 +317,6 @@ fn start_command(command: &str) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    if microphone::muted() {
-        log::line(None, "failure: the microphone is muted");
-        text::notify(
-            "🎙️ Microphone is muted. Unmute it before dictating.",
-            4500,
-            "critical",
-        );
-        let _ = fs::remove_dir_all(&paths.session);
-        return ExitCode::FAILURE;
-    }
-
     if audio::create_fifo(&paths.fifo).is_err() {
         log::line(None, "failure: cannot create the audio pipe");
         text::notify("❌ Cannot create the audio pipe", 6000, "normal");
@@ -358,6 +347,10 @@ fn start_command(command: &str) -> ExitCode {
     // The id is published before the pipeline: the commands that run beside this dictation read
     // it to name the session their lines concern.
     let _ = fs::write(&paths.session_id, &session.id);
+
+    // The microphone is set now that the claim is held and the session exists: the line names the
+    // session, and a dictation that lost the claim has already been refused above.
+    microphone::set_base_volume(&session.id);
 
     if let Err(error) = audio::start_pipeline(&paths, &session.audio(), &session.id) {
         log::line(
