@@ -103,7 +103,15 @@ presenter was asked to draw, the lifecycle of the processes, the exit codes.
 - the browser's `c`, `i` and `p` put the selected session's transcript, its id and its path on the
   clipboard through the same writer `session copy` uses — both selections, the password hint, the
   configured lease — injecting nothing, saying on the status line what was copied, and saying so
-  when no session is selected or the session on disk holds no transcript
+  when no session is selected or the session on disk holds an empty transcript
+- the browser's `t` transcribes the selected session again, rewriting the transcript and the
+  metadata as `session transcribe` does, and its `c` transcribes a session that has no transcript
+  before offering the text; a transcript that exists but holds no word runs no transcriber
+- a transcription in flight: a second one cannot start from any key sequence, `c` and `t` start
+  nothing, `ctrl-c` cancels it, reaps the transcriber's whole tree, keeps the browser open with a
+  verdict and leaves the session's transcript and metadata byte for byte what they were, while `q`
+  signals the transcriber and leaves with no transcriber outliving the browser; a run that fails
+  shows the collapsed one-line error, records the failure and leaves the running state
 - the browser holds no command lock: a shortcut starts a dictation while it is open
 - `session transcribe last` re-runs the transcriber, rewrites the transcript and the raw response,
   and copies the text to the clipboard, saying so
@@ -141,8 +149,9 @@ pure functions the seam cannot see are unit-tested instead: the pill's frame com
 waveform, limit and elapsed time in, what to draw out, including the three bands of the progress
 bar), the prune selection (a list of sessions in, the ones to remove out, sharing one listing with
 `session list` and `last`), the browser's frame (the rows, the selection, the selected session's
-detail, the scroll offset, the status line and the terminal's size in, the list and the wrapped,
-windowed pane out), and, for the session surface, reading the metadata back, resolving a
+detail, the run state, the scroll offset, the status line and the terminal's size in — the footer
+names only the cancel key while a transcription runs — the list and the wrapped, windowed pane
+out), and, for the session surface, reading the metadata back, resolving a
 `<id|last>` argument, the human duration, the row of the listing, the fields of the detail and the
 JSON composition of the listing and the detail.
 

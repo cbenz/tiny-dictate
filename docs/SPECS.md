@@ -74,7 +74,10 @@ with `last` meaning the newest session; the two verbs that used to live at the r
 browse` takes no command lock, so a dictation still starts while it is open. Dependency checks live
 in the commands that need them, so the `session` verbs run on a machine without the encoder or the
 clipboard tools; the [browser](features/browse.md) needs nothing but a terminal to look at the
-sessions, and only its copy actions ask for the clipboard tool, as `session copy` does.
+sessions, and only its copy actions ask for the clipboard tool, as `session copy` does. The
+browser runs the same transcriber the verbs do: `t` transcribes the selected session again, a `c`
+on a session with no transcript transcribes it first, and `ctrl-c` cancels a transcription in
+flight, leaving the session untouched.
 
 ## Plugins
 

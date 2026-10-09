@@ -39,11 +39,12 @@ the configured lease ([the clipboard](clipboard.md)). The browser re-implements 
 injects nothing: the `Shift+Insert` chord stays the live dictation's business, so a browser run
 never touches `ydotool`.
 
-The copy follows the selection, never the newest row. `c` copies the `transcript.txt` already on
-disk, the same file `session copy` offers; a session that holds no word of transcript is reported on
-the status line rather than copied empty, and the browser never transcribes a session itself. Moving
-the selection or reloading the list clears the status line; each copy action sets it again, naming
-what was copied. With nothing selected, `c`, `i` and `p` say so on that line and touch neither the
+The copy follows the selection, never the newest row. `c` offers the `transcript.txt` already on
+disk, the same file `session copy` offers; a session that has none is transcribed first, through
+the same runner `session copy` uses, and the text is offered when the run returns; a transcript that
+exists but holds no word is reported on the status line rather than copied empty. Moving the
+selection or reloading the list clears the status line; each copy action sets it again, naming what
+was copied. With nothing selected, `c`, `i` and `p` say so on that line and touch neither the
 clipboard nor the keyboard. The status line takes its own row above the footer, so a message never
 covers the rows or the pane.
 
@@ -52,11 +53,34 @@ covers the rows or the pane.
 | `↑` / `↓`, `k` / `j` | move the selection, reloading the pane on the session it lands on |
 | `Home` / `End` | jump to the newest or the oldest session, and take the transcript to that end |
 | `PgUp` / `PgDn` | scroll the transcript by a page |
-| `c` | copy the selected session's transcript |
+| `c` | copy the selected session's transcript, transcribing it first when it has none |
 | `i` | copy its id |
 | `p` | copy its path |
+| `t` | transcribe the selected session again |
 | `r` | reload the list, keeping the selection on the same session while it is there |
-| `q`, `ctrl-c` | leave |
+| `q`, `ctrl-c` | leave; a transcription in flight is cancelled first |
+
+## Transcribing
+
+`t` runs the transcriber again on the selected session, even when it already has a transcript: a
+changed transcriber, or a transcript the user does not trust, is the reason to ask. The transcript
+and the metadata end up rewritten exactly as `session transcribe` writes them. The runner is the one
+`session transcribe` and `session copy` use: the browser adds the signalling, never a second way to
+run a transcriber. Nothing is written into the session while the run is in flight; the pane reads
+the result back when it returns, so a rewritten transcript never waits for a reload key.
+
+The transcriber runs as a child process in a process group of its own, and the browser keeps drawing
+frames and reading keys while it runs. The footer then names only `ctrl-c cancel`, because nothing
+else means anything until the child returns; `c` and `t` are inert, so a second transcription can
+never start while one runs, whatever keys arrive.
+
+`ctrl-c` signals the child, reaps it and keeps the browser open, with a verdict on the status line;
+`q` signals the child before leaving, so no transcriber outlives the browser. A cancelled
+transcription leaves the session exactly as it was: the runner writes the transcript and the
+metadata only once the child has returned, so a cancelled run writes neither, and the outcome the
+session had stays. A transcription that fails shows the collapsed one-line error on the status line
+and records the failure the transcriber's own run wrote; the browser itself never writes a
+transcript.
 
 An empty history is an empty screen and not an error: the browser says nothing is kept and leaves on
 `q` with exit code 0.
@@ -72,11 +96,11 @@ sequences written into a pipe would corrupt whatever reads it.
 
 Two levels, following the pill's precedent
 ([ADR-0017](../adr/0017-the-browser-takes-crossterm.md)): `browse::frame` is the pure computation —
-the rows, the selection, the selected session's detail, the scroll offset, the status line and the
-terminal's size in, what one frame draws out — and `browse` is the adapter that owns the terminal:
-raw mode, the alternate screen, the key decoding and the screen itself. The terminal is given back
-through a guard and a panic hook. The frame module is unit-tested without a terminal; the adapter is
-driven by the pseudo-terminal cases in [tests](tests.md).
+the rows, the selection, the selected session's detail, the run state, the scroll offset, the status
+line and the terminal's size in, what one frame draws out — and `browse` is the adapter that owns
+the terminal: raw mode, the alternate screen, the key decoding and the screen itself. The terminal
+is given back through a guard and a panic hook. The frame module is unit-tested without a terminal;
+the adapter is driven by the pseudo-terminal cases in [tests](tests.md).
 
 ## Decisions
 
