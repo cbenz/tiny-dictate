@@ -2050,6 +2050,25 @@ test_browse_refuses_a_pipe() {
 
 # ─────────────────────── the browser on a pseudo-terminal ───────────────────────
 
+# Bare `session` on a terminal opens the browser, not the listing: the surface follows what stdout
+# is, so one command serves a shortcut and a pipe ([ADR-0016](../adr/0016-the-session-group.md)). The
+# pipe is covered by test_browse_refuses_a_pipe.
+test_bare_session_on_a_terminal_opens_the_browser() {
+    start_test "bare session on a terminal opens the browser, not the listing"
+
+    write_session 2026-10-09T10-00-00 transcribed "text"
+
+    pty 'q' "$WORK/bare-session-tty.out" session > "$WORK/bare-session-tty.summary"
+
+    check "it exits zero" grep -q '^EXIT=0$' "$WORK/bare-session-tty.summary"
+    check "the terminal is back to its previous state" \
+        grep -q '^TERMIOS=restored$' "$WORK/bare-session-tty.summary"
+    check "it entered the alternate screen" \
+        bash -c 'grep -aqF "$(printf "\033[?1049h")" "$1"' _ "$WORK/bare-session-tty.out"
+    check "it drew the selected row the listing never marks" \
+        bash -c 'grep -q "> 2026-10-09T10-00-00" "$1"' _ "$WORK/bare-session-tty.out"
+}
+
 # The browser opens on a terminal, lists the kept sessions newest first from the shared view, moves
 # the selection with the arrows and the vim keys, reloads on `r` and leaves on `q`, giving the
 # terminal back as it was. What the keys did is read from the marker on the selected row, never
@@ -3696,6 +3715,7 @@ run_test test_session_list_output_json
 run_test test_session_show_output_json
 run_test test_output_flag_is_refused
 run_test test_browse_refuses_a_pipe
+run_test test_bare_session_on_a_terminal_opens_the_browser
 run_test test_browse_on_a_terminal
 run_test test_browse_the_pane_follows_the_selection
 run_test test_browse_leaves_on_ctrl_c
