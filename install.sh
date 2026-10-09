@@ -116,7 +116,7 @@ check_runtime_dependencies() {
     local -a missing=()
     local command
 
-    for command in arecord lame ydotool notify-send wl-copy wl-paste curl; do
+    for command in arecord lame pactl ydotool notify-send wl-copy wl-paste curl; do
         command -v "$command" >/dev/null 2>&1 || missing+=("$command")
     done
 
