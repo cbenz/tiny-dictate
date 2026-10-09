@@ -135,8 +135,9 @@ pub struct Frame {
     pub lines: Vec<Line>,
     /// The detail pane, aligned with `lines` by index; empty when there is no pane to draw.
     pub pane: Vec<String>,
-    /// The columns the list pane takes before the separator, or `0` when there is no pane.
-    pub list_width: usize,
+    /// The columns the list pane takes before the separator, or `0` when there is no pane to draw
+    /// beside it.
+    pub list_columns: usize,
     /// What the last action did, above the footer; empty when no action has run.
     pub status: String,
     pub footer: String,
@@ -277,7 +278,9 @@ pub fn frame(
     };
     let capacity = height.saturating_sub(2 + usize::from(!status.is_empty()));
     let split = detail.and_then(|_| panes(width, height));
-    let list_width = split.map_or(width, |(list_width, _)| list_width);
+    // The columns each row is drawn in: the whole width when the pane gives way, the list pane's
+    // columns when it does not.
+    let row_width = split.map_or(width, |(list_columns, _)| list_columns);
     let first = window_start(list.selection(), list.rows().len(), capacity);
     let mut lines: Vec<Line> = list
         .rows()
@@ -296,7 +299,7 @@ pub fn frame(
                     },
                     row
                 ),
-                list_width,
+                row_width,
             ),
             selected: index == list.selection(),
         })
@@ -317,7 +320,7 @@ pub fn frame(
         title: truncate(if list.is_empty() { EMPTY_TITLE } else { TITLE }, width),
         lines,
         pane,
-        list_width: split.map_or(0, |(list_width, _)| list_width),
+        list_columns: split.map_or(0, |(list_columns, _)| list_columns),
         status: truncate(&status, width),
         footer: truncate(
             match (run, confirm) {
@@ -876,7 +879,7 @@ mod tests {
 
         for frame in [&short, &narrow] {
             assert!(frame.pane.is_empty());
-            assert_eq!(frame.list_width, 0);
+            assert_eq!(frame.list_columns, 0);
             assert_eq!(frame.lines[0].text, "> c  0:01  transcribed  hello");
             assert!(frame.lines[0].selected);
         }
@@ -894,7 +897,7 @@ mod tests {
 
         let first = frame(&list, Some(&newest), Run::Idle, "", None, 0, 100, 10);
 
-        assert_eq!(first.list_width, 66);
+        assert_eq!(first.list_columns, 66);
         assert_eq!(first.lines.len(), 8);
         assert!(first.footer.contains("PgUp/PgDn"));
         assert!(first.pane.iter().any(|line| line == "newer text"));

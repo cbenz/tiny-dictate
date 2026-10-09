@@ -265,7 +265,7 @@ impl Browser {
         let id = row.id.clone();
 
         match fs::read_to_string(self.sessions().join(&id).join(store::TRANSCRIPT_FILE)) {
-            Ok(transcript) if !transcript.trim().is_empty() => {
+            Ok(transcript) if view::holds_a_word(&transcript) => {
                 self.status = offer(&transcript, "transcript", self.clipboard_seconds);
             }
             Ok(_) => {
@@ -346,7 +346,7 @@ impl Browser {
         self.status = match result {
             rescue::Transcription::Text(text) => match intent {
                 Intent::Again => format!("transcribed {id}"),
-                Intent::Copy if text.trim().is_empty() => {
+                Intent::Copy if !view::holds_a_word(&text) => {
                     format!("nothing to copy: {id} has no transcript")
                 }
                 Intent::Copy => offer(&text, "transcript", self.clipboard_seconds),
@@ -526,7 +526,13 @@ impl Terminal {
         write_line(&mut out, 0, &frame.title, false)?;
         for (index, line) in frame.lines.iter().enumerate() {
             let row = u16::try_from(index + 1).unwrap_or(u16::MAX);
-            write_body_line(&mut out, row, line, frame.pane.get(index), frame.list_width)?;
+            write_body_line(
+                &mut out,
+                row,
+                line,
+                frame.pane.get(index),
+                frame.list_columns,
+            )?;
         }
         if !frame.status.is_empty() {
             write_line(&mut out, height.saturating_sub(2), &frame.status, false)?;
@@ -565,13 +571,13 @@ fn write_body_line(
     row: u16,
     left: &frame::Line,
     right: Option<&String>,
-    list_width: usize,
+    list_columns: usize,
 ) -> io::Result<()> {
     execute!(out, MoveTo(0, row))?;
     if left.selected {
         execute!(out, SetAttribute(Attribute::Reverse))?;
     }
-    write!(out, "{}", frame::pad(&left.text, list_width))?;
+    write!(out, "{}", frame::pad(&left.text, list_columns))?;
     if left.selected {
         execute!(out, SetAttribute(Attribute::Reset))?;
     }
