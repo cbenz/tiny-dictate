@@ -12,6 +12,7 @@ Commands:
   status                                  Show status (idle or working)
   session                                 List the kept sessions, newest first
   session list                            List the kept sessions, newest first
+  session show <id|last>                  Show one session: its fields, its path and its transcript
   session copy <id|last>                  Copy a session's transcript to the clipboard
   session transcribe <id|last> [--print]  Transcribe a session again, to the clipboard or to stdout
   session delete <id|last>                Remove exactly one session";
@@ -27,6 +28,10 @@ pub enum Command {
     Help,
     /// `session`, or `session list`: the kept sessions, newest first.
     SessionList,
+    /// `session show <id|last>`: one kept session read in full.
+    SessionShow {
+        target: String,
+    },
     /// `session copy <id|last>`: the transcript of a kept session on the clipboard, transcribing
     /// it first when it has none.
     SessionCopy {
@@ -100,9 +105,12 @@ fn session(rest: &[String]) -> Result<Command, Error> {
     match rest.first().map(String::as_str) {
         None => Ok(Command::SessionList),
         Some("list") => alone(Command::SessionList, &rest[1..]),
+        Some("show") => one_session(&rest[1..], "show", |target| Command::SessionShow { target }),
         Some("copy") => copy(&rest[1..]),
         Some("transcribe") => transcribe(&rest[1..]),
-        Some("delete") => delete(&rest[1..]),
+        Some("delete") => one_session(&rest[1..], "delete", |target| Command::SessionDelete {
+            target,
+        }),
         Some(word) => Err(Error::Unknown(word.to_owned())),
     }
 }
@@ -149,16 +157,18 @@ fn copy(rest: &[String]) -> Result<Command, Error> {
     }
 }
 
-/// `session delete <id|last>`: the verb that destroys one session, and only one. The single word
-/// is the session to remove; more than one is a conflict, and none is the argument it needs.
-fn delete(rest: &[String]) -> Result<Command, Error> {
+/// A verb that names exactly one session: one word, and no more. The single word is the session
+/// to read or to remove; more than one is a conflict, and none is the argument it needs.
+fn one_session(
+    rest: &[String],
+    verb: &str,
+    build: impl FnOnce(String) -> Command,
+) -> Result<Command, Error> {
     match rest {
-        [target] => Ok(Command::SessionDelete {
-            target: target.clone(),
-        }),
-        [] => Err(Error::Missing(
-            "session delete needs a session id or `last`".to_owned(),
-        )),
+        [target] => Ok(build(target.clone())),
+        [] => Err(Error::Missing(format!(
+            "session {verb} needs a session id or `last`"
+        ))),
         _ => Err(Error::Conflicting),
     }
 }
@@ -212,6 +222,18 @@ mod tests {
                 target: "2026-10-07T19-05-22".to_owned()
             })
         );
+        assert_eq!(
+            parse_words(&["session", "show", "last"]),
+            Ok(Command::SessionShow {
+                target: "last".to_owned()
+            })
+        );
+        assert_eq!(
+            parse_words(&["session", "show", "2026-10-07T19-05-22"]),
+            Ok(Command::SessionShow {
+                target: "2026-10-07T19-05-22".to_owned()
+            })
+        );
     }
 
     #[test]
@@ -240,6 +262,14 @@ mod tests {
         assert!(matches!(
             parse_words(&["session", "delete"]),
             Err(Error::Missing(_))
+        ));
+        assert!(matches!(
+            parse_words(&["session", "show"]),
+            Err(Error::Missing(_))
+        ));
+        assert!(matches!(
+            parse_words(&["session", "show", "last", "now"]),
+            Err(Error::Conflicting)
         ));
         assert!(matches!(
             parse_words(&["session", "copy", "last", "now"]),

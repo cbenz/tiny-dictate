@@ -747,6 +747,11 @@ no_waveform_channel_process() {
 
 session_dir_gone() { [ ! -e "$RUN/tiny-dictate/session" ]; }
 
+# One field of `session show`'s block: the label column, then its padding, then the value.
+shown_field() { # shown_field "<block>" <label>
+    sed -n "s/^$2  *//p" <<<"$1"
+}
+
 # ─────────────────────── the microphone, at the process seam ───────────────────────
 
 # One `pactl` command, with its arguments, was run: the stub logs every call it answered.
@@ -1541,6 +1546,89 @@ test_session_list_shows_an_unreadable_session() {
     check "its directory is gone" [ ! -e "$(sessions_dir)/2026-10-07T19-05-22" ]
 }
 
+# ────────────────────────── `session show`: one session read ──────────────────────────
+
+# `session show` reads one session in full: the fields the shared view renders, in one order,
+# then the transcript. `last` and a named id are the same read.
+test_session_show_prints_the_fields_and_the_transcript() {
+    start_test "session show prints the fields and then the transcript of one session"
+    TRANSCRIBE_TEXT="hello there, this is the transcript" td start
+    sleep 0.4
+    td stop
+    check "session finishes" wait_idle
+
+    local dir id out
+    dir="$(single_session_dir)"
+    id="$(basename "$dir")"
+
+    out="$(td session show last 2> "$WORK/show.err")"
+    check "session show succeeds" [ "$?" -eq 0 ]
+    check "the id is a field" [ "$(shown_field "$out" id)" = "$id" ]
+    check "the path is a field" [ "$(shown_field "$out" path)" = "$dir" ]
+    check "the outcome is a field" [ "$(shown_field "$out" outcome)" = "transcribed" ]
+    check "the started is a field" bash -c '[[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ ]]' _ "$(shown_field "$out" started)"
+    check "the ended is a field" bash -c '[[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ ]]' _ "$(shown_field "$out" ended)"
+    check "the duration is the human one" bash -c '[[ "$1" =~ ^[0-9]+:[0-9][0-9]$ ]]' _ "$(shown_field "$out" duration)"
+    check "the audio bytes are a field" [ "$(shown_field "$out" 'audio bytes')" = "$(metadata_value "$dir" audio_bytes)" ]
+    check "the pasted flag is a field" [ "$(shown_field "$out" pasted)" = "yes" ]
+    check "the transcriber is a field" [ "$(shown_field "$out" transcriber)" = "$BIN/transcribe" ]
+    check "an absent error is a dash" [ "$(shown_field "$out" error)" = "-" ]
+    check "the transcript follows the fields" bash -c '[[ "$1" == *"hello there, this is the transcript" ]]' _ "$out"
+
+    local by_id
+    by_id="$(td session show "$id" 2> /dev/null)"
+    check "session show <id> prints the same block" [ "$by_id" = "$out" ]
+
+    check "nothing was read from the runtime directory" session_dir_gone
+    check "no leftover process" no_leftover_process
+}
+
+# A session with no transcript says so rather than printing an empty block: a cancelled dictation
+# keeps its recording and was never transcribed.
+test_session_show_without_a_transcript() {
+    start_test "session show says a session has no transcript"
+    td start
+    sleep 0.4
+    td cancel
+    check "session finishes" wait_idle
+
+    local dir out
+    dir="$(single_session_dir)"
+
+    out="$(td session show last 2> "$WORK/show-none.err")"
+    check "session show succeeds" [ "$?" -eq 0 ]
+    check "the fields are still printed" [ "$(shown_field "$out" id)" = "$(basename "$dir")" ]
+    check "the outcome is the cancelled one" [ "$(shown_field "$out" outcome)" = "cancelled" ]
+    check "the session is said to have no transcript" \
+        bash -c '[[ "$1" == *"no transcript" ]]' _ "$out"
+    check "no transcript file was written" [ ! -e "$dir/transcript.txt" ]
+    check "nothing was copied to the clipboard" [ ! -e "$WORK/clipboard" ]
+}
+
+# A directory whose metadata cannot be read says so rather than succeeding with an empty body: it
+# shows what it can -- the id and the path -- and the read it was asked for fails.
+test_session_show_with_unreadable_metadata() {
+    start_test "session show says a session's metadata cannot be read"
+
+    local dir id
+    id="2026-10-07T19-05-22"
+    dir="$(sessions_dir)/$id"
+    mkdir -p "$dir"
+    printf '%s' 'not json' > "$dir/metadata.json"
+
+    local out
+    out="$(td session show "$id" 2> "$WORK/show-unreadable.err")"
+    check "session show exits non-zero" [ "$?" -ne 0 ]
+    check "the id is printed" [ "$(shown_field "$out" id)" = "$id" ]
+    check "the path is printed" [ "$(shown_field "$out" path)" = "$dir" ]
+    check "the block says the metadata cannot be read" \
+        bash -c '[[ "$1" == *"the metadata cannot be read"* ]]' _ "$out"
+    check "the failure is logged with the session" \
+        grep -q "^tiny-dictate: $id: cannot read the session's metadata$" "$WORK/show-unreadable.err"
+    check "the metadata is untouched" [ "$(cat "$dir/metadata.json")" = "not json" ]
+    check "the session is still there" test -d "$dir"
+}
+
 # `session transcribe last` re-runs the transcriber on the newest session, rewrites the transcript
 # and the raw response, copies the text to the clipboard and says so.
 test_transcribe_copies_and_rewrites() {
@@ -1783,6 +1871,12 @@ test_unknown_session_id() {
     check "session delete reports the unknown id" \
         grep -q 'unknown session: does-not-exist' "$WORK/unknown-delete.err"
 
+    td session show does-not-exist > "$WORK/unknown-show.out" 2> "$WORK/unknown-show.err"
+    check "session show exits non-zero" [ "$?" -ne 0 ]
+    check "session show reports the unknown id" \
+        grep -q 'unknown session: does-not-exist' "$WORK/unknown-show.err"
+    check "session show reads nothing for an unknown id" [ ! -s "$WORK/unknown-show.out" ]
+
     check "the session is still there" test -d "$dir"
     check "the transcript is untouched" [ "$(cat "$dir/transcript.txt")" = "kept text" ]
     check "nothing reached the clipboard" [ ! -e "$WORK/clipboard" ]
@@ -1822,6 +1916,10 @@ test_rescue_without_encoder_or_clipboard() {
 
     out="$(env "${bare_env[@]}" "$SCRIPT" session transcribe last --print)"
     check "session transcribe --print runs without the tools" [ "$out" = "rescued text" ]
+
+    out="$(env "${bare_env[@]}" "$SCRIPT" session show last)"
+    check "session show runs without the tools" \
+        bash -c '[[ "$1" == *"rescued text"* ]]' _ "$out"
 
     # A missing `wl-copy` costs the copy, never the transcription: an existing transcript is
     # offered and only the copy fails, and a session without one is still transcribed and written
@@ -2657,6 +2755,9 @@ run_test test_journal_no_collaborator_chatter
 run_test test_reference_transcriber
 run_test test_session_list_shows_the_kept_sessions
 run_test test_session_list_shows_an_unreadable_session
+run_test test_session_show_prints_the_fields_and_the_transcript
+run_test test_session_show_without_a_transcript
+run_test test_session_show_with_unreadable_metadata
 run_test test_transcribe_copies_and_rewrites
 run_test test_transcribe_print
 run_test test_session_copy_offers_the_stored_transcript
