@@ -17,7 +17,7 @@ const TITLE: &str = "sessions";
 const EMPTY_TITLE: &str = "no kept sessions";
 
 /// The keys that mean something right now.
-const FOOTER: &str = "↑/↓ move  Home/End jump  r reload  q quit";
+const FOOTER: &str = "↑/↓ move  Home/End jump  c copy  i id  p path  r reload  q quit";
 
 /// The list state: the rows on disk and the one the selection sits on.
 pub struct List {
@@ -92,20 +92,22 @@ pub struct Line {
     pub selected: bool,
 }
 
-/// What one frame draws: the title, the visible rows and the footer.
+/// What one frame draws: the title, the visible rows, the status line and the footer.
 pub struct Frame {
     pub title: String,
     pub lines: Vec<Line>,
+    /// What the last action did, above the footer; empty when no action has run.
+    pub status: String,
     pub footer: String,
 }
 
 /// What one frame draws, for a terminal `width` columns wide and `height` rows tall.
 ///
-/// The title and the footer take one line each; the rows use the rest, scrolled so the selection
-/// is always visible. A line is cut to the width, counting a wide character as two columns so the
-/// cut never lands inside one.
-pub fn frame(list: &List, width: usize, height: usize) -> Frame {
-    let capacity = height.saturating_sub(2);
+/// The title, the footer and, when there is one, the status line take a line each; the rows use
+/// the rest, scrolled so the selection is always visible. A line is cut to the width, counting a
+/// wide character as two columns so the cut never lands inside one.
+pub fn frame(list: &List, status: &str, width: usize, height: usize) -> Frame {
+    let capacity = height.saturating_sub(2 + usize::from(!status.is_empty()));
     let first = window_start(list.selection(), list.rows().len(), capacity);
     let lines = list
         .rows()
@@ -133,6 +135,7 @@ pub fn frame(list: &List, width: usize, height: usize) -> Frame {
     Frame {
         title: truncate(if list.is_empty() { EMPTY_TITLE } else { TITLE }, width),
         lines,
+        status: truncate(status, width),
         footer: truncate(FOOTER, width),
     }
 }
@@ -180,10 +183,33 @@ mod tests {
     }
 
     #[test]
+    fn a_status_line_sits_above_the_footer_and_takes_one_row_from_the_list() {
+        let list = List::new(vec![row("d"), row("c"), row("b"), row("a")]);
+
+        let frame = frame(&list, "id copied to the clipboard", 80, 5);
+
+        // The title and the footer take a line each, the status line one more: two rows fit.
+        assert_eq!(frame.status, "id copied to the clipboard");
+        assert_eq!(frame.lines.len(), 2);
+        assert_eq!(frame.lines[0].text, "> d  0:01  transcribed  hello");
+        assert!(!frame.footer.is_empty());
+    }
+
+    #[test]
+    fn a_frame_without_a_status_draws_no_status_line_and_keeps_the_whole_height_for_the_rows() {
+        let list = List::new(vec![row("d"), row("c"), row("b"), row("a")]);
+
+        let frame = frame(&list, "", 80, 5);
+
+        assert!(frame.status.is_empty());
+        assert_eq!(frame.lines.len(), 3);
+    }
+
+    #[test]
     fn a_frame_lists_one_line_per_session_newest_first_with_the_first_selected() {
         let list = List::new(vec![row("2026-10-09T17-00-00"), row("2026-10-08T17-00-00")]);
 
-        let frame = frame(&list, 80, 24);
+        let frame = frame(&list, "", 80, 24);
 
         assert_eq!(frame.title, "sessions");
         assert_eq!(frame.lines.len(), 2);
@@ -237,7 +263,7 @@ mod tests {
     fn an_empty_history_is_an_empty_list_and_not_an_error() {
         let list = List::new(Vec::new());
 
-        let frame = frame(&list, 80, 24);
+        let frame = frame(&list, "", 80, 24);
 
         assert_eq!(frame.title, "no kept sessions");
         assert!(frame.lines.is_empty());
@@ -250,7 +276,7 @@ mod tests {
         list.select_last();
 
         // The title and the footer take a line each: one row is all a three-line terminal holds.
-        let frame = frame(&list, 80, 3);
+        let frame = frame(&list, "", 80, 3);
 
         assert_eq!(frame.lines.len(), 1);
         assert_eq!(frame.lines[0].text, "> a  0:01  transcribed  hello");
@@ -267,7 +293,7 @@ mod tests {
         }]);
 
         // "> c  0:00  x  日本" is 18 columns; at 17 the second ideograph does not fit whole.
-        let frame = frame(&list, 17, 24);
+        let frame = frame(&list, "", 17, 24);
 
         assert_eq!(frame.lines[0].text, "> c  0:00  x  日");
         assert!(UnicodeWidthStr::width(frame.lines[0].text.as_str()) <= 17);

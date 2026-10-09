@@ -1912,6 +1912,82 @@ test_browse_shows_an_unreadable_session() {
     check "the terminal is back to its previous state" grep -q '^TERMIOS=restored$' "$WORK/browse-unreadable.summary"
 }
 
+# `c`, `i` and `p` copy the selected session's transcript, its id and its path through the one
+# clipboard writer `session copy` and a live dictation use: both selections, the password hint,
+# under the configured lease. Nothing is injected, and the browser stays open.
+test_browse_copies_the_transcript_the_id_and_the_path() {
+    start_test "the browser copies the transcript, the id and the path of the selected session"
+    write_config 'clipboard_seconds = 4'
+    write_session 2026-10-08T10-00-00 transcribed "older text"
+    write_session 2026-10-09T10-00-00 transcribed "newer text"
+
+    rm -f "$WORK/clipboard"
+    : > "$WORK/wl-copy.log"
+    : > "$WORK/wl-copy-parent.log"
+    : > "$WORK/ydotool.log"
+    pty 'c,q' "$WORK/browse-copy.out" session browse > "$WORK/browse-copy.summary"
+
+    check "the browser exits zero" grep -q '^EXIT=0$' "$WORK/browse-copy.summary"
+    check "the terminal is back to its previous state" grep -q '^TERMIOS=restored$' "$WORK/browse-copy.summary"
+    check "the selected session's transcript is on the clipboard" wait_pasted_text "newer text"
+    check "the CLIPBOARD offer carries the password hint" \
+        grep -qx -- '--foreground --sensitive' "$WORK/wl-copy.log"
+    check "the PRIMARY offer carries the password hint" \
+        grep -qx -- '--primary --foreground --sensitive' "$WORK/wl-copy.log"
+    check "the offer is wrapped in the configured lease" \
+        grep -q -- 'timeout 4 .*wl-copy --foreground --sensitive' "$WORK/wl-copy-parent.log"
+    check "nothing was injected" [ ! -s "$WORK/ydotool.log" ]
+    check "the status line says the transcript was copied" \
+        grep -q 'transcript copied to the clipboard' "$WORK/browse-copy.out"
+
+    # The copy follows the selection, not the newest row: moving down copies the older session's.
+    rm -f "$WORK/clipboard"
+    pty 'DOWN,i,q' "$WORK/browse-copy-id.out" session browse > "$WORK/browse-copy-id.summary"
+    check "the id of the row moved to is on the clipboard" wait_pasted_text "2026-10-08T10-00-00"
+    check "the status line says the id was copied" \
+        grep -q 'id copied to the clipboard' "$WORK/browse-copy-id.out"
+
+    rm -f "$WORK/clipboard"
+    pty 'p,q' "$WORK/browse-copy-path.out" session browse > "$WORK/browse-copy-path.summary"
+    check "the selected session's path is on the clipboard" \
+        wait_pasted_text "$(sessions_dir)/2026-10-09T10-00-00"
+    check "the status line says the path was copied" \
+        grep -q 'path copied to the clipboard' "$WORK/browse-copy-path.out"
+}
+
+# An action with nothing selected says so and touches neither the clipboard nor the keyboard: there
+# is no session to copy.
+test_browse_copy_with_nothing_selected() {
+    start_test "the browser says no session is selected when there is nothing to copy"
+
+    rm -f "$WORK/clipboard"
+    : > "$WORK/ydotool.log"
+    pty 'c,i,p,q' "$WORK/browse-copy-empty.out" session browse > "$WORK/browse-copy-empty.summary"
+
+    check "the browser exits zero" grep -q '^EXIT=0$' "$WORK/browse-copy-empty.summary"
+    check "the terminal is back to its previous state" \
+        grep -q '^TERMIOS=restored$' "$WORK/browse-copy-empty.summary"
+    check "the status line says no session is selected" \
+        grep -q 'no session selected' "$WORK/browse-copy-empty.out"
+    check "nothing reached the clipboard" [ ! -e "$WORK/clipboard" ]
+    check "nothing was injected" [ ! -s "$WORK/ydotool.log" ]
+}
+
+# A session whose transcript is missing or holds no word is reported rather than copied empty: the
+# browser copies what is on disk and never transcribes a session itself.
+test_browse_copy_without_a_transcript() {
+    start_test "the browser reports a session with no transcript instead of copying nothing"
+    write_session 2026-10-09T10-00-00 cancelled
+
+    rm -f "$WORK/clipboard"
+    pty 'c,q' "$WORK/browse-copy-none.out" session browse > "$WORK/browse-copy-none.summary"
+
+    check "the browser exits zero" grep -q '^EXIT=0$' "$WORK/browse-copy-none.summary"
+    check "the status line says there is nothing to copy" \
+        grep -q 'nothing to copy' "$WORK/browse-copy-none.out"
+    check "nothing reached the clipboard" [ ! -e "$WORK/clipboard" ]
+}
+
 # The browser reads files only and takes no command lock: the dictation shortcuts still work while
 # it is open on the screen.
 test_browse_holds_no_command_lock() {
@@ -3161,6 +3237,9 @@ run_test test_browse_leaves_on_ctrl_c
 run_test test_browse_a_failed_run_restores_the_terminal
 run_test test_browse_an_empty_history_is_not_an_error
 run_test test_browse_shows_an_unreadable_session
+run_test test_browse_copies_the_transcript_the_id_and_the_path
+run_test test_browse_copy_with_nothing_selected
+run_test test_browse_copy_without_a_transcript
 run_test test_browse_holds_no_command_lock
 run_test test_transcribe_copies_and_rewrites
 run_test test_transcribe_print
