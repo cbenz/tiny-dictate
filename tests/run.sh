@@ -279,22 +279,35 @@ STUB
 cat > "$BIN/pactl" <<'STUB'
 #!/usr/bin/env bash
 # Stand-in for the audio server's control command, the only command the microphone module runs.
-# `list sources` publishes the source's base volume (PACTL_NO_BASE omits the line, PACTL_BAD_BASE
-# prints one the parser cannot read) and its mute state (PACTL_MUTED reports it as muted). Every
-# call is logged with the instant it was made, so the suite can check which commands ran, with
-# which arguments, and in which order against the recorder. `get-source-mute` and
-# `get-source-volume` stay answered because they are the probes a tool that checks before writing
-# would run: the muted-source case asserts that only `set-` calls were made.
+# `list sources` publishes two sources, so reading the wrong one is visible: the source that is not
+# the default is printed first and carries a different base (3277) from the one the tool must write
+# (6554). PACTL_SINGLE_SOURCE publishes the default source alone; PACTL_NO_DEFAULT_SOURCE makes
+# `get-default-source` fail; PACTL_MUTED reports the default source as muted, PACTL_NO_BASE omits
+# its base line, and PACTL_BAD_BASE prints one the parser cannot read. Every call is logged with the
+# instant it was made, so the suite can check which commands ran, with which arguments, and in
+# which order against the recorder. `get-source-mute` and `get-source-volume` stay answered because
+# they are the probes a tool that checks before writing would run: the muted-source case asserts
+# that only `set-` calls were made.
 printf 'pactl %s at %s\n' "$*" "$(date +%s.%N)" >> "$WORK/pactl.log"
 case "$1" in
     list)
-        printf 'Source #0\n'
+        if [ -z "${PACTL_SINGLE_SOURCE:-}" ]; then
+            printf 'Source #0\n\tName: alsa_output.stub.monitor\n\tBase Volume: 3277 / 5%% / -66.00 dB\n'
+            printf 'Source #1\n'
+        else
+            printf 'Source #0\n'
+        fi
+        printf '\tName: %s\n' "${PACTL_DEFAULT_SOURCE:-alsa_input.stub}"
         [ -n "${PACTL_MUTED:-}" ] && printf '\tMute: yes\n'
         if [ -n "${PACTL_BAD_BASE:-}" ]; then
             printf '\tBase Volume: nonsense / 10%% / -60.00 dB\n'
         elif [ -z "${PACTL_NO_BASE:-}" ]; then
             printf '\tBase Volume: 6554 / 10%% / -60.00 dB\n'
         fi
+        ;;
+    get-default-source)
+        [ -n "${PACTL_NO_DEFAULT_SOURCE:-}" ] && exit 1
+        printf '%s\n' "${PACTL_DEFAULT_SOURCE:-alsa_input.stub}"
         ;;
     get-source-mute)
         [ -n "${PACTL_MUTED:-}" ] && echo "Mute: yes" || echo "Mute: no"
@@ -1393,6 +1406,51 @@ test_microphone_base_volume() {
     check "session directory removed" session_dir_gone
 }
 
+# The base volume written is the default source's, whatever the listing prints first: with several
+# sources the tool reads the block the server names with `pactl get-default-source`, never another
+# source's base ([ADR-0014](../adr/0014-the-microphone-at-its-base-volume.md)). A server that names
+# no source reads the listing's only source, and a listing that publishes several leaves no base to
+# write rather than guessing one.
+test_microphone_reads_the_default_source() {
+    start_test "the base volume is read from the default source, not the first one the listing prints"
+    td start 2>> "$JOURNAL"
+    sleep 0.4
+    check "the server was asked which source is default" pactl_called "get-default-source"
+    check "the default source's base volume is written back raw" \
+        pactl_called "set-source-volume @DEFAULT_SOURCE@ 6554"
+    check "another source's base volume is never written" \
+        bash -c '! grep -q "^pactl set-source-volume .* 3277$" "$1"' _ "$WORK/pactl.log"
+    check "the dictation is recording" [ "$(td status)" = "working" ]
+    td stop 2>> "$JOURNAL"
+    check "session finishes" wait_idle
+    check "transcription pasted" [ "$(pasted_text)" = "text transcribed" ]
+
+    # The server names no source and the listing publishes two: no base is written at all, because
+    # writing one would mean guessing which source it belongs to.
+    PACTL_NO_DEFAULT_SOURCE=1 td start 2>> "$JOURNAL"
+    sleep 0.4
+    check "the server was asked again which source is default" \
+        [ "$(pactl_calls get-default-source)" -eq 2 ]
+    check "the second dictation falls back to the configured level" \
+        pactl_called "set-source-volume @DEFAULT_SOURCE@ 10%"
+    check "no other source's base volume was written" \
+        bash -c '! grep -q "^pactl set-source-volume .* 3277$" "$1"' _ "$WORK/pactl.log"
+    td stop 2>> "$JOURNAL"
+    check "the second session finishes" wait_idle
+
+    # The server names no source but the listing publishes exactly one: that source is the default,
+    # and its base is the one written.
+    PACTL_SINGLE_SOURCE=1 PACTL_NO_DEFAULT_SOURCE=1 td start 2>> "$JOURNAL"
+    sleep 0.4
+    check "the single source's base volume is written" \
+        pactl_called "set-source-volume @DEFAULT_SOURCE@ 6554"
+    check "the level was written once more, not twice" [ "$(pactl_calls set-source-volume)" -eq 3 ]
+    td stop 2>> "$JOURNAL"
+    check "the third session finishes" wait_idle
+    check "no leftover process" no_leftover_process
+    check "session directory removed" session_dir_gone
+}
+
 # A source the server publishes as muted is no longer a refusal: the tool unmutes it and dictates,
 # and it never reads the mute state to decide anything ([ADR-0014](../adr/0014-the-microphone-at-its-base-volume.md)).
 test_microphone_muted_source_records() {
@@ -1839,6 +1897,15 @@ test_session_show_with_unreadable_metadata() {
         grep -q "^tiny-dictate: $id: cannot read the session's metadata$" "$WORK/show-unreadable.err"
     check "the metadata is untouched" [ "$(cat "$dir/metadata.json")" = "not json" ]
     check "the session is still there" test -d "$dir"
+
+    # `--output json` is the same verdict in the other format: the object is printed -- its id, its
+    # path and `"metadata": null` -- and the exit is non-zero, so a script sees the session and the
+    # failure at once.
+    td session show "$id" --output json > "$WORK/show-unreadable.json" 2>> "$WORK/show-unreadable.err"
+    check "the json format exits non-zero too" [ "$?" -ne 0 ]
+    check "the object is the session with null metadata" \
+        json_document_is "$WORK/show-unreadable.json" \
+        'd["id"] == "2026-10-07T19-05-22" and d["path"] == extra[0] and d["metadata"] is None' "$dir"
 }
 
 # `--output json` renders the listing as data: one document, newest first, each element the id, the
@@ -1991,6 +2058,25 @@ test_browse_refuses_a_pipe() {
 }
 
 # ─────────────────────── the browser on a pseudo-terminal ───────────────────────
+
+# Bare `session` on a terminal opens the browser, not the listing: the surface follows what stdout
+# is, so one command serves a shortcut and a pipe ([ADR-0016](../adr/0016-the-session-group.md)). The
+# pipe is covered by test_browse_refuses_a_pipe.
+test_bare_session_on_a_terminal_opens_the_browser() {
+    start_test "bare session on a terminal opens the browser, not the listing"
+
+    write_session 2026-10-09T10-00-00 transcribed "text"
+
+    pty 'q' "$WORK/bare-session-tty.out" session > "$WORK/bare-session-tty.summary"
+
+    check "it exits zero" grep -q '^EXIT=0$' "$WORK/bare-session-tty.summary"
+    check "the terminal is back to its previous state" \
+        grep -q '^TERMIOS=restored$' "$WORK/bare-session-tty.summary"
+    check "it entered the alternate screen" \
+        bash -c 'grep -aqF "$(printf "\033[?1049h")" "$1"' _ "$WORK/bare-session-tty.out"
+    check "it drew the selected row the listing never marks" \
+        bash -c 'grep -q "> 2026-10-09T10-00-00" "$1"' _ "$WORK/bare-session-tty.out"
+}
 
 # The browser opens on a terminal, lists the kept sessions newest first from the shared view, moves
 # the selection with the arrows and the vim keys, reloads on `r` and leaves on `q`, giving the
@@ -3607,6 +3693,7 @@ run_test test_cancel
 run_test test_chain_after_cancel
 run_test test_cancel_during_transcription
 run_test test_microphone_base_volume
+run_test test_microphone_reads_the_default_source
 run_test test_microphone_muted_source_records
 run_test test_microphone_fallback_level
 run_test test_microphone_input_level_from_config
@@ -3637,6 +3724,7 @@ run_test test_session_list_output_json
 run_test test_session_show_output_json
 run_test test_output_flag_is_refused
 run_test test_browse_refuses_a_pipe
+run_test test_bare_session_on_a_terminal_opens_the_browser
 run_test test_browse_on_a_terminal
 run_test test_browse_the_pane_follows_the_selection
 run_test test_browse_leaves_on_ctrl_c

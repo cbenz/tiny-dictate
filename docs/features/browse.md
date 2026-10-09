@@ -26,6 +26,12 @@ session that holds no transcript says `no transcript`; a session whose metadata 
 its id and its path and says the metadata is unreadable; an empty history draws an empty pane rather
 than a stale one. Moving the selection reloads the pane on the session it lands on, from the top.
 
+Which surface a key moves is fixed by what that key moves, not chosen by a cursor: there is no focus
+to switch between the two panes. The arrows and `Home`/`End` belong to the list -- `Home` and `End`
+take the selection to the newest and the oldest session and read the pane from that end -- and
+`PgUp`/`PgDn` belong to the transcript, scrolling it a page at a time. The footer names both, so a
+key is named wherever it works.
+
 A terminal too narrow or too short for both panes is not a panic: below the width and height two
 panes need to stay readable, the pane gives way and the list keeps the whole width. The footer names
 the keys that mean something right now, so it does not offer the page keys where there is no pane to
@@ -52,7 +58,7 @@ covers the rows or the pane.
 | key | what it does |
 |-----|--------------|
 | `↑` / `↓`, `k` / `j` | move the selection, reloading the pane on the session it lands on |
-| `Home` / `End` | jump to the newest or the oldest session, and take the transcript to that end |
+| `Home` / `End` | jump the list to the newest or the oldest session, reading the pane from that end |
 | `PgUp` / `PgDn` | scroll the transcript by a page |
 | `c` | copy the selected session's transcript, transcribing it first when it has none |
 | `i` | copy its id |

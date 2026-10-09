@@ -26,7 +26,8 @@ dictation — a headset came or went — is the source set, and the source recor
 
 | command | why |
 |---------|-----|
-| `pactl list sources` | read the source's `Base Volume:` line |
+| `pactl get-default-source` | name the source the base volume is read from |
+| `pactl list sources` | read that source's `Base Volume:` line |
 | `pactl set-source-volume @DEFAULT_SOURCE@ <raw>` | write the base back, or the configured percentage when the server publishes none |
 | `pactl set-source-mute @DEFAULT_SOURCE@ 0` | unmute the source |
 
@@ -42,11 +43,16 @@ no configuration key guards it, because a tool that cannot take the microphone c
 ## When the server answers badly
 
 `pactl`'s output is parsed, not trusted, and an unreadable answer is a normal outcome rather than an
-error. A server that answers without a base volume line, or with a line the parser cannot read, is
+error. The listing is read as blocks of sources, and the base is the `Base Volume:` line of the
+block whose `Name:` is the one `pactl get-default-source` printed: with several sources, another
+source's base is never written on the default one. A server that answers without a base volume
+line, or with a line the parser cannot read, is
 answered with the configured [`input_level_pct`](configuration.md) — written as a percentage — so the
-recording never starts at the level the user last left it at. The key is never the target: when the
-server publishes a base, that raw value is what is written. The source is unmuted all the same, so a
-bad answer from the server is never silence, and never a refusal.
+recording never starts at the level the user last left it at. A server that publishes no default
+source and a listing holding exactly one source has that source's base read; a listing holding
+several leaves nothing to pick by, and the configured level stands in. The key is never the target:
+when the server publishes a base, that raw value is what is written. The source is unmuted all the
+same, so a bad answer from the server is never silence, and never a refusal.
 
 A server that cannot be reached at all — no `pactl` on `PATH`, no server running — writes nothing:
 no volume and no unmute command are attempted, one log line says so, and the dictation records as
