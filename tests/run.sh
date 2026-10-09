@@ -1436,6 +1436,25 @@ test_session_list_shows_an_unreadable_session() {
     check "its directory is gone" [ ! -e "$(sessions_dir)/2026-10-07T19-05-22" ]
 }
 
+# `session browse` draws on a terminal and nowhere else: a stdout that is not one is refused with
+# a message rather than a stream of escape sequences into the pipe. Bare `session` is the friendly
+# entry point: it lists a pipe and browses a terminal.
+test_browse_refuses_a_pipe() {
+    start_test "session browse refuses a piped stdout instead of drawing escape sequences"
+
+    td session browse > "$WORK/browse.out" 2> "$WORK/browse.err"
+    check "a piped browse exits non-zero" [ "$?" -ne 0 ]
+    check "nothing is drawn on stdout" [ ! -s "$WORK/browse.out" ]
+    check "no escape sequence reaches the pipe" bash -c '! LC_ALL=C grep -q "$(printf "\033")" "$1"' _ "$WORK/browse.out"
+    check "the refusal names the terminal" grep -q 'terminal' "$WORK/browse.err"
+
+    # Bare `session` lists when its stdout is a pipe: the same command serves a shortcut and a
+    # pipe, and an empty history is an empty listing rather than an error.
+    td session > "$WORK/bare-session.out" 2> "$WORK/bare-session.err"
+    check "bare session exits zero when piped" [ "$?" -eq 0 ]
+    check "bare session lists nothing when nothing is kept" [ ! -s "$WORK/bare-session.out" ]
+}
+
 # `session transcribe last` re-runs the transcriber on the newest session, rewrites the transcript
 # and the raw response, copies the text to the clipboard and says so.
 test_transcribe_copies_and_rewrites() {
@@ -2388,6 +2407,7 @@ run_test test_journal_no_collaborator_chatter
 run_test test_reference_transcriber
 run_test test_session_list_shows_the_kept_sessions
 run_test test_session_list_shows_an_unreadable_session
+run_test test_browse_refuses_a_pipe
 run_test test_transcribe_copies_and_rewrites
 run_test test_transcribe_print
 run_test test_session_delete_removes_one

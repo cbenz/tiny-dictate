@@ -10,8 +10,9 @@ Commands:
   cancel                                  Cancel recording
   toggle                                  Start if idle, stop if recording
   status                                  Show status (idle or working)
-  session                                 List the kept sessions, newest first
+  session                                 List the kept sessions, or browse them on a terminal
   session list                            List the kept sessions, newest first
+  session browse                          Browse the kept sessions on a terminal
   session transcribe <id|last> [--print]  Transcribe a session again, to the clipboard or to stdout
   session delete <id|last>                Remove exactly one session";
 
@@ -24,8 +25,12 @@ pub enum Command {
     Toggle,
     Status,
     Help,
-    /// `session`, or `session list`: the kept sessions, newest first.
+    /// `session` alone: browses when stdout is a terminal, lists otherwise.
+    Session,
+    /// `session list`: the kept sessions, newest first.
     SessionList,
+    /// `session browse`: the kept sessions read on a terminal.
+    SessionBrowse,
     SessionTranscribe {
         target: String,
         print: bool,
@@ -92,8 +97,9 @@ fn alone(command: Command, rest: &[String]) -> Result<Command, Error> {
 /// an unknown argument, like one at the root.
 fn session(rest: &[String]) -> Result<Command, Error> {
     match rest.first().map(String::as_str) {
-        None => Ok(Command::SessionList),
+        None => Ok(Command::Session),
         Some("list") => alone(Command::SessionList, &rest[1..]),
+        Some("browse") => alone(Command::SessionBrowse, &rest[1..]),
         Some("transcribe") => transcribe(&rest[1..]),
         Some("delete") => delete(&rest[1..]),
         Some(word) => Err(Error::Unknown(word.to_owned())),
@@ -163,8 +169,12 @@ mod tests {
 
     #[test]
     fn the_session_group_reads_its_verbs() {
-        assert_eq!(parse_words(&["session"]), Ok(Command::SessionList));
+        assert_eq!(parse_words(&["session"]), Ok(Command::Session));
         assert_eq!(parse_words(&["session", "list"]), Ok(Command::SessionList));
+        assert_eq!(
+            parse_words(&["session", "browse"]),
+            Ok(Command::SessionBrowse)
+        );
         assert_eq!(
             parse_words(&["session", "transcribe", "last"]),
             Ok(Command::SessionTranscribe {
@@ -220,6 +230,10 @@ mod tests {
         ));
         assert!(matches!(
             parse_words(&["session", "list", "now"]),
+            Err(Error::Unknown(_))
+        ));
+        assert!(matches!(
+            parse_words(&["session", "browse", "now"]),
             Err(Error::Unknown(_))
         ));
         assert!(matches!(

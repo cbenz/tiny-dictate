@@ -6,14 +6,26 @@
 //! rescue what was kept.
 
 use std::fs;
+use std::io::IsTerminal;
 use std::process::ExitCode;
 
+use crate::browse;
 use crate::config;
 use crate::log;
 use crate::session::Runtime;
 use crate::store;
 use crate::text;
 use crate::view;
+
+/// `session` on its own: the friendly entry point. It browses when its stdout is a terminal and
+/// lists otherwise, so one command serves a shortcut and a pipe.
+pub fn session() -> ExitCode {
+    if std::io::stdout().is_terminal() {
+        browse::run()
+    } else {
+        session_list()
+    }
+}
 
 /// `session list`: the kept sessions, newest first, one row per session.
 ///

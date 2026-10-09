@@ -7,6 +7,7 @@
 use std::process::ExitCode;
 
 mod audio;
+mod browse;
 mod claim;
 mod cli;
 mod config;
@@ -71,7 +72,9 @@ fn main() -> ExitCode {
         cli::Command::Stop => session::stop(),
         cli::Command::Cancel => session::cancel(),
         cli::Command::Toggle => session::toggle(),
+        cli::Command::Session => rescue::session(),
         cli::Command::SessionList => rescue::session_list(),
+        cli::Command::SessionBrowse => browse::run(),
         cli::Command::SessionTranscribe { target, print } => {
             rescue::transcribe_session(&target, print)
         }
