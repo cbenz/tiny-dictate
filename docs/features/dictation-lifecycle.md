@@ -33,6 +33,7 @@ directory under `$XDG_RUNTIME_DIR` (falling back to `$XDG_STATE_HOME` or `~/.loc
 | `waveform` | the [waveform channel](pill.md) |
 | `arecord.err` | the recorder's stderr |
 | `lame.err` | the encoder's stderr |
+| `presenter.err` | the presenter's stderr |
 | `transcribe.err` | the transcriber's stderr |
 
 The recording and everything else that must outlive the session live in the durable
@@ -104,8 +105,8 @@ The failures that are notified:
 - `Could not paste the transcription`, when the injected `Shift+Insert` fails.
 - `No transcription command. Set TINY_DICTATE_TRANSCRIBE or install tiny-dictate-transcribe`,
   before any recording starts.
-- `Cannot create the audio pipe`, and `Microphone is muted. Unmute it before dictating.` with
-  critical urgency.
+- `Microphone is muted. Unmute it before dictating.` with critical urgency.
+- `Cannot create the audio pipe` with normal urgency.
 
 A missing command is not a notification of its own: the tool reports what it could not do. `start`
 says the transcriber is missing before anything is claimed, and an `arecord` or `lame` that cannot be
@@ -151,9 +152,10 @@ none when they do not:
 | `session deleted` | `session delete` destroyed one session; concerns none by the time it is gone |
 | `unknown session: <id>` | an id no kept session answers to |
 
-The encoder's and the recorder's own output is kept out of the journal: the recorder's stderr goes
-to `arecord.err`, the encoder's to `lame.err`, and the transcriber's to `transcribe.err`, which the
-failure path flattens into the one line the metadata's `error` holds and the notification shows.
+The encoder's, the recorder's, the presenter's and the transcriber's own output is kept out of the
+journal: the recorder's stderr goes to `arecord.err`, the encoder's to `lame.err`, the presenter's to
+`presenter.err`, and the transcriber's to `transcribe.err`, which the failure path flattens into the
+one line the metadata's `error` holds and the notification shows.
 
 ## The recorder race
 

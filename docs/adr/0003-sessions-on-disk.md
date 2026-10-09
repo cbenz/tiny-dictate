@@ -12,3 +12,7 @@ out. Writing to durable storage from the first frame makes a crash, a `kill` or 
 most what has not been written, and makes a failed dictation re-transcribable. The ephemeral side —
 the claim directory, the fifo, the waveform channel, the state file — stays in the runtime directory,
 where it belongs.
+
+`metadata.json`'s `paste` is a boolean (`pasted`), not an instant: ticket #10 asks "whether the text
+was pasted", so the field records the yes-or-no the rescue surface reads rather than when it
+happened.

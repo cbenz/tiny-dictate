@@ -76,13 +76,15 @@ presenter was asked to draw, the lifecycle of the processes, the exit codes.
 - the recorder race run `RACE_ITERATIONS` times, optionally against another implementation
 - the journal: one line per stage of a dictation, each line carrying the session id it concerns and
   none when it concerns no session, the failure line agreeing with the metadata and the
-  notification, and the encoder's and the recorder's chatter kept out
+  notification, and the encoder's, the recorder's and the presenter's chatter kept out
+- the reference transcriber's contract against a stubbed `curl`: the audio file as `$1`, the raw
+  answer left in the session directory as `$2/transcript.raw.json`, the transcript on stdout
 
 ## The suite is the port's acceptance criterion
 
-The suite stays green and unchanged from before the port to Rust to after it, the Rust binary taking
-the place of the script. It is the safety net that makes the port boring, and it is why the tests are
-not to be rewritten in Rust.
+The suite keeps its scenarios and stays green through the port, but its driver was rewritten: it
+used to drive the shell script and now runs the Rust binary at `target/release/tiny-dictate`. It is
+the safety net that makes the port boring, and it is why the tests are not to be rewritten in Rust.
 
 The process seam is the primary one: the states written to the state file, the events the presenter
 was asked to draw, the lifecycle of the processes and the exit codes are all observable there. A few
