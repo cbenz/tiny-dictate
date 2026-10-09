@@ -1069,6 +1069,19 @@ metadata_error() { # metadata_error <session directory>
     sed -n 's/^  "error": //p' "$1/metadata.json"
 }
 
+# A JSON document the data commands printed, tested with a python expression bound to `d`. python3
+# is already the suite's helper for the pseudo-terminal, and a JSON parser is what tells a document
+# from a layout: `d` is the whole document, `extra` the arguments after the expression, and `json`,
+# `os` and `sys` are in scope.
+json_document_is() { # json_document_is <file> <python expression over d> [extra arguments...]
+    local file="$1" expression="$2"
+    shift 2
+    python3 -W ignore -c 'import json, os, sys
+d = json.load(open(sys.argv[1]))
+extra = sys.argv[3:]
+sys.exit(0 if eval(sys.argv[2]) else 1)' "$file" "$expression" "$@"
+}
+
 # Kill the whole run the way a crash would: the session process first, then the pipeline and
 # the pill. SIGKILL, so nothing gets a chance to tidy up after itself.
 kill_run() {
@@ -1804,6 +1817,136 @@ test_session_show_with_unreadable_metadata() {
         grep -q "^tiny-dictate: $id: cannot read the session's metadata$" "$WORK/show-unreadable.err"
     check "the metadata is untouched" [ "$(cat "$dir/metadata.json")" = "not json" ]
     check "the session is still there" test -d "$dir"
+}
+
+# `--output json` renders the listing as data: one document, newest first, each element the id, the
+# path and the metadata the file holds. A session whose metadata cannot be read is an element with
+# `metadata: null` -- the array is never shorter than the sessions directory.
+test_session_list_output_json() {
+    start_test "session list --output json prints one document of every kept session"
+
+    write_session 2026-10-08T10-00-00 transcribed "older text"
+    write_session 2026-10-09T11-00-00 transcribed "newer text"
+    mkdir -p "$(sessions_dir)/2026-10-07T09-00-00"
+    printf '%s' 'not json' > "$(sessions_dir)/2026-10-07T09-00-00/metadata.json"
+
+    td session list --output json > "$WORK/list.json" 2> "$WORK/list-json.err"
+    check "session list --output json succeeds" [ "$?" -eq 0 ]
+    check "the listing is one array of three elements" \
+        json_document_is "$WORK/list.json" 'isinstance(d, list) and len(d) == 3'
+    check "the elements are newest first, each with id, path and metadata" \
+        json_document_is "$WORK/list.json" \
+        '[e["id"] for e in d] == ["2026-10-09T11-00-00", "2026-10-08T10-00-00", "2026-10-07T09-00-00"] and all(set(e) == {"id", "path", "metadata"} for e in d)'
+    check "each path is the session's directory" \
+        json_document_is "$WORK/list.json" \
+        'all(e["path"] == extra[0] + "/" + e["id"] for e in d)' "$(sessions_dir)"
+    check "the array is never shorter than the sessions directory" \
+        json_document_is "$WORK/list.json" \
+        'len(d) == len(os.listdir(extra[0]))' "$(sessions_dir)"
+    check "the metadata object is the one metadata.json holds" \
+        json_document_is "$WORK/list.json" \
+        'd[0]["metadata"] == json.load(open(extra[0] + "/2026-10-09T11-00-00/metadata.json"))' "$(sessions_dir)"
+    check "times and durations stay raw seconds, never the human form" \
+        json_document_is "$WORK/list.json" \
+        'd[0]["metadata"]["duration"] == 79.33 and d[0]["metadata"]["started"] == 1759855522.12'
+    check "the unreadable session is an element with null metadata" \
+        json_document_is "$WORK/list.json" \
+        'd[2]["id"] == "2026-10-07T09-00-00" and d[2]["metadata"] is None'
+
+    # `--output text`, separated and joined, is byte for byte the default listing.
+    td session list > "$WORK/list-default.out"
+    td session list --output text > "$WORK/list-text.out"
+    td session list --output=text > "$WORK/list-text-joined.out"
+    check "--output text prints the default listing byte for byte" \
+        cmp -s "$WORK/list-default.out" "$WORK/list-text.out"
+    check "--output=text prints the default listing byte for byte" \
+        cmp -s "$WORK/list-default.out" "$WORK/list-text-joined.out"
+
+    check "nothing was read from the runtime directory" session_dir_gone
+    check "no leftover process" no_leftover_process
+}
+
+# `session show --output json` is one object: the element's fields plus the transcript, or null when
+# the session holds none. It is the same session the text format reads, as one document.
+test_session_show_output_json() {
+    start_test "session show --output json prints one session as one object"
+
+    write_session 2026-10-09T11-00-00 transcribed "hello there, this is the transcript"
+    write_session 2026-10-08T10-00-00 cancelled
+
+    td session show last --output json > "$WORK/show.json" 2> "$WORK/show-json.err"
+    check "session show --output json succeeds" [ "$?" -eq 0 ]
+    check "the detail is one object with id, path, metadata and transcript" \
+        json_document_is "$WORK/show.json" \
+        'isinstance(d, dict) and set(d) == {"id", "path", "metadata", "transcript"}'
+    check "the id and the path name the session" \
+        json_document_is "$WORK/show.json" \
+        'd["id"] == "2026-10-09T11-00-00" and d["path"] == extra[0] + "/2026-10-09T11-00-00"' "$(sessions_dir)"
+    check "the metadata object is the one metadata.json holds" \
+        json_document_is "$WORK/show.json" \
+        'd["metadata"] == json.load(open(extra[0] + "/2026-10-09T11-00-00/metadata.json"))' "$(sessions_dir)"
+    check "the transcript is the session's text" \
+        json_document_is "$WORK/show.json" \
+        'd["transcript"] == "hello there, this is the transcript"'
+
+    # A session with no transcript is `null`, not an empty string.
+    td session show 2026-10-08T10-00-00 --output json > "$WORK/show-none.json" 2> "$WORK/show-none-json.err"
+    check "a session with no transcript still succeeds" [ "$?" -eq 0 ]
+    check "its transcript is null" \
+        json_document_is "$WORK/show-none.json" 'd["transcript"] is None'
+
+    # `--output=json` and `--output json` are the same document, and `--output text` is the text.
+    td session show last --output=json > "$WORK/show-joined.json"
+    td session show last > "$WORK/show-default.out"
+    td session show last --output text > "$WORK/show-text.out"
+    check "--output=json is the same document as --output json" \
+        cmp -s "$WORK/show.json" "$WORK/show-joined.json"
+    check "--output text prints the default block byte for byte" \
+        cmp -s "$WORK/show-default.out" "$WORK/show-text.out"
+
+    # A directory whose metadata cannot be read is an element with `metadata: null`, refused the way
+    # the text format refuses it.
+    mkdir -p "$(sessions_dir)/2026-10-07T09-00-00"
+    printf '%s' 'not json' > "$(sessions_dir)/2026-10-07T09-00-00/metadata.json"
+    td session show 2026-10-07T09-00-00 --output json > "$WORK/show-unreadable.json" 2> "$WORK/show-unreadable-json.err"
+    check "an unreadable session exits non-zero in JSON too" [ "$?" -ne 0 ]
+    check "its metadata is null" \
+        json_document_is "$WORK/show-unreadable.json" 'd["metadata"] is None'
+    check "the failure is logged with the session" \
+        grep -q "^tiny-dictate: 2026-10-07T09-00-00: cannot read the session's metadata$" "$WORK/show-unreadable-json.err"
+
+    check "nothing was read from the runtime directory" session_dir_gone
+    check "no leftover process" no_leftover_process
+}
+
+# `--output` means nothing where there is no data document to print: an unknown format, a terminal,
+# the one word the bar reads, or a transcript on stdout is the usage and a non-zero exit.
+test_output_flag_is_refused() {
+    start_test "an unknown --output value and a verb that takes none are argument errors"
+
+    td session list --output yaml > "$WORK/output-yaml.out" 2> "$WORK/output-yaml.err"
+    check "an unknown format exits non-zero" [ "$?" -ne 0 ]
+    check "an unknown format writes nothing to stdout" [ ! -s "$WORK/output-yaml.out" ]
+    check "an unknown format prints the usage" grep -q 'Usage: tiny-dictate' "$WORK/output-yaml.err"
+    check "an unknown format is reported by name" \
+        grep -q 'yaml' "$WORK/output-yaml.err"
+
+    td session browse --output json > "$WORK/output-browse.out" 2> "$WORK/output-browse.err"
+    check "session browse --output json exits non-zero" [ "$?" -ne 0 ]
+    check "session browse --output json prints the usage" grep -q 'Usage: tiny-dictate' "$WORK/output-browse.err"
+
+    td session browse --output=json > "$WORK/output-browse-joined.out" 2> "$WORK/output-browse-joined.err"
+    check "session browse --output=json exits non-zero" [ "$?" -ne 0 ]
+    check "session browse --output=json prints the usage" grep -q 'Usage: tiny-dictate' "$WORK/output-browse-joined.err"
+
+    td status --output json > "$WORK/output-status.out" 2> "$WORK/output-status.err"
+    check "status --output json exits non-zero" [ "$?" -ne 0 ]
+    check "status --output json prints the usage" grep -q 'Usage: tiny-dictate' "$WORK/output-status.err"
+
+    td session transcribe --print --output json > "$WORK/output-transcribe.out" 2> "$WORK/output-transcribe.err"
+    check "session transcribe --print --output json exits non-zero" [ "$?" -ne 0 ]
+    check "session transcribe --print --output json prints the usage" \
+        grep -q 'Usage: tiny-dictate' "$WORK/output-transcribe.err"
 }
 
 # `session browse` draws on a terminal and nowhere else: a stdout that is not one is refused with
@@ -3155,6 +3298,9 @@ run_test test_session_list_shows_an_unreadable_session
 run_test test_session_show_prints_the_fields_and_the_transcript
 run_test test_session_show_without_a_transcript
 run_test test_session_show_with_unreadable_metadata
+run_test test_session_list_output_json
+run_test test_session_show_output_json
+run_test test_output_flag_is_refused
 run_test test_browse_refuses_a_pipe
 run_test test_browse_on_a_terminal
 run_test test_browse_leaves_on_ctrl_c
