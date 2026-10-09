@@ -11,6 +11,7 @@ use std::io::IsTerminal;
 use std::process::ExitCode;
 
 use crate::browse;
+use crate::cli::Output;
 use crate::config;
 use crate::log;
 use crate::session::Runtime;
@@ -24,20 +25,26 @@ pub fn session() -> ExitCode {
     if std::io::stdout().is_terminal() {
         browse::run()
     } else {
-        session_list()
+        session_list(Output::Text)
     }
 }
 
 /// `session list`: the kept sessions, newest first, one row per session.
 ///
 /// A directory whose metadata cannot be read gets a row of its own rather than no row: it is
-/// exactly the session `session delete` can remove.
-pub fn session_list() -> ExitCode {
+/// exactly the session `session delete` can remove. `--output json` prints the same sessions as one
+/// JSON document instead of the human rows.
+pub fn session_list(output: Output) -> ExitCode {
     let runtime = Runtime::from_env();
     let sessions = runtime.sessions_directory();
 
-    for row in view::rows(&sessions) {
-        println!("{row}");
+    match output {
+        Output::Text => {
+            for row in view::rows(&sessions) {
+                println!("{row}");
+            }
+        }
+        Output::Json => print!("{}", view::json_list(&sessions)),
     }
 
     ExitCode::SUCCESS
@@ -46,8 +53,9 @@ pub fn session_list() -> ExitCode {
 /// `session show <id|last>`: one kept session read in full -- the fields every surface shows it by,
 /// its path, and its transcript.
 ///
-/// It reads files and nothing else: no encoder, no clipboard tool, no microphone.
-pub fn session_show(target: &str) -> ExitCode {
+/// It reads files and nothing else: no encoder, no clipboard tool, no microphone. `--output json`
+/// prints the same session as one JSON object instead of the human block.
+pub fn session_show(target: &str, output: Output) -> ExitCode {
     let runtime = Runtime::from_env();
     let sessions = runtime.sessions_directory();
 
@@ -56,15 +64,19 @@ pub fn session_show(target: &str) -> ExitCode {
     };
 
     let detail = view::Detail::read(&sessions, &id);
-    println!("{detail}");
+    match output {
+        Output::Text => println!("{detail}"),
+        Output::Json => print!("{}", view::json_show(&sessions, &id)),
+    }
 
     if detail.metadata_reads {
         return ExitCode::SUCCESS;
     }
 
     // The listing can always show a `?` row, but a command asked to read one session and unable
-    // to read it fails. The block above already says what could not be read; this is the log line,
-    // named by the session (ADR-0008).
+    // to read it fails, whatever format it was asked for. The text block already says what could
+    // not be read; the JSON carries `"metadata": null`. This is the log line, named by the
+    // session (ADR-0008).
     log::line(Some(&id), "cannot read the session's metadata");
     ExitCode::FAILURE
 }
