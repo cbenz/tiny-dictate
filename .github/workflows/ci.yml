@@ -1,19 +1,35 @@
 name: CI
 
+# The binary links GTK4 and gtk4-layer-shell at build time, and the integration suite runs real
+# processes — `arecord -D null`, the clipboard lease's `timeout`, `pgrep` — with every other
+# collaborator stubbed. A stock runner carries neither: Ubuntu 24.04 ships GTK 4.14, too old for the
+# `v4_22` feature the pill compiles against, and no `gtk4-layer-shell` package at all. CI therefore
+# builds in the distribution the tool is developed on, so the same packages are exercised in both
+# places: a rolling update breaks CI and the desktop at once instead of drifting apart silently.
+
 on:
   push:
   pull_request:
 
 jobs:
-  rust:
-    name: Format, lint and test
+  tool:
+    name: Format, lint, test, integration suite
     runs-on: ubuntu-latest
+    container: archlinux:latest
     steps:
+      # `git` is what actions/checkout drives, and the minimal Arch image does not carry it. The
+      # rest is what the build links (`gtk4`, `gtk4-layer-shell`), what compiles it (`rust` brings
+      # cargo, rustfmt and clippy; `base-devel` brings pkg-config and a C compiler), and what the
+      # suite runs for real (`arecord` from alsa-utils).
+      - name: Install the toolchain and the linked libraries
+        run: |
+          pacman -Syu --noconfirm --needed \
+            base-devel git gtk4 gtk4-layer-shell rust alsa-utils
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.99.0
-          components: rustfmt, clippy
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      - name: Integration suite
+        run: |
+          cargo build --release
+          tests/run.sh
