@@ -20,11 +20,12 @@ jobs:
       # `git` is what actions/checkout drives, and the minimal Arch image does not carry it. The
       # rest is what the build links (`gtk4`, `gtk4-layer-shell`), what compiles it (`rust` brings
       # cargo, rustfmt and clippy; `base-devel` brings pkg-config and a C compiler), and what the
-      # suite runs for real (`arecord` from alsa-utils).
+      # suite runs for real (`arecord` from alsa-utils, and `python`'s `pty` for the browser's
+      # pseudo-terminal harness).
       - name: Install the toolchain and the linked libraries
         run: |
           pacman -Syu --noconfirm --needed \
-            base-devel git gtk4 gtk4-layer-shell rust alsa-utils
+            base-devel git gtk4 gtk4-layer-shell rust alsa-utils python
       - uses: actions/checkout@v4
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings

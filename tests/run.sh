@@ -363,6 +363,148 @@ printf 'tiny-dictate %s\n' "$*" >> "$WORK/waybar-report"
 printf '%s\n' "${FAKE_STATUS:-idle}"
 STUB
 
+cat > "$WORK/pty_drive.py" <<'PY'
+#!/usr/bin/env python3
+# Drive one command on a pseudo-terminal and report what happened: what it drew, whether it left
+# the terminal as it was, and how it exited. The browser is the one surface the suite cannot watch
+# from the process seam alone, so its screen is captured and the terminal's state is compared
+# before and after the run.
+#
+#   pty_drive.py <binary> <keys> <output file> [arguments...]
+#
+# Keys are comma separated names: UP, DOWN, HOME, END, C-C, ENTER, SPACE, one character, or WAIT to
+# pause without sending anything. The environment can point PTY_STDOUT at a file to give the child
+# a stdout that is not the terminal, and PTY_READY_FILE at a file to touch once the first frame is
+# up, so the caller knows the command is open.
+import fcntl
+import os
+import pty
+import select
+import signal
+import struct
+import sys
+import termios
+import time
+
+ROWS = 24
+COLUMNS = 100
+
+KEYS = {
+    "UP": b"\x1b[A",
+    "DOWN": b"\x1b[B",
+    "HOME": b"\x1b[H",
+    "END": b"\x1b[F",
+    "C-C": b"\x03",
+    "C-D": b"\x04",
+    "ENTER": b"\r",
+    "SPACE": b" ",
+}
+for _character in "abcdefghijklmnopqrstuvwxyz0123456789":
+    KEYS[_character] = _character.encode()
+
+
+def main():
+    binary, keys, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
+    arguments = sys.argv[4:]
+
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLUMNS, 0, 0))
+    before = termios.tcgetattr(slave)
+
+    pid = os.fork()
+    if pid == 0:
+        os.close(master)
+        os.setsid()
+        fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+        os.dup2(slave, 0)
+        os.dup2(slave, 1)
+        os.dup2(slave, 2)
+        if slave > 2:
+            os.close(slave)
+        redirect = os.environ.get("PTY_STDOUT")
+        if redirect:
+            target = os.open(redirect, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+            os.dup2(target, 1)
+        os.execv(binary, [binary] + arguments)
+        os._exit(127)
+
+    screen = bytearray()
+    status = [None]
+
+    def pump(timeout):
+        ready, _, _ = select.select([master], [], [], timeout)
+        if master in ready:
+            try:
+                data = os.read(master, 65536)
+            except OSError:
+                return False
+            if not data:
+                return False
+            screen.extend(data)
+        return True
+
+    def reap():
+        if status[0] is None:
+            done, code = os.waitpid(pid, os.WNOHANG)
+            if done == pid:
+                status[0] = code
+        return status[0] is not None
+
+    def quiet(seconds):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            if not pump(0.02):
+                return
+
+    def wait_for(needle, timeout):
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            if needle in bytes(screen):
+                return True
+            if reap():
+                return needle in bytes(screen)
+            pump(0.02)
+        return needle in bytes(screen)
+
+    wait_for(b"sessions", 5.0)
+    ready = os.environ.get("PTY_READY_FILE")
+    if ready:
+        with open(ready, "w") as handle:
+            handle.write("ready\n")
+
+    for name in filter(None, keys.split(",")):
+        if name == "WAIT":
+            quiet(1.0)
+            continue
+        os.write(master, KEYS[name])
+        quiet(0.25)
+
+    end = time.monotonic() + 10.0
+    while status[0] is None and time.monotonic() < end:
+        pump(0.05)
+        reap()
+    if status[0] is None:
+        os.kill(pid, signal.SIGKILL)
+        _, status[0] = os.waitpid(pid, 0)
+    end = time.monotonic() + 0.5
+    while time.monotonic() < end:
+        if not pump(0.05):
+            break
+
+    after = termios.tcgetattr(slave)
+    os.close(master)
+    os.close(slave)
+
+    with open(out_path, "wb") as handle:
+        handle.write(bytes(screen))
+
+    print("EXIT=%d" % os.waitstatus_to_exitcode(status[0]))
+    print("TERMIOS=%s" % ("restored" if before == after else "changed"))
+
+
+main()
+PY
+
 chmod +x "$BIN"/* "$BIN-broken-meter"/* "$BIN_LEASE"/* "$BIN_WAYBAR"/*
 
 # A broken stub would silently test nothing: check them before running anything.
@@ -408,6 +550,18 @@ td_broken_meter() {
     PATH="$BIN-broken-meter:$BIN:$PATH" \
         TINY_DICTATE_TRANSCRIBE="$BIN/transcribe" TINY_DICTATE_PRESENT_COMMAND="$BIN/present" \
         XDG_RUNTIME_DIR="$RUN" HOME="$HOME_DIR" "$SCRIPT" "$@"
+}
+
+# Drive the built binary on a pseudo-terminal: the browser draws a screen, so the one surface the
+# process seam cannot see is observed here. `pty <keys> <output file> <arguments...>`; the screen
+# lands in the output file, and `EXIT=`/`TERMIOS=` land on stdout.
+pty() { # pty <keys> <output file> <arguments...>
+    local keys="$1" out="$2"
+    shift 2
+    TINY_DICTATE_TRANSCRIBE="${TINY_DICTATE_TRANSCRIBE:-$BIN/transcribe}" \
+        TINY_DICTATE_PRESENT_COMMAND="${TINY_DICTATE_PRESENT_COMMAND:-$BIN/present}" \
+        PATH="$BIN:$PATH" XDG_RUNTIME_DIR="$RUN" HOME="$HOME_DIR" \
+        python3 "$WORK/pty_drive.py" "$SCRIPT" "$keys" "$out" "$@"
 }
 
 # The module is JSONC. Pull its `exec` value out, undo the two JSON escapes it uses (`\\` becomes
@@ -834,6 +988,29 @@ session_count() { session_ids | grep -c . ; }
 # newest is the last.
 newest_session_id() { session_ids | tail -1; }
 oldest_session_id() { session_ids | head -1; }
+
+# A kept session written by hand: the browser needs a list without recording one, and a directory
+# whose metadata cannot be read is a case of its own.
+write_session() { # write_session <id> <outcome> [summary]
+    local id="$1" outcome="$2" summary="${3:-}"
+    mkdir -p "$(sessions_dir)/$id"
+    printf '{\n  "id": "%s",\n  "started": 1759855522.12,\n  "ended": 1759855601.45,\n  "duration": 79.33,\n  "audio_bytes": 365720,\n  "outcome": "%s",\n  "pasted": true,\n  "transcriber": null,\n  "error": null\n}\n' \
+        "$id" "$outcome" > "$(sessions_dir)/$id/metadata.json"
+    [ -n "$summary" ] && printf '%s' "$summary" > "$(sessions_dir)/$id/transcript.txt"
+    return 0
+}
+
+# Wait for a file to appear, for a helper that signals from another process.
+wait_for_file() { # wait_for_file <path> [attempts]
+    local path="$1" attempts="${2:-100}"
+
+    while [ "$attempts" -gt 0 ]; do
+        [ -e "$path" ] && return 0
+        attempts=$((attempts - 1))
+        sleep 0.05
+    done
+    return 1
+}
 
 # The one session directory of the run, when there is exactly one.
 single_session_dir() {
@@ -1453,6 +1630,122 @@ test_browse_refuses_a_pipe() {
     td session > "$WORK/bare-session.out" 2> "$WORK/bare-session.err"
     check "bare session exits zero when piped" [ "$?" -eq 0 ]
     check "bare session lists nothing when nothing is kept" [ ! -s "$WORK/bare-session.out" ]
+}
+
+# ─────────────────────── the browser on a pseudo-terminal ───────────────────────
+
+# The browser opens on a terminal, lists the kept sessions newest first from the shared view, moves
+# the selection with the arrows and the vim keys, reloads on `r` and leaves on `q`, giving the
+# terminal back as it was. What the keys did is read from the marker on the selected row, never
+# from the bytes of a whole screen.
+test_browse_on_a_terminal() {
+    start_test "session browse opens, lists, selects and leaves, giving the terminal back"
+
+    write_session 2026-10-08T10-00-00 transcribed "older text"
+    write_session 2026-10-09T10-00-00 transcribed "newer text"
+
+    pty 'DOWN,j,k,HOME,END,UP,r,q' "$WORK/browse.out" session browse > "$WORK/browse.summary"
+
+    check "the browser exits zero" grep -q '^EXIT=0$' "$WORK/browse.summary"
+    check "the terminal is back to its previous state" grep -q '^TERMIOS=restored$' "$WORK/browse.summary"
+    check "it lists the newest session first, with its fields" \
+        bash -c 'grep -q "> 2026-10-09T10-00-00  1:19  transcribed  newer text" "$1"' _ "$WORK/browse.out"
+    check "it lists the older session on its own row" \
+        bash -c 'grep -q "  2026-10-08T10-00-00  1:19  transcribed  older text" "$1"' _ "$WORK/browse.out"
+
+    # One marker per frame: the initial one, then one per key. DOWN goes to the oldest, `j` stops
+    # there, `k` comes back to the newest, HOME stays, END goes to the oldest, UP back to the newest,
+    # and `r` reloads without losing the place.
+    local marked
+    marked="$(grep -ao '> 2026-[0-9T-]*' "$WORK/browse.out" | sed 's/^> //' | tr '\n' ' ')"
+    check "the selection followed the keys" \
+        [ "$marked" = "2026-10-09T10-00-00 2026-10-08T10-00-00 2026-10-08T10-00-00 2026-10-09T10-00-00 2026-10-09T10-00-00 2026-10-08T10-00-00 2026-10-09T10-00-00 2026-10-09T10-00-00 " ]
+    check "q left the alternate screen" \
+        bash -c 'grep -aqF "$(printf "\033[?1049l")" "$1"' _ "$WORK/browse.out"
+}
+
+# `ctrl-c` in raw mode is a key event, not a signal: the browser leaves by the same door as `q` and
+# gives the terminal back.
+test_browse_leaves_on_ctrl_c() {
+    start_test "ctrl-c leaves the browser and gives the terminal back"
+
+    write_session 2026-10-09T10-00-00 transcribed "text"
+
+    pty 'DOWN,C-C' "$WORK/browse-ctrl-c.out" session browse > "$WORK/browse-ctrl-c.summary"
+
+    check "ctrl-c exits zero" grep -q '^EXIT=0$' "$WORK/browse-ctrl-c.summary"
+    check "the terminal is back to its previous state" grep -q '^TERMIOS=restored$' "$WORK/browse-ctrl-c.summary"
+}
+
+# A run that failed must leave the terminal as it was too: the browser refuses a stdout that is not
+# a terminal, and the terminal it does have stays untouched.
+test_browse_a_failed_run_restores_the_terminal() {
+    start_test "a browser run that failed leaves the terminal as it was"
+
+    PTY_STDOUT="$WORK/browse-refused.stdout" \
+        pty '' "$WORK/browse-refused.out" session browse > "$WORK/browse-refused.summary"
+
+    check "the failed run exits non-zero" bash -c '! grep -q "^EXIT=0$" "$1"' _ "$WORK/browse-refused.summary"
+    check "the terminal is back to its previous state" grep -q '^TERMIOS=restored$' "$WORK/browse-refused.summary"
+    check "it says it needs a terminal" grep -q 'terminal' "$WORK/browse-refused.out"
+    check "nothing was drawn on the redirected stdout" [ ! -s "$WORK/browse-refused.stdout" ]
+}
+
+# An empty history is an empty list and not an error: the browser opens on nothing, says so, and
+# leaves on `q` with the terminal as it was.
+test_browse_an_empty_history_is_not_an_error() {
+    start_test "an empty history opens an empty list and not an error"
+
+    pty 'q' "$WORK/browse-empty.out" session browse > "$WORK/browse-empty.summary"
+
+    check "it exits zero" grep -q '^EXIT=0$' "$WORK/browse-empty.summary"
+    check "it says nothing is kept" grep -q 'no kept sessions' "$WORK/browse-empty.out"
+    check "the terminal is back to its previous state" grep -q '^TERMIOS=restored$' "$WORK/browse-empty.summary"
+}
+
+# A session whose metadata cannot be read is a row of `?` in the browser too, and it is the row the
+# selection starts on: hiding it would hide a recording the user can still delete.
+test_browse_shows_an_unreadable_session() {
+    start_test "the browser shows a session whose metadata cannot be read, selected and all"
+
+    mkdir -p "$(sessions_dir)/2026-10-09T10-00-00"
+    printf '%s' 'not json' > "$(sessions_dir)/2026-10-09T10-00-00/metadata.json"
+    write_session 2026-10-08T10-00-00 transcribed "text"
+
+    pty 'q' "$WORK/browse-unreadable.out" session browse > "$WORK/browse-unreadable.summary"
+
+    check "the unreadable session is the selected row of question marks" \
+        bash -c 'grep -q "> 2026-10-09T10-00-00  ?  ?  ?" "$1"' _ "$WORK/browse-unreadable.out"
+    check "the terminal is back to its previous state" grep -q '^TERMIOS=restored$' "$WORK/browse-unreadable.summary"
+}
+
+# The browser reads files only and takes no command lock: the dictation shortcuts still work while
+# it is open on the screen.
+test_browse_holds_no_command_lock() {
+    start_test "the browser holds no command lock: a shortcut still runs while it is open"
+
+    write_session 2026-10-09T10-00-00 transcribed "text"
+    rm -f "$WORK/browse-ready"
+
+    export PTY_READY_FILE="$WORK/browse-ready"
+    pty 'WAIT,q' "$WORK/browse-lock.out" session browse > "$WORK/browse-lock.summary" &
+    local driver=$!
+    unset PTY_READY_FILE
+
+    check "the browser came up" wait_for_file "$WORK/browse-ready"
+    check "it takes no command lock" path_absent "$RUN/tiny-dictate/command.lock"
+
+    # A shortcut takes the command lock for itself: were the browser holding it, this start would be
+    # refused before the claim and the microphone would stay silent.
+    td toggle 2> "$WORK/browse-toggle.err"
+    check "the shortcut started a dictation with the browser open" [ "$(td status)" = "working" ]
+    td cancel 2>> "$JOURNAL"
+    check "the dictation ends" wait_idle
+
+    wait "$driver"
+    check "the browser left on q" grep -q '^EXIT=0$' "$WORK/browse-lock.summary"
+    check "the terminal is back to its previous state" grep -q '^TERMIOS=restored$' "$WORK/browse-lock.summary"
+    check "no leftover process" no_leftover_process
 }
 
 # `session transcribe last` re-runs the transcriber on the newest session, rewrites the transcript
@@ -2408,6 +2701,12 @@ run_test test_reference_transcriber
 run_test test_session_list_shows_the_kept_sessions
 run_test test_session_list_shows_an_unreadable_session
 run_test test_browse_refuses_a_pipe
+run_test test_browse_on_a_terminal
+run_test test_browse_leaves_on_ctrl_c
+run_test test_browse_a_failed_run_restores_the_terminal
+run_test test_browse_an_empty_history_is_not_an_error
+run_test test_browse_shows_an_unreadable_session
+run_test test_browse_holds_no_command_lock
 run_test test_transcribe_copies_and_rewrites
 run_test test_transcribe_print
 run_test test_session_delete_removes_one
