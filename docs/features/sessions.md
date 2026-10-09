@@ -50,31 +50,31 @@ touches the microphone, the encoder or the pill:
   ```
 
   the duration as a person reads one -- `4:32` under an hour, `1:04:32` beyond, and `-` when the
-session died mid-recording; the outcome in the vocabulary above; and the summary, which is the error
-when there is one, else the first words of the transcript, else `-`. A session whose metadata cannot
-be read is a row of its own, its id and `?` where the other fields would be, rather than a skipped
-line: it is exactly the session `session delete` can remove. The line is plain text on stdout, and
-`session list` reads nothing but the sessions directory; `--output json` prints the same sessions as
-one document instead (see [the same session as data](#the-same-session-as-data)). `tiny-dictate
-session` on its own is the
-same listing when its stdout is a pipe, and opens the [browser](browse.md) when it is a terminal.
-- `tiny-dictate session browse` reads the kept sessions on a terminal: the list, the selection,
-the selected session's fields and transcript in a pane beside it, and the keys that move through
-both. `c`, `i` and `p` copy the selected session's transcript, its id and its path through the same
-clipboard path `session copy` uses, and `t` runs the transcriber again, through the same runner
-`session transcribe` uses; `ctrl-c` cancels a transcription in flight. It takes no command lock and
-reads files only, so it opens while a dictation runs, and looking at the sessions never needs the
-encoder or the clipboard tools.
+  session died mid-recording; the outcome in the vocabulary above; and the summary, which is the
+  error when there is one, else the first words of the transcript, else `-`. A session whose
+  metadata cannot be read is a row of its own, its id and `?` where the other fields would be,
+  rather than a skipped line: it is exactly the session `session delete` can remove. The line is
+  plain text on stdout, and `session list` reads nothing but the sessions directory; `--output json`
+  prints the same sessions as one document instead (see
+  [the same session as data](#the-same-session-as-data)). `tiny-dictate session` on its own is the
+  same listing when its stdout is a pipe, and opens the [browser](browse.md) when it is a terminal.
+- `tiny-dictate session browse` reads the kept sessions on a terminal: the list, the selection, the
+  selected session's fields and transcript in a pane beside it, and the keys that move through both.
+  `c`, `i` and `p` copy the selected session's transcript, its id and its path through the same
+  clipboard path `session copy` uses, and `t` runs the transcriber again, through the same runner
+  `session transcribe` uses; `ctrl-c` cancels a transcription in flight. It takes no command lock and
+  reads files only, so it opens while a dictation runs, and looking at the sessions never needs the
+  encoder or the clipboard tools.
 - `tiny-dictate session show <id|last> [--output text|json]` reads one session in full: its fields,
-  one per line, then
-  its transcript. The fields are the shared view's, in the one order every surface renders them --
-  `id`, `path`, `outcome`, `started`, `ended`, `duration`, `audio bytes`, `pasted`, `transcriber`,
-  `error` -- so this command and the browser's pane cannot drift. `duration` is the human one,
-  `started` and `ended` are the raw epoch seconds `metadata.json` holds, `pasted` reads `yes` or
-  `no`, and a field the session has nothing for is `-`. A session that holds no word of transcript
-  says `no transcript` rather than printing an empty block; a directory whose metadata cannot be
-  read prints its id and its path, says the metadata cannot be read, and exits non-zero. The
-  command reads files only: no encoder, no clipboard tool, no microphone.
+  one per line, then its transcript. The fields are the shared view's, in the one order every
+  surface renders them -- `id`, `path`, `outcome`, `started`, `ended`, `duration`, `audio bytes`,
+  `pasted`, `transcriber`, `error` -- so this command and the browser's pane cannot drift.
+  `duration` is the human one, `started` and `ended` are the raw epoch seconds `metadata.json`
+  holds, `pasted` reads `yes` or `no`, and a field the session has nothing for is `-`. A session
+  that holds no word of transcript says `no transcript` rather than printing an empty block; a
+  directory whose metadata cannot be read prints its id and its path, says the metadata cannot be
+  read, and exits non-zero. The command reads files only: no encoder, no clipboard tool, no
+  microphone.
 - `tiny-dictate session copy <id|last>` puts the session's transcript on the clipboard. A
   transcript already on disk is offered as it is, through the same write path a dictation uses: both
   selections, the password hint, the same lease. When `transcript.txt` is missing -- the session was
@@ -86,12 +86,12 @@ encoder or the clipboard tools.
   chord stays the live dictation's business.
 - `tiny-dictate session transcribe <id|last> [--print]` runs the transcriber command again on the
   session's `audio.mp3`, with the same contract a live dictation uses: `$1` the audio, `$2` the
-session directory, the text on stdout, the error on stderr. It rewrites `transcript.txt` and the
-session's metadata (`outcome`, `error`, `transcriber`), and a transcriber that writes
-`transcript.raw.json` overwrites the previous one -- that file is the transcriber's, the core never
-rewrites its bytes. By default it offers the text on the clipboard, through the same write path a
-normal dictation uses, and says so on stderr; `--print` writes it to stdout instead, and needs no
-clipboard tool at all.
+  session directory, the text on stdout, the error on stderr. It rewrites `transcript.txt` and the
+  session's metadata (`outcome`, `error`, `transcriber`), and a transcriber that writes
+  `transcript.raw.json` overwrites the previous one -- that file is the transcriber's, the core never
+  rewrites its bytes. By default it offers the text on the clipboard, through the same write path a
+  normal dictation uses, and says so on stderr; `--print` writes it to stdout instead, and needs no
+  clipboard tool at all.
 - `tiny-dictate session delete <id|last>` removes exactly one session directory. It is the only verb
   that destroys a recording; cancelling never does. It refuses the session in flight -- the id the
   runtime directory publishes while a dictation runs -- reporting the refusal on stderr, exiting
