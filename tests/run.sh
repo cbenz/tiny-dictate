@@ -254,7 +254,11 @@ STUB
 
 cat > "$BIN/ydotool" <<'STUB'
 #!/usr/bin/env bash
+# The chord is logged with what the clipboard held at that instant: a paste that reads the
+# previous dictation's text is visible here, which is what the case about the offer's ordering
+# asserts on.
 printf '%s\n' "$*" >> "$WORK/ydotool.log"
+printf '%s\n' "$(cat "$WORK/clipboard" 2>/dev/null)" >> "$WORK/clipboard-at-chord"
 exit 0
 STUB
 
@@ -325,14 +329,19 @@ STUB
 
 # A `wl-copy --foreground` stand-in: it holds the offer until it is killed, the way the real one
 # holds the selection for the lease, and its death is what takes the offer off the clipboard. Only
-# the lease's own case uses it; `cleanup_processes` reaps it.
+# the lease's own cases use it; `cleanup_processes` reaps it. The text is staged rather than
+# published at once, so `WL_COPY_PUBLISH_DELAY` can open the window the real `wl-copy` spends on its
+# display roundtrip before it owns the selection: until then the previous offer still serves it.
 mkdir -p "$BIN_LEASE"
 cat > "$BIN_LEASE/wl-copy" <<'STUB'
 #!/usr/bin/env bash
-cat > "$WORK/clipboard"
+staged="$WORK/clipboard.staged.$$"
+cat > "$staged"
 printf '%s\n' "$*" >> "$WORK/wl-copy.log"
 printf '%s\n' "$(tr '\0' ' ' < "/proc/$PPID/cmdline")" >> "$WORK/wl-copy-parent.log"
-trap 'rm -f "$WORK/clipboard"; exit 0' TERM INT
+trap 'rm -f "$WORK/clipboard" "$staged"; exit 0' TERM INT
+[ -n "${WL_COPY_PUBLISH_DELAY:-}" ] && sleep "$WL_COPY_PUBLISH_DELAY"
+mv "$staged" "$WORK/clipboard"
 while :; do sleep 0.05; done
 STUB
 
@@ -468,10 +477,12 @@ reset_run() {
     rm -rf "$CONFIG_HOME/tiny-dictate"
     : > "$WORK/events.log"
     : > "$WORK/ydotool.log"
+    : > "$WORK/clipboard-at-chord"
     : > "$WORK/wl-copy.log"
     : > "$WORK/wl-copy-parent.log"
     rm -f "$WORK/transcribe-size" "$WORK/transcribe-received" "$WORK/clipboard" \
         "$WORK/arecord-report" "$WORK/lame-report" "$WORK/journal.err" "$WORK/waybar-report"
+    rm -f "$WORK"/clipboard.staged.*
 }
 
 cleanup_processes() {
@@ -591,6 +602,17 @@ wait_pasted_text() {
     local i
     for i in $(seq 1 100); do
         [ "$(pasted_text)" = "$1" ] && return 0
+        sleep 0.02
+    done
+    return 1
+}
+
+# What the clipboard held at the instant a chord was injected, read off the `ydotool` stub: the
+# last chord is the one that carries the paste, and what it read is the assertion.
+chord_clipboard_is() {
+    local i
+    for i in $(seq 1 100); do
+        [ "$(tail -1 "$WORK/clipboard-at-chord" 2>/dev/null)" = "$1" ] && return 0
         sleep 0.02
     done
     return 1
@@ -1756,6 +1778,58 @@ test_clipboard_lease_expires() {
     check "the transcript is gone from the clipboard" [ -z "$(pasted_text)" ]
 }
 
+# The reported bug: the chord was injected before the offer had taken the selection, so the paste
+# read what the previous offer still held. The lease stub stages the new text and publishes it a
+# delay later -- the window the real `wl-copy` spends on its display roundtrip -- while `wl-paste`
+# keeps serving the previous text, and the `ydotool` stub records what the clipboard held at the
+# instant of the chord. Two dictations in a row: the first one is what leaves a live offer behind.
+test_paste_waits_for_the_offer() {
+    start_test "the paste waits for the offer to serve the text it injects"
+    write_config 'clipboard_seconds = 30'
+    TRANSCRIBE_TEXT="first text" WL_COPY_PUBLISH_DELAY=0.2 td_lease start
+    sleep 0.4
+    td_lease stop
+    check "the first dictation finishes" wait_idle
+    check "the first text is on the clipboard" wait_pasted_text "first text"
+    check "the first offer is still serving, the way the lease keeps it" lease_offer_alive
+
+    : > "$WORK/ydotool.log"
+    TRANSCRIBE_TEXT="second text" WL_COPY_PUBLISH_DELAY=0.2 td_lease start
+    sleep 0.4
+    td_lease stop
+    check "the second dictation finishes" wait_idle
+    check "the second text is on the clipboard" wait_pasted_text "second text"
+
+    check "the chord reads the text of the dictation it belongs to" chord_clipboard_is "second text"
+}
+
+# A machine without `wl-paste`: the read-back that waits for the offer cannot be asked, and the
+# paste goes on as it did before the wait existed rather than being lost. The PATH holds the stubs
+# and the commands the stubs themselves run, minus the one command.
+test_paste_without_the_read_back_tool() {
+    start_test "the paste is injected when wl-paste is missing"
+    local bin="$WORK/bin-no-wl-paste" tool path
+    rm -rf "$bin"
+    mkdir -p "$bin"
+    for tool in bash env cp wc sleep cat dd tee date stat awk grep sed ls tr mv printf kill seq timeout; do
+        path="$(command -v "$tool")" && ln -sf "$path" "$bin/$tool"
+    done
+    for path in "$BIN"/*; do
+        case "$(basename "$path")" in wl-paste) continue ;; esac
+        ln -sf "$path" "$bin/$(basename "$path")"
+    done
+    check "the PATH has no wl-paste" bash -c '! PATH="$1" command -v wl-paste >/dev/null 2>&1' _ "$bin"
+
+    PATH="$bin" TINY_DICTATE_TRANSCRIBE="$BIN/transcribe" TINY_DICTATE_PRESENT_COMMAND="$BIN/present" \
+        TRANSCRIBE_TEXT="text transcribed" XDG_RUNTIME_DIR="$RUN" HOME="$HOME_DIR" "$SCRIPT" start
+    sleep 0.4
+    PATH="$bin" TINY_DICTATE_TRANSCRIBE="$BIN/transcribe" TINY_DICTATE_PRESENT_COMMAND="$BIN/present" \
+        XDG_RUNTIME_DIR="$RUN" HOME="$HOME_DIR" "$SCRIPT" stop
+    check "the dictation finishes" wait_idle
+    check "the text is on the clipboard" wait_pasted_text "text transcribed"
+    check "the chord was injected without the read-back" chord_clipboard_is "text transcribed"
+}
+
 # The reported bug: `start` wrote the recorder PID from a subshell that raced with
 # the worker, so the worker could believe recording was over and transcribe an empty
 # file. Run the same scenario many times and count the failures.
@@ -2178,6 +2252,8 @@ run_test test_clipboard_lease_invocation
 run_test test_clipboard_lease_duration_from_config
 run_test test_transcribe_uses_the_lease
 run_test test_clipboard_lease_expires
+run_test test_paste_waits_for_the_offer
+run_test test_paste_without_the_read_back_tool
 run_test test_dev_install_and_restore
 run_test test_race_loop
 if [ -n "$OLD_SCRIPT" ] && [ -z "$ONLY" ]; then

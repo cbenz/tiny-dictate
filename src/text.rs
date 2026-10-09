@@ -6,7 +6,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::audio;
 
@@ -14,6 +14,13 @@ use crate::audio;
 const ERROR_LIMIT: usize = 180;
 /// How long a key is held in the synthesised chord, when the environment names no delay.
 const DEFAULT_HOLD: &str = "0.04";
+/// How long the paste waits for the offer to serve the text before it gives up.
+///
+/// The window it covers is a display roundtrip, microseconds on a healthy compositor; the deadline
+/// is there to keep a compositor that never confirms from holding the dictation any longer.
+const OFFER_DEADLINE: Duration = Duration::from_millis(500);
+/// The interval between two reads of the selection while the offer is awaited.
+const OFFER_POLL: Duration = Duration::from_millis(5);
 
 /// Resolve the transcriber command: `$TINY_DICTATE_TRANSCRIBE` when set, else
 /// `tiny-dictate-transcribe` on `PATH`.
@@ -166,11 +173,18 @@ pub fn copy_to_clipboard(value: &str, clipboard_seconds: u64) -> bool {
 /// Wayland has no API to insert text into another client, so the text is copied and the chord
 /// pressed. The chord carries no Enter: the text is inserted, never submitted.
 ///
+/// The chord waits for the offer to serve the text: `wl-copy` sets the selection a display
+/// roundtrip after its stdin was written, and until it does the chord would read what the previous
+/// offer still holds ([ADR-0015](../docs/adr/0015-the-paste-waits-for-the-offer.md)). An offer that
+/// never took the text leaves nothing to inject either, so both failures are the same one here.
+///
 /// `clipboard_seconds` is the lease's duration, read from the configuration: the offer is wrapped
 /// in `timeout <clipboard_seconds>`, so it is gone when the lease ends
 /// ([ADR-0007](../docs/adr/0007-the-clipboard-lease.md)).
 pub fn paste(value: &str, clipboard_seconds: u64) -> bool {
-    copy_to_clipboard(value, clipboard_seconds);
+    if !copy_to_clipboard(value, clipboard_seconds) || !offer_serves(value) {
+        return false;
+    }
 
     if !ydotool(&["key", "42:1"]) {
         return false;
@@ -200,7 +214,8 @@ pub fn paste(value: &str, clipboard_seconds: u64) -> bool {
 /// waiting here would wait out the lease and the paste would arrive a minute late. What is
 /// reported is whether the offer took the text: a `wl-copy` that cannot reach a compositor dies on
 /// the spot, which closes the pipe under the write or leaves an already-exited process behind. An
-/// offer still alive once the text has been handed over is serving the selection.
+/// offer still alive once the text has been handed over is serving the selection. What the paste
+/// waits for is the offer to serve the text, and that wait lives in `offer_serves`.
 fn clipboard_write(value: &str, primary: bool, clipboard_seconds: u64) -> bool {
     // A duration of `0` means no expiry: the offer is not wrapped, and serves until another
     // client takes the selection over.
@@ -241,6 +256,51 @@ fn clipboard_write(value: &str, primary: bool, clipboard_seconds: u64) -> bool {
     }
 
     false
+}
+
+/// Whether the offer now serves `value` on the PRIMARY selection.
+///
+/// `wl-copy` sets the selection only once it has read its stdin and completed a display roundtrip,
+/// and `--foreground` never reports that to its parent: the write returning proves the text was
+/// read, not that the offer is up. Reading the selection back is the only way to see it, and the
+/// chord serves PRIMARY, so that is the selection read
+/// ([ADR-0015](../docs/adr/0015-the-paste-waits-for-the-offer.md)).
+///
+/// A machine without `wl-paste` cannot be asked, and the paste goes on without the wait: the
+/// read-back is a safeguard, and losing the text to a missing one would cost more than the
+/// ordering is worth.
+fn offer_serves(value: &str) -> bool {
+    let Some(wl_paste) = resolve_command("wl-paste") else {
+        return true;
+    };
+
+    let deadline = Instant::now() + OFFER_DEADLINE;
+    loop {
+        if read_selection(&wl_paste).is_some_and(|served| served == value.as_bytes()) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+
+        sleep(OFFER_POLL);
+    }
+}
+
+/// What the PRIMARY selection serves right now, or `None` when it cannot be read.
+///
+/// `--no-newline` because the text was written as it is: `wl-paste` appends a newline to a text
+/// selection otherwise, and the comparison is on the exact bytes.
+fn read_selection(wl_paste: &Path) -> Option<Vec<u8>> {
+    let output = Command::new(wl_paste)
+        .arg("--no-newline")
+        .arg("--primary")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+
+    output.status.success().then_some(output.stdout)
 }
 
 fn ydotool(arguments: &[&str]) -> bool {

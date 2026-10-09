@@ -73,6 +73,8 @@ presenter was asked to draw, the lifecycle of the processes, the exit codes.
 - `session delete` removes exactly one session and leaves the others
 - an unknown id is reported and removes or writes nothing
 - `history` and `transcribe` run with the encoder and the clipboard tools removed from `PATH`
+- the paste waits for the offer to serve the text it injects, so the chord cannot read the previous
+  dictation's, and it still injects it with `wl-paste` removed from `PATH`
 - the recorder race run `RACE_ITERATIONS` times, optionally against another implementation
 - the journal: one line per stage of a dictation, each line carrying the session id it concerns and
   none when it concerns no session, the failure line agreeing with the metadata and the

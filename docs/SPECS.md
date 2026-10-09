@@ -19,8 +19,9 @@ These pages describe the tool as it works today. The decisions taken during desi
 4. The session runs the transcriber command on the audio file and shows `transcribing` while it
    runs. A cancel that lands during the transcription drops the text.
 5. The session writes `transcript.txt` into the session directory, copies the text to both
-   clipboard selections, injects it into the focused window with `ydotool Shift+Insert`, and
-   removes its runtime directory: the [session](features/sessions.md) stays on disk.
+   clipboard selections, waits for the offer to serve it, injects it into the focused window with
+   `ydotool Shift+Insert`, and removes its runtime directory: the
+   [session](features/sessions.md) stays on disk.
 
 A dictation is batch: the whole utterance is recorded, then transcribed once. Streaming
 transcription is out of scope — it is a different contract (long-lived process, incremental text,

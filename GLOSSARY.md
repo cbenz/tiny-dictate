@@ -79,8 +79,14 @@ _Avoid_: gain, default level, 20 %
 
 **Paste**:
 How the transcript reaches the focused window: both clipboard selections are written, then a
-`Shift+Insert` keypress is injected.
+`Shift+Insert` keypress is injected once the offer serves the text.
 _Avoid_: insertion, typing
+
+**Offer**:
+The `wl-copy --foreground` holding the transcript on one selection for the whole lease, one per
+selection. An offer is up only once it serves the text: `wl-copy` sets the selection a display
+roundtrip after its stdin was written.
+_Avoid_: server, owner
 
 **Lease**:
 How long the transcript stays offered on the clipboard before it is withdrawn.

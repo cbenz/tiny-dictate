@@ -41,6 +41,23 @@ default; `0` means no expiry, and then no `timeout` wrapper at all. The text is 
 session before any clipboard write, and every clipboard write goes through the one function, so
 `transcribe` gets the same lease as a dictation.
 
+## Waiting for the offer
+
+`wl-copy --foreground` sets the selection a display roundtrip after its stdin was written, and never
+says so: the write returning proves the text was read, not that the offer is up. Until it is, the
+selection still belongs to the previous offer, which the lease keeps alive. A chord injected there
+would carry the previous dictation's text.
+
+`paste` therefore reads PRIMARY back with `wl-paste --no-newline --primary` and presses the chord
+only once the read matches the text it wrote ([ADR-0015](../adr/0015-the-paste-waits-for-the-offer.md)).
+The wait is bounded at 500 ms and polls; it never waits out the lease. An offer that never serves the
+text is not injected from: the chord is skipped rather than pressed on a selection that may still
+hold the previous text, and the failure takes the path a failed paste already takes. Without
+`wl-paste` the read-back cannot be asked, and the chord is pressed as it was before the wait existed
+— losing the paste would cost more than the ordering is worth.
+
+`transcribe` writes through the same offer and does not wait: no chord follows its write.
+
 ## The injected keypress
 
 The transcript is inserted with `ydotool`, which replays a `Shift+Insert` chord at the input layer:
@@ -69,3 +86,5 @@ on stderr, or writes it to stdout with `--print`, which touches no clipboard at 
   injected `Shift+Insert` chord stays the injection mechanism.
 - [ADR-0008: the log](../adr/0008-the-log.md) makes the paste, successful or not, one line in the
   journal.
+- [ADR-0015: the paste waits for the offer](../adr/0015-the-paste-waits-for-the-offer.md) makes the
+  chord wait for the offer to serve the text, so it can no longer inject the previous dictation's.
