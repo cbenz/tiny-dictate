@@ -18,6 +18,10 @@
 # was asked to draw, the lifecycle of the processes and the exit codes. The pure functions that seam
 # cannot see are unit-tested instead (`cargo test`): the pill's frame, the waveform slicer, the prune
 # selection, the browser's frame, and how a session is read back.
+#
+# A case that has to act while a stage runs waits on the journal (`wait_for_journal`), never on a
+# fixed sleep: the encoder's last frames and the fork take machine speed, so a case that sleeps goes
+# red at random on a loaded machine, and a suite nobody trusts is worse than a smaller one.
 
 SCRIPT="${SCRIPT:-$(cd "$(dirname "$0")/.." && pwd)/target/release/tiny-dictate}"
 OLD_SCRIPT="${OLD_SCRIPT:-}"
