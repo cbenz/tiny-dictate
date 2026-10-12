@@ -1008,6 +1008,19 @@ JOURNAL="$WORK/journal.err"
 journal_has() { grep -Eq "$1" "$JOURNAL"; }
 journal_lacks() { ! grep -Eq "$1" "$JOURNAL"; }
 
+# Wait until the journal holds a line. The recorder and the encoder finish at machine speed, so a
+# case that has to act while a stage runs asks the journal rather than sleeping a fixed time.
+wait_for_journal() { # wait_for_journal <extended regex>
+    local attempts=40
+
+    while [ "$attempts" -gt 0 ]; do
+        journal_has "$1" && return 0
+        sleep 0.05
+        attempts=$((attempts - 1))
+    done
+    return 1
+}
+
 # Every line is the tool's own: a collaborator whose output reached the journal writes a line the
 # tool's prefix does not open.
 journal_holds_only_tool_lines() {
@@ -3513,7 +3526,12 @@ test_journal_late_cancel() {
     TRANSCRIBE_SLEEP=1 td start 2>> "$JOURNAL"
     sleep 0.3
     td stop 2>> "$JOURNAL"
-    sleep 0.2
+    # The cancel has to land while the transcription runs. Waiting on the journal rather than on the
+    # clock is what makes that true on a loaded machine: the encoder's last frames and the fork
+    # outlive a fixed 0.2 s, and a cancel that lands before the transcription starts is not a late
+    # cancel at all — it takes the verdict path from the recording, and the two lines this case is
+    # about are never written.
+    check "the transcription is running" wait_for_journal 'transcription started'
     td cancel 2>> "$JOURNAL"
     check "session finishes" wait_idle
 
