@@ -68,7 +68,7 @@ impl WaveformSlicer {
         while self.pending.len() >= SLICE_BYTES {
             let slice: Vec<u8> = self.pending.drain(..SLICE_BYTES).collect();
             let extremes = slice_extremes(&slice);
-            self.watch(extremes);
+            self.count_ceiling(extremes);
             self.slices.push(extremes);
 
             if self.slices.len() == SLICES_PER_LINE {
@@ -87,8 +87,9 @@ impl WaveformSlicer {
         self.clipped
     }
 
-    /// Count one completed slice towards the clip watch.
-    fn watch(&mut self, (low, high): (i16, i16)) {
+    /// Count one completed slice towards the ceiling run: a slice at full scale extends it,
+    /// anything else ends it.
+    fn count_ceiling(&mut self, (low, high): (i16, i16)) {
         if high == i16::MAX || low == i16::MIN {
             self.ceiling_run += 1;
             self.clipped |= self.ceiling_run >= CLIPPED_SLICES;
@@ -376,11 +377,7 @@ mod tests {
 
     /// The bytes of one complete line: 24 slices of the sample value `sample`.
     fn constant_line(sample: i16) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        for _ in 0..SLICES_PER_LINE * SLICE_SAMPLES {
-            bytes.extend_from_slice(&sample.to_le_bytes());
-        }
-        bytes
+        slices(&[sample; SLICES_PER_LINE])
     }
 
     #[test]

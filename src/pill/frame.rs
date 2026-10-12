@@ -501,8 +501,8 @@ mod tests {
 
     #[test]
     fn a_whisper_above_the_gate_fills_the_meter() {
-        // The regression the law exists for: peaks 35 dB under full scale. Against the old floor
-        // (-30 dBFS) this voice could never fill the meter, whatever the reference followed.
+        // The regression the noise gate exists for: peaks 35 dB under full scale. Against the old
+        // floor (-30 dBFS) this voice could never fill the meter, whatever the reference followed.
         let whisper = flat((FULL_SCALE * 0.018) as i16); // -35 dBFS
         let mut pill = Pill::new(true);
 
