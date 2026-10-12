@@ -31,6 +31,7 @@ directory under `$XDG_RUNTIME_DIR` (falling back to `$XDG_STATE_HOME` or `~/.loc
 | `state` | the word the presenter draws: `recording`, `transcribing`, `cancelled`, `stop` |
 | `audio.fifo` | the pipe between the recorder and the encoder |
 | `waveform` | the [waveform channel](pill.md) |
+| `clipped` | created by the pump when the recording went over full scale, read by the session at the end ([the microphone](microphone.md)) |
 | `arecord.err` | the recorder's stderr |
 | `lame.err` | the encoder's stderr |
 | `presenter.err` | the presenter's stderr |

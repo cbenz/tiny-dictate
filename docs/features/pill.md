@@ -33,10 +33,11 @@ that shows `Recording` over a dead session is worse than no pill at all.
 It never takes keyboard focus: the paste that ends a dictation goes to the focused window, and a
 focusable pill would receive the text itself.
 
-Failures are not the pill's business. They are desktop notifications sent with `notify-send`, once
-each, never replaced. There is nothing to keep in sync, so no notification id and no `dunstify`. The
-cancellation is the pill's business, because it is a [verdict](cancel-and-verdict.md) about the
-dictation itself.
+Failures are not the pill's business, and neither is a recording that came out clipped. Both are
+desktop notifications sent with `notify-send`, once each, never replaced, and both wait for the pill
+to be gone ([the microphone](microphone.md)). There is nothing to keep in sync, so no notification
+id and no `dunstify`. The cancellation is the pill's business, because it is a
+[verdict](cancel-and-verdict.md) about the dictation itself.
 
 The pill is spawned once per dictation and never replaced. Changing state is a write to the state
 file it watches; the session and `cancel`'s verdict are the only writers of that file, and the pill
@@ -66,16 +67,36 @@ nor a dead meter can close the recorder's pipe under it — the guarantee `tee -
 that there is no shell pipeline to carry it. `tests/run.sh` has a case for exactly that.
 
 The core publishes raw samples and no level — what the bars are drawn *against* is the presenter's
-business.
+business, and that law is the pill's own ([ADR-0018](../adr/0018-the-meter-is-relative.md)).
+
+### The meter's law
+
+The bars are drawn against a **followed reference**, never against full scale. Each tick takes the
+loudest slice of the line just read, and the reference moves towards it at most +6 dB per tick, so a
+knock costs a few ticks of height rather than the whole meter; it decays towards a quieter voice
+once a pause has been held for five seconds, because a pause is not a voice that got quieter and the
+room tone under it must not be amplified until the meter fills.
+
+The reference never goes under the **noise gate**: `0.003` of full scale, −50.5 dBFS, the level below
+which there is room and not voice. A bar is what its slice has above that gate, as a share of what
+the reference has above it. A voice that peaks 35 dB under full scale therefore fills the meter
+exactly like a loud one, and an input at rest draws the 2 px minimum and nothing more. The gate is a
+constant and not a preference: a floor measured at the start of each recording would have to be
+measured while the user is already speaking.
+
+A meter drawn that way answers one question — does it hear me? — and never how loud the room is.
+That is why the level is the tool's to set and not the user's to tune
+([the microphone](microphone.md)), and why a recording that clipped is reported rather than drawn.
 
 ## The reference implementation
 
 `src/pill/` draws a pill anchored to the bottom of the screen with GTK4 and gtk4-layer-shell. It is
 part of the binary; `_present` is its entry point. It draws the input waveform while recording,
-normalized on the level of the voice around it: the bars fill the meter and what is left to see is
-how the voice moves, which is what a pill can show at ten frames per second whatever the microphone
-gain happens to be. A window too quiet to be a voice is drawn small rather than gigantic, and a
-waveform file that is absent or unreadable falls back to the spinner.
+against the followed reference and the noise gate above: the bars fill the meter and what is left to
+see is how the voice moves, which is what a pill can show at ten frames per second whatever the
+microphone gain happens to be. A room with nobody speaking in it never fills the meter, whatever the
+reference has followed down to, and a waveform file that is absent or unreadable falls back to the
+spinner.
 
 It needs a compositor with `wlr-layer-shell` support (sway, Hyprland, niri, KDE) and exits with an
 error on GNOME/Mutter, where the dictation still works but nothing is shown.
@@ -111,3 +132,5 @@ Details that make it work:
   as its `_present` mode, for the startup time.
 - [ADR-0006: the limit and the bar](../adr/0006-the-limit-and-the-bar.md) adds a progress bar under
   the meter, driven by the transcriber's audio limit.
+- [ADR-0018: the meter is relative, and the level is not the user's to tune](../adr/0018-the-meter-is-relative.md)
+  records the reference, the noise gate and why no absolute meter was taken.

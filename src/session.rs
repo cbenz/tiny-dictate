@@ -121,6 +121,9 @@ pub struct Paths {
     pub fifo: PathBuf,
     /// The waveform channel.
     pub waveform: PathBuf,
+    /// The clipped marker: created by the pump once a run of full-scale samples has gone by, so
+    /// the file's existence is the fact.
+    pub clipped: PathBuf,
     /// The recorder's stderr.
     pub recorder_error: PathBuf,
     /// The encoder's stderr.
@@ -141,6 +144,7 @@ impl Paths {
             session_id: session.join("session.id"),
             fifo: session.join("audio.fifo"),
             waveform: session.join("waveform"),
+            clipped: session.join("clipped"),
             recorder_error: session.join("arecord.err"),
             encoder_error: session.join("lame.err"),
             presenter_error: session.join("presenter.err"),
@@ -663,10 +667,16 @@ fn session_body(
         recording_failed = true;
     }
 
+    // The pump creates the clipped marker the first time a run of slices reaches full scale, and
+    // it has written it by the time the encoder is done: read the fact once, here, and carry it to
+    // the two places that report it — the journal where the recording ends, and the notification
+    // to the user once the pill is gone.
+    let clipped = paths.clipped.exists();
+
     // The verdict owns the last word: a cancelled dictation is neither a failure nor something
     // to transcribe, whichever moment the cancel landed in.
     if presentation::cancelled(&paths.state) {
-        return show_verdict(paths, session, &mut presenter);
+        return show_verdict(paths, session, &mut presenter, clipped);
     }
 
     if recording_failed {
@@ -695,7 +705,7 @@ fn session_body(
             _ => reason,
         };
 
-        end_recording(session);
+        end_recording(session, clipped);
         session.metadata.outcome = store::Outcome::Failed;
         session.metadata.error = Some(reason.clone());
         let _ = session.save();
@@ -709,7 +719,7 @@ fn session_body(
 
     // The recording is over and on disk: the metadata now carries its end, its duration and
     // its size, and says what the session is doing next.
-    end_recording(session);
+    end_recording(session, clipped);
     session.metadata.outcome = store::Outcome::Transcribing;
     let _ = session.save();
 
@@ -749,7 +759,7 @@ fn session_body(
             // rather than pasted behind the user's back.
             if presentation::cancelled(&paths.state) {
                 log::line(Some(&session.id), "late cancel, text dropped");
-                return show_verdict(paths, session, &mut presenter);
+                return show_verdict(paths, session, &mut presenter, clipped);
             }
 
             // The text reaches the session before any clipboard write: a paste that lands
@@ -792,6 +802,17 @@ fn session_body(
                     log::line(None, &format!("pruned {} sessions", removed.len()));
                 }
             }
+
+            // The pill is gone and the text is in: the recording itself is the one thing left to
+            // say something about, and only when the text reached the user — a dictation that
+            // pasted nothing carries its own notification, and two at once is noise.
+            if clipped && pasted {
+                text::notify(
+                    "⚠️ Recording clipped: the transcript may be degraded",
+                    6000,
+                    "normal",
+                );
+            }
         }
         Err(error) => {
             log::line(
@@ -814,12 +835,14 @@ fn session_body(
     ExitCode::SUCCESS
 }
 
-/// Close the recording stage and log it: the duration it lasted and the bytes it produced.
+/// Close the recording stage and log it: the duration it lasted, the bytes it produced, and —
+/// when it did — that the level went over what a sample holds.
 ///
 /// One line per stage, and the recording stage ends in exactly one place per path — the failure
 /// path, the normal path, and the cancel that lands before either — so the line appears once
-/// and only when the recording actually ended.
-fn end_recording(session: &mut store::Session) {
+/// and only when the recording actually ended. The clipped line follows it: it is a fact about
+/// that same recording.
+fn end_recording(session: &mut store::Session, clipped: bool) {
     session.finish_recording(SystemTime::now());
     log::line(
         Some(&session.id),
@@ -829,6 +852,12 @@ fn end_recording(session: &mut store::Session) {
             session.metadata.audio_bytes
         ),
     );
+    if clipped {
+        log::line(
+            Some(&session.id),
+            "recording clipped: the level went over what a sample holds",
+        );
+    }
 }
 
 /// Show the verdict for as long as a notification of it used to stay on screen: the pill is
@@ -841,13 +870,14 @@ fn show_verdict(
     paths: &Paths,
     session: &mut store::Session,
     presenter: &mut Presenter,
+    clipped: bool,
 ) -> ExitCode {
     signal_pidfile(&paths.encoder_pid, libc::SIGTERM);
 
     // A cancel that landed while recording ends the recording here; a cancel that landed
     // during the transcription leaves the end the transcription stage already recorded.
     if session.metadata.ended.is_none() {
-        end_recording(session);
+        end_recording(session, clipped);
     }
     session.metadata.outcome = store::Outcome::Cancelled;
     let _ = session.save();

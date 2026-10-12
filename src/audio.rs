@@ -23,6 +23,11 @@ pub const SLICE_BYTES: usize = SLICE_SAMPLES * 2;
 /// A waveform line holds 24 slices, 96 ms of audio, renewed ten times a second.
 pub const SLICES_PER_LINE: usize = 24;
 
+/// How many slices in a row must sit at full scale before the recording counts as clipped.
+///
+/// One slice at the ceiling is a knock or a click; three of them in a row are the level.
+const CLIPPED_SLICES: usize = 3;
+
 /// The encoder's MP3 bitrate: `lame … -b 64`, i.e. 64 kbit/s. Eight bits to the byte, so the
 /// encoder writes 8000 bytes per second and a transcriber's byte limit is that many seconds of
 /// audio.
@@ -38,6 +43,10 @@ pub const BYTES_PER_SECOND: u64 = BITRATE_KBPS * 1000 / 8;
 pub struct WaveformSlicer {
     pending: Vec<u8>,
     slices: Vec<(i16, i16)>,
+    /// How many slices in a row have touched full scale so far.
+    ceiling_run: usize,
+    /// Whether this stream ever held a run of them.
+    clipped: bool,
 }
 
 impl WaveformSlicer {
@@ -46,6 +55,8 @@ impl WaveformSlicer {
         Self {
             pending: Vec::new(),
             slices: Vec::new(),
+            ceiling_run: 0,
+            clipped: false,
         }
     }
 
@@ -56,7 +67,9 @@ impl WaveformSlicer {
         let mut lines = Vec::new();
         while self.pending.len() >= SLICE_BYTES {
             let slice: Vec<u8> = self.pending.drain(..SLICE_BYTES).collect();
-            self.slices.push(slice_extremes(&slice));
+            let extremes = slice_extremes(&slice);
+            self.watch(extremes);
+            self.slices.push(extremes);
 
             if self.slices.len() == SLICES_PER_LINE {
                 lines.push(format_line(&self.slices));
@@ -65,6 +78,23 @@ impl WaveformSlicer {
         }
 
         lines
+    }
+
+    /// Whether the stream held a run of slices at full scale: the level went over what a sample
+    /// can hold, so the loudest part of the recording is flattened. The fact never goes away once
+    /// it is true — a later quiet passage does not unclip what was recorded before it.
+    pub fn clipped(&self) -> bool {
+        self.clipped
+    }
+
+    /// Count one completed slice towards the clip watch.
+    fn watch(&mut self, (low, high): (i16, i16)) {
+        if high == i16::MAX || low == i16::MIN {
+            self.ceiling_run += 1;
+            self.clipped |= self.ceiling_run >= CLIPPED_SLICES;
+        } else {
+            self.ceiling_run = 0;
+        }
     }
 }
 
@@ -162,14 +192,15 @@ pub fn start_pipeline(paths: &Paths, audio: &Path, session_id: &str) -> io::Resu
 
     fs::File::create(&paths.waveform)?;
 
-    // The pump outlives `start`, so it is a process of its own; it is handed the waveform path
-    // in its argv, which is what the suite's leftover check looks for, the session id so a
-    // failure it logs names the dictation it belongs to, and the fifo's write end as its
-    // stdout, so it never has to open the fifo and find it writerless.
+    // The pump is handed the waveform path in its argv, which is what the suite's leftover check
+    // looks for, the session id so a failure it logs names the dictation it belongs to, and the
+    // clipped path it creates when the recording goes over full scale. The fifo's write end is
+    // its stdout, so it never has to open the fifo and find it writerless.
     let mut pump = Command::new(self_executable())
         .arg("_pump")
         .arg(&paths.waveform)
         .arg(session_id)
+        .arg(&paths.clipped)
         .stdin(Stdio::piped())
         .stdout(Stdio::from(writer))
         .spawn()?;
@@ -188,10 +219,16 @@ pub fn start_pipeline(paths: &Paths, audio: &Path, session_id: &str) -> io::Resu
     Ok(())
 }
 
-/// `_pump`: copy the recorder's stream into the fifo and append the waveform lines.
+/// `_pump`: copy the recorder's stream into the fifo, append the waveform lines, and create
+/// `clipped` the first time the level reaches full scale.
 pub fn pump(arguments: &[String]) -> ExitCode {
     let Some(waveform) = arguments.first() else {
         eprintln!("tiny-dictate: _pump needs a waveform path");
+        return ExitCode::FAILURE;
+    };
+
+    let Some(clipped) = arguments.get(2) else {
+        eprintln!("tiny-dictate: _pump needs a clipped path");
         return ExitCode::FAILURE;
     };
 
@@ -202,7 +239,7 @@ pub fn pump(arguments: &[String]) -> ExitCode {
         .map(String::as_str)
         .filter(|id| !id.is_empty());
 
-    if let Err(error) = run_pump(Path::new(waveform)) {
+    if let Err(error) = run_pump(Path::new(waveform), Path::new(clipped)) {
         log::line(
             session_id,
             &format!("failure: the waveform pump stopped: {error}"),
@@ -212,7 +249,7 @@ pub fn pump(arguments: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run_pump(waveform: &Path) -> io::Result<()> {
+fn run_pump(waveform: &Path, clipped: &Path) -> io::Result<()> {
     // The raw stream goes to stdout, which `start` has already wired to the fifo's write end:
     // the pump never opens the fifo itself, so the encoder can never find it writerless. The
     // writes get the backpressure `tee`'s do, and a write error into a dead fifo is swallowed.
@@ -226,6 +263,7 @@ fn run_pump(waveform: &Path) -> io::Result<()> {
     let mut input = stdin.lock();
     let mut slicer = WaveformSlicer::new();
     let mut buffer = [0u8; 16 * 1024];
+    let mut reported_clipping = false;
 
     loop {
         let read = match input.read(&mut buffer) {
@@ -239,6 +277,13 @@ fn run_pump(waveform: &Path) -> io::Result<()> {
 
         for line in slicer.push(&buffer[..read]) {
             let _ = channel_file.write_all(line.as_bytes());
+        }
+
+        // The file's existence is the fact the session reports, and it is written once. A report
+        // that cannot be written costs the report, never the recording.
+        if !reported_clipping && slicer.clipped() {
+            let _ = fs::File::create(clipped);
+            reported_clipping = true;
         }
     }
 
@@ -284,6 +329,50 @@ fn open_fifo(path: &Path, flags: libc::c_int) -> io::Result<fs::File> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bytes of one complete slice: 64 samples of the value `sample`.
+    fn slice_of(sample: i16) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for _ in 0..SLICE_SAMPLES {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+        bytes
+    }
+
+    /// The bytes of one slice per value, in order.
+    fn slices(values: &[i16]) -> Vec<u8> {
+        values.iter().flat_map(|value| slice_of(*value)).collect()
+    }
+
+    #[test]
+    fn a_run_of_full_scale_slices_is_a_clipped_recording() {
+        let mut slicer = WaveformSlicer::new();
+
+        slicer.push(&slices(&[i16::MIN, i16::MAX, i16::MAX]));
+
+        assert!(slicer.clipped());
+    }
+
+    #[test]
+    fn a_run_that_falls_short_of_the_ceiling_is_not_clipped() {
+        let mut slicer = WaveformSlicer::new();
+
+        // Two at the ceiling are a knock, and the third slice breaks the run.
+        slicer.push(&slices(&[i16::MIN, i16::MAX, 30000, i16::MAX, i16::MAX]));
+
+        assert!(!slicer.clipped());
+    }
+
+    #[test]
+    fn a_run_split_across_pushes_still_counts() {
+        let mut slicer = WaveformSlicer::new();
+
+        for chunk in slices(&[i16::MAX, i16::MAX, i16::MAX]).chunks(100) {
+            slicer.push(chunk);
+        }
+
+        assert!(slicer.clipped());
+    }
 
     /// The bytes of one complete line: 24 slices of the sample value `sample`.
     fn constant_line(sample: i16) -> Vec<u8> {

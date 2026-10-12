@@ -90,6 +90,37 @@ fi
 # Caveat: the null device is not clocked, it produces data as fast as it is read, hence
 # the trick in the lame stub below.
 printf '%s\\n' "arecord stub pid=\$$ args=\$* at \$(date +%s.%N)" >> "\$WORK/arecord-report"
+# ARECORD_LOUD=1 hands the core a recorder that captures a signal past full scale: a run of
+# slices at the ceiling, the way a microphone at too high a level reaches the ADC. The ALSA null
+# device below only ever produces silence, so this mode is its own recorder. Python and not a
+# shell loop: the tool signals the recorder, and a non-interactive shell cannot trap SIGINT (see
+# the note above), while Python's own handler exits on it.
+if [ -n "\${ARECORD_LOUD:-}" ]; then
+    exec python3 -c '
+import signal, sys, time
+
+quiet = b"\x00\x00" * 64      # one slice of 4 ms at rest
+ceiling = b"\xff\x7f" * 64    # one slice at the positive full scale
+
+
+def emit(slice_bytes):
+    sys.stdout.buffer.write(slice_bytes)
+    sys.stdout.buffer.flush()
+
+
+signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
+for _ in range(5):             # the room, then the level climbs over the ceiling
+    emit(quiet)
+    time.sleep(0.04)
+for _ in range(6):
+    emit(ceiling)
+    time.sleep(0.04)
+while True:                    # and back to the room until the tool stops the recording
+    emit(quiet)
+    time.sleep(0.04)
+'
+fi
+
 exec "$REAL_ARECORD" -D null "\$@"
 STUB
 
@@ -1163,6 +1194,31 @@ test_waveform_channel() {
     check "session finishes" wait_idle
     check "transcription pasted" [ "$(pasted_text)" = "text transcribed" ]
     check "no waveform channel process left behind" no_waveform_channel_process
+    check "session directory removed" session_dir_gone
+}
+
+# A recording that reached full scale is clipped, and the pill could not have shown it: the meter
+# is relative, so a saturated recording and a loud one draw the same. The pump watches the samples
+# it already copies, and the session says what it saw once the text is in and the pill is gone
+# ([ADR-0018](../adr/0018-the-meter-is-relative.md)).
+test_clipped_recording() {
+    start_test "a recording that went over full scale is reported once the text is in"
+    ARECORD_LOUD=1 td start 2>> "$JOURNAL"
+    sleep 0.6
+    check "the dictation is recording" [ "$(td status)" = "working" ]
+    td stop 2>> "$JOURNAL"
+    check "session finishes" wait_idle
+    check "transcription pasted" [ "$(pasted_text)" = "text transcribed" ]
+
+    local id
+    id="$(basename "$(single_session_dir)")"
+    check "one line names the clipped recording and the session" \
+        journal_line_names_session "$id" 'recording clipped: the level went over what a sample holds'
+    check "the user is told, once the pill is gone" grep -q 'Recording clipped' "$WORK/events.log"
+    check "the notification waited for the pill to go" pill_gone_before_notification
+    check "every notification expires on its own" notifications_expire
+    check "no presentation left behind" presenter_left
+    check "no leftover process" no_leftover_process
     check "session directory removed" session_dir_gone
 }
 
@@ -3679,6 +3735,7 @@ run_test() {
 
 run_test test_normal_flow
 run_test test_waveform_channel
+run_test test_clipped_recording
 run_test test_encoder_finds_a_writer
 run_test test_audio_limit
 run_test test_no_audio_limit

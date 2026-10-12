@@ -26,8 +26,10 @@ pub const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦'
 const PAUSE_MARGIN: f32 = 0.125;
 /// How long a pause holds the calibration before it starts following the room down.
 const HOLD_TICKS: u32 = 50;
-/// The quietest level the meter ever calibrates on, so silence cannot fill it.
-const REFERENCE_FLOOR: f32 = 0.03;
+/// The level below which there is room and not voice: the meter draws no bar against less than
+/// this, so a silent input cannot fill it by amplifying hiss. It is also the reference the meter
+/// starts at, because before the first word the room is all there is to measure.
+const NOISE_GATE: f32 = 0.003; // -50.5 dBFS
 /// At most +6 dB per tick: a knock costs a few ticks of height, not the whole meter.
 const REFERENCE_RISE: f32 = 2.0;
 /// How fast the meter recalibrates to a voice that really did get quieter.
@@ -153,7 +155,7 @@ struct Calibration {
 impl Default for Calibration {
     fn default() -> Self {
         Self {
-            reference: REFERENCE_FLOOR,
+            reference: NOISE_GATE,
             hold: 0,
         }
     }
@@ -184,7 +186,7 @@ impl Calibration {
             }
         }
 
-        let decayed = (self.reference * REFERENCE_DECAY).max(REFERENCE_FLOOR);
+        let decayed = (self.reference * REFERENCE_DECAY).max(NOISE_GATE);
         let reference = peak.max(decayed).min(self.reference * REFERENCE_RISE);
         Self {
             reference,
@@ -193,11 +195,25 @@ impl Calibration {
     }
 
     /// One bar per slice: how far it reaches from the middle of the meter, in pixels.
+    ///
+    /// The span runs from the noise gate up to the reference, so a voice that only ever reaches
+    /// the room's own level is drawn at the gate and a voice at the reference fills the meter.
+    /// Dividing by the reference alone would leave a quiet microphone in the bottom of the meter
+    /// whatever the reference did.
     fn bars(&self, waveform: &[Slice]) -> Vec<f32> {
+        // A reference that has not left the gate has no span to draw across: nothing has risen
+        // above the room yet, so every bar stays at its minimum.
+        let span = self.reference - NOISE_GATE;
+
         waveform
             .iter()
             .map(|slice| {
-                let loudness = (slice.amplitude() as f32 / FULL_SCALE / self.reference).min(1.0);
+                let above_gate = slice.amplitude() as f32 / FULL_SCALE - NOISE_GATE;
+                let loudness = if span > 0.0 {
+                    (above_gate / span).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
                 (BAR_MIN_PX / 2.0).max(loudness * METER_HEIGHT_PX / 2.0)
             })
             .collect()
@@ -477,10 +493,27 @@ mod tests {
 
         assert!(frame.bars.iter().all(|bar| (*bar - 9.0).abs() < 1e-3));
         assert!(
-            (next.calibration.reference - 0.06).abs() < 1e-4,
-            "+6 dB per tick at most: 0.03 * 2"
+            (next.calibration.reference - 0.006).abs() < 1e-4,
+            "+6 dB per tick at most: 0.003 * 2"
         );
         assert_eq!(next.calibration.hold, 50);
+    }
+
+    #[test]
+    fn a_whisper_above_the_gate_fills_the_meter() {
+        // The regression the law exists for: peaks 35 dB under full scale. Against the old floor
+        // (-30 dBFS) this voice could never fill the meter, whatever the reference followed.
+        let whisper = flat((FULL_SCALE * 0.018) as i16); // -35 dBFS
+        let mut pill = Pill::new(true);
+
+        for _ in 0..3 {
+            let (_, next) = pill.advance(&reading(Some(State::Recording), Some(&whisper)));
+            pill = next;
+        }
+        let (frame, _) = pill.advance(&reading(Some(State::Recording), Some(&whisper)));
+
+        assert!((pill.calibration.reference - 0.018).abs() < 0.001);
+        assert!(frame.bars.iter().all(|bar| (*bar - 9.0).abs() < 1e-3));
     }
 
     #[test]
@@ -493,13 +526,14 @@ mod tests {
             ..Pill::new(true)
         };
         // The peak equals the reference, so the recalibration keeps it: only the first slice is
-        // half as loud, and it is drawn at half the meter's half height.
+        // half as loud, and it is drawn at half the meter's half height — a hair under, since the
+        // gate is taken off both ends of the span.
         let mut waveform = flat(8192);
         waveform[0] = Slice { low: 0, high: 4096 };
 
         let (frame, next) = pill.advance(&reading(Some(State::Recording), Some(&waveform)));
 
-        assert!((frame.bars[0] - 4.5).abs() < 1e-3);
+        assert!((frame.bars[0] - 4.445).abs() < 1e-3);
         assert!(frame.bars[1..].iter().all(|bar| (*bar - 9.0).abs() < 1e-3));
         assert!((next.calibration.reference - 0.25).abs() < 1e-3);
     }

@@ -140,6 +140,8 @@ These hold whatever implementation runs them, and a port is expected to keep the
   and a focusable pill would receive the text itself.
 - A cancelled dictation is neither transcribed nor reported as a failure.
 - The waveform channel is a copy of the stream: a meter that dies cannot end a recording.
+- A report is never worth a recording: a marker the pump cannot write, or a notification the desktop
+  cannot show, costs the report and nothing else.
 
 ## Features
 

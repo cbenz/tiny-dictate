@@ -62,6 +62,31 @@ A percentage is a stand-in for a base the server would not publish, not a level 
 gives a different gain on every machine, which is exactly why it is the fallback and not the target
 ([ADR-0014](../adr/0014-the-microphone-at-its-base-volume.md)).
 
+## When the level was not the base
+
+The tool sets the source to its base before every dictation, so a recording clips only when the level
+was raised again while it ran. The pill cannot show it: its meter is drawn against the voice itself,
+so a saturated recording is drawn exactly like a loud one ([the pill](pill.md)). What the level did is
+therefore read off the samples.
+
+The pump has every byte of the stream in hand and already reduces each slice to its lowest and
+highest sample, so the watch costs it one comparison: a slice whose highest sample is `32767`, or
+whose lowest is `-32768`, sits at full scale. Three such slices in a row — 12 ms — are the level,
+where one is a knock; the pump then creates the `clipped` file in the runtime directory, once, and
+nothing else is counted: the file's existence is the fact.
+
+The session reads that fact when the recording is over. It writes one journal line, and — once the
+text has reached the user, because the pill goes before the notification — it says so once:
+
+    ⚠️ Recording clipped: the transcript may be degraded
+
+A dictation that pasted nothing already carries a notification of its own, and two at once is noise;
+the journal line is written either way. `metadata.json` keeps nothing about it: a clipped recording
+is still a `transcribed` one, and the log is the durable trace
+([ADR-0008](../adr/0008-the-log.md)). Nothing takes the level back while the recording runs either:
+the writer is whoever raised it, and the tool does not argue with the volume control
+([ADR-0018](../adr/0018-the-meter-is-relative.md)).
+
 ## The journal
 
 One line per dictation says what became of the level, and it carries the session id
@@ -72,8 +97,12 @@ One line per dictation says what became of the level, and it carries the session
 | `microphone set to base volume <raw>` | the default source was set to the base the server published |
 | `microphone set to input level <pct>%: no readable base volume` | the server answered without a base the parser could read, and the configured level stood in |
 | `microphone left at its level: no audio server answered` | `pactl` could not be run, or did not answer |
+| `recording clipped: the level went over what a sample holds` | the recording reached full scale, so its loudest part is flattened |
 
 ## Decisions
 
 - [ADR-0014: the microphone is set to its base volume before a dictation](../adr/0014-the-microphone-at-its-base-volume.md)
   records why the tool changes the level rather than warning about it, and why `wpctl` was rejected.
+- [ADR-0018: the meter is relative, and the level is not the user's to tune](../adr/0018-the-meter-is-relative.md)
+  records why the tool never writes above the base, and why a clipped recording is reported rather
+  than prevented by asking the user to watch a meter.

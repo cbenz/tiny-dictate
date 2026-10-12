@@ -72,8 +72,14 @@ The bar under the waveform showing how much of the audio limit has elapsed.
 **Base volume**:
 The input level at which the audio server adds no gain to the microphone — the neutral point of that
 machine's audio hardware. The tool sets the default source to it before a dictation: above it the
-recording saturates, and a saturated recording transcribes badly.
+recording clips, and a clipped recording transcribes badly.
 _Avoid_: gain, default level, 20 %
+
+**Clipped**:
+What a recording is when the level it was made at was too high for a sample to hold: the loudest part
+is flattened to the sample's maximum — the top of the wave, cut off flat — and the transcript
+degrades. The tool reports it once the dictation is over; it never raises the level that causes it.
+_Avoid_: saturated, distorted, overloaded
 
 ## The result
 
@@ -93,7 +99,8 @@ How long the transcript stays offered on the clipboard before it is withdrawn.
 _Avoid_: timeout, expiry
 
 **Notification**:
-How a failure is shown to the user: once, with an expiry of its own. A verdict is not a notification.
+How something the pill does not say is shown to the user: once, with an expiry of its own. It carries
+a failure the dictation ran into, and a recording the tool could not keep clean.
 _Avoid_: alert, toast
 
 ## Keeping the recording

@@ -60,6 +60,8 @@ presenter was asked to draw, the lifecycle of the processes, the exit codes.
 - the normal flow: start, record, stop, paste
 - the waveform channel carries the recording to the pill, and hands the pill the waveform file and
   the command to run
+- a recording that reached full scale is reported once the text is in: one journal line, and one
+  notification after the pill is gone — a quiet recording reports nothing
 - the default source of the audio server is set to the base volume it publishes before the recorder
   opens, the source is unmuted instead of refused, and the configured fallback level stands in when
   the server answers without a readable base volume, or is not on `PATH` at all
@@ -151,14 +153,15 @@ the safety net that makes the port boring, and it is why the tests are not to be
 The process seam is the primary one: the states written to the state file, the events the presenter
 was asked to draw, the lifecycle of the processes and the exit codes are all observable there. A few
 pure functions the seam cannot see are unit-tested instead: the pill's frame computation (state,
-waveform, limit and elapsed time in, what to draw out, including the three bands of the progress
-bar), the prune selection (a list of sessions in, the ones to remove out, sharing one listing with
-`session list` and `last`), the browser's frame (the rows, the selection, the selected session's
-detail, the run state, the scroll offset, the status line and the terminal's size in — the footer
-names only the cancel key while a transcription runs — the list and the wrapped, windowed pane
-out), and, for the session surface, reading the metadata back, resolving a
-`<id|last>` argument, the human duration, the row of the listing, the fields of the detail and the
-JSON composition of the listing and the detail.
+waveform, limit and elapsed time in, what to draw out — the meter's followed reference and noise
+gate, and the three bands of the progress bar), the waveform slicer (the lines a push finishes, and
+the run of full-scale slices that makes a recording clipped), the prune selection (a list of sessions
+in, the ones to remove out, sharing one listing with `session list` and `last`), the browser's frame
+(the rows, the selection, the selected session's detail, the run state, the scroll offset, the status
+line and the terminal's size in — the footer names only the cancel key while a transcription runs —
+the list and the wrapped, windowed pane out), and, for the session surface, reading the metadata
+back, resolving a `<id|last>` argument, the human duration, the row of the listing, the fields of the
+detail and the JSON composition of the listing and the detail.
 
 ## Decisions
 
