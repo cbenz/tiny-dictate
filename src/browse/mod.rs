@@ -5,6 +5,11 @@
 //! adapter that owns the terminal. The browser takes no command lock and reads files only, so it
 //! opens while a dictation runs and works on a machine without the encoder or the clipboard tools;
 //! only its copy actions ask for the clipboard tool, exactly as `session copy` does.
+//!
+//! There is no focus to move between the two panes: which of them a key acts on is fixed by the key
+//! itself, so nothing has to be selected before a command means something. And the browser never
+//! refreshes on its own — `r` is the only reload — so nothing on screen changes under the user's
+//! hands.
 
 pub mod frame;
 

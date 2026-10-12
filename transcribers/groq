@@ -2,7 +2,7 @@
 #
 # Reference tiny-dictate transcription plugin: Groq Whisper.
 #
-# Contract (see docs/features/transcriber.md):
+# Contract (see the Transcribers section of README.md):
 #   $1      path to the recorded audio file
 #   $2      session directory; when given, the provider's own answer is also left there as
 #           transcript.raw.json, verbatim

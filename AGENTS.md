@@ -34,29 +34,39 @@ to install.
 Rules the tool does not break, whatever implementation runs them:
 
 - One dictation at a time: the session directory is the claim on the microphone, and creating it
-  with `mkdir` is atomic.
+  with `mkdir` is atomic; the durable session is not the claim.
 - The recorder's pid is recorded before the session process is forked, and the session waits for that
   pid: no window in which it could believe the recorder finished when it has not started.
-- `stop` and `cancel` signal the recorder, never the session. A signal never removes the pidfile it
-  was read from.
+- `stop` and `cancel` signal the recorder, never the session: the session owns the lifecycle. A
+  signal never removes the pidfile it was read from.
 - The kill order: the recorder is signalled before the encoder, and the encoder outlives it so it can
   flush the last frames.
 - One presenter per dictation: the session and `cancel`'s verdict are the only writers of the state
   file, and the presenter never writes it — the presenter is the only writer of the screen.
 - The pill leaves on its own: the state file disappears, it reads `stop`, or the process it was given
   is gone. A killed dictation cannot leave a pill frozen on screen.
-- The session waits for the presenter to be gone before it notifies anything.
-- The pill never takes keyboard focus: the paste goes to the focused window.
+- The session waits for the presenter to be gone before it notifies anything: one thing on screen at
+  a time.
+- The pill never takes keyboard focus: the paste goes to the focused window, and a focusable pill
+  would receive the text itself.
 - A cancelled dictation is neither transcribed nor reported as a failure.
 - The waveform channel is a copy of the stream: a meter that dies cannot end a recording.
+- A report is never worth a recording: a marker the pump cannot write, or a notification the desktop
+  cannot show, costs the report and nothing else.
 - No secret is ever written into the repository; secrets come from the environment.
 
 ## Documentation
 
-- `docs/SPECS.md` and `docs/features/`: how the tool works today, one file per feature.
+- `README.md`: the front door — installing the tool, configuring it, and how a dictation runs.
 - `GLOSSARY.md`: the vocabulary. Use its terms.
-- `docs/adr/`: the decisions taken during design, numbered. Read the ones that touch your area.
-- `docs/agents/`: how the engineering skills consume the three above.
+- `docs/adr/`: the decisions taken during design, numbered. Read the ones that touch your area, and
+  record a new decision there rather than in prose elsewhere.
+- `docs/agents/`: where the issue tracker lives, the triage labels, and how the engineering skills
+  consume the two above.
+
+Specifications and tickets are not kept in this repository: they live in its GitHub Issues, which
+`docs/agents/issue-tracker.md` describes. A page describing how a layer works belongs in that
+layer's module documentation (`//!` at the top of its file).
 
 ## Agent skills
 

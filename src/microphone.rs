@@ -7,7 +7,9 @@
 //! same source. The tool sets the default source to that base and unmutes it before every
 //! dictation, after the claim and before the recorder opens, so the level the recorder gets is the
 //! level the server was told
-//! ([ADR-0014](../../docs/adr/0014-the-microphone-at-its-base-volume.md)).
+//! ([ADR-0014](../../docs/adr/0014-the-microphone-at-its-base-volume.md)). The base is read at that
+//! moment, so a default source that changed since the last dictation — a headset came or went — is
+//! the source that is set, and the source that is recorded.
 //!
 //! A server that publishes no readable base is answered with the configured percentage instead —
 //! the level the user chose for it — and a server that cannot be reached is answered with one log

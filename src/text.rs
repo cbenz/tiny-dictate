@@ -1,4 +1,10 @@
 //! The text of a dictation: the transcriber command, the transcript and the paste.
+//!
+//! The paste writes both selections — `CLIPBOARD` for the applications that read it (editors,
+//! browsers) and `PRIMARY` for the ones that read the classic Unix selection (terminals, `vim`) —
+//! so the keypress that follows lands wherever the user is typing, and the text stays available on
+//! both if that keypress misses. Everything here is best effort in the same way: a clipboard tool
+//! that is missing costs the paste, never the recording.
 
 use std::fs;
 use std::io::Write;

@@ -12,6 +12,12 @@
 # What makes this safe to run on a live desktop: the tested code is launched with a session
 # bus address and a Wayland display that do not exist, so even a missed stub could not pop a
 # notification, draw a pill or touch the real clipboard.
+#
+# It is the safety net that makes the port from the shell implementation boring, so it stays a shell
+# suite asserted at the process seam: the states written to the state file, the events the presenter
+# was asked to draw, the lifecycle of the processes and the exit codes. The pure functions that seam
+# cannot see are unit-tested instead (`cargo test`): the pill's frame, the waveform slicer, the prune
+# selection, the browser's frame, and how a session is read back.
 
 SCRIPT="${SCRIPT:-$(cd "$(dirname "$0")/.." && pwd)/target/release/tiny-dictate}"
 OLD_SCRIPT="${OLD_SCRIPT:-}"
@@ -1028,7 +1034,7 @@ journal_no_line_names_a_session() { # journal_no_line_names_a_session <file>
 }
 
 # The text of the failure line is the error the metadata holds: the journal and the durable
-# trace agree on what went wrong (`docs/features/dictation-lifecycle.md`).
+# trace agree on what went wrong.
 journal_failure_matches_metadata() { # journal_failure_matches_metadata <session dir> <session id>
     local expected
 

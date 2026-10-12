@@ -19,3 +19,7 @@ The change persists: WirePlumber writes it to `default-routes` and reapplies it 
 leaves a durable mark on the machine. The base is read as the raw value on `pactl`'s `Base Volume:`
 line, and `input_level_pct` (10 by default) stands in only when that line is missing or the parser
 cannot read it.
+
+On the reference machine the hardware gain is the volume's dB plus 60 — 10 % is 0 dB, 20 % is
++18 dB, 100 % is +60 dB — which is what saturated the ADC and what made the slider useless as a
+knob: the sane range sits under 20 %, where a step of one percent is nearly a step of two decibels.

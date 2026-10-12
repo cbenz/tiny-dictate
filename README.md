@@ -13,8 +13,30 @@ Built on the following tools:
 - result pasted into the active window via clipboard + `ydotool Shift+Insert`
 - failures notified with `notify-send`, the cancellation shown as a verdict on the pill
 
-How it works, and the decisions behind it, live in [`docs/SPECS.md`](docs/SPECS.md),
-[`GLOSSARY.md`](GLOSSARY.md) and [`docs/adr/`](docs/adr/).
+The vocabulary lives in [`GLOSSARY.md`](GLOSSARY.md) and the decisions taken during design in
+[`docs/adr/`](docs/adr/).
+
+## How a dictation works
+
+1. `start`, or `toggle` from idle, resolves the transcriber, asks it for its audio limit, claims the
+   microphone, sets the default source to its base volume and unmutes it, and forks a session
+   process.
+2. The recorder captures the microphone, the encoder writes MP3 from the first frame, and the
+   session publishes the input waveform for the pill to draw.
+3. `stop`, or `toggle` while recording, stops the recorder; the encoder flushes its last frames.
+4. The session runs the transcriber command on the audio file and shows `transcribing` while it
+   runs. A cancel that lands during the transcription drops the text.
+5. The session writes `transcript.txt` into the session directory, copies the text to both clipboard
+   selections, waits for the offer to serve it, injects it into the focused window with `ydotool
+   Shift+Insert`, and removes its runtime directory: the session stays on disk.
+
+The tool is one Rust binary — the command line, the audio pipeline and the pill — and nothing runs
+as a daemon: `start` forks a session process that owns the whole lifecycle, and nothing of the tool
+outlives a dictation beyond the clipboard offer that carries the text.
+
+A dictation is batch: the whole utterance is recorded, then transcribed once. Streaming
+transcription is out of scope — it is a different contract (long-lived process, incremental text,
+partials that get revised, key injection while speaking), not an extension of this one.
 
 ## Installation
 
@@ -39,7 +61,8 @@ not a packaging mistake.
 - `notify-send` (libnotify)
 - [wl-clipboard](https://github.com/bugaevc/wl-clipboard)
 - a compositor with `wlr-layer-shell` support (sway, Hyprland, niri, KDE), for the pill only: without
-  one the dictation still works, nothing is drawn on screen
+  one the dictation still works, nothing is drawn on screen. GNOME/Mutter has no layer-shell, so the
+  pill exits with an error there and the dictation runs on
 - `curl`, for the reference transcriber
 
 A notification daemon (dunst, mako, your desktop's) displays the failures.
@@ -83,15 +106,39 @@ missing runtime commands are only listed.
 
 ### Configure keyboard shortcuts
 
-Example with i3/sway:
+Every desktop environment that binds a key to a command can drive the tool; example with i3/sway:
 
 ```text
 bindsym $mod+backslash exec tiny-dictate toggle
 bindsym $mod+Shift+backslash exec tiny-dictate cancel
 ```
 
-Bindings through a key remapper such as keyd work the same way. The
-[automation page](docs/features/automation.md) describes the reference setup.
+`toggle` covers the common case — one key for start and stop. `cancel` needs its own key: a dictation
+ended by accident must remain cancellable without being transcribed.
+
+### keyd (optional)
+
+A key remapper is useful when the shortcut is a chord the compositor cannot see, or a double tap. On
+the reference setup the double-tap detection lives in `/etc/keyd/default.conf`, outside this
+repository: a single tap of Super does nothing, a second tap within `oneshot_timeout` emits `F19`,
+and a tap with Shift held emits `F24`. The compositor then binds those two plain function keys:
+
+```text
+bindsym F19 exec systemd-cat -t tiny-dictate tiny-dictate toggle
+bindsym F24 exec systemd-cat -t tiny-dictate tiny-dictate cancel
+```
+
+`systemd-cat -t tiny-dictate` tags the tool's stderr in the journal, which is where the log reads as a
+timeline ([ADR-0008](docs/adr/0008-the-log.md)); an untagged line is what `tiny-dictate` writes when
+it is run directly.
+
+Two details are worth keeping in mind when choosing keys:
+
+- `F24`, not `F20`: the evdev keymap maps the twentieth function key to `XF86AudioMicMute`, so a
+  binding on `F20` never matches, and a binding on `XF86AudioMicMute` mutes the microphone instead.
+- `F24`, not `Shift+F19`: the compositor only sees the Shift it has been told about, so a Shift
+  released a few milliseconds before the tap turns a cancel into a toggle. The key is chosen by the
+  keyd layer, which is where the Shift is known.
 
 ### Configure the tool
 
@@ -105,14 +152,19 @@ clipboard_seconds = 60   # how long the transcript stays offered on the clipboar
 ```
 
 A missing, unreadable or malformed file, or an unknown key, falls back to the defaults and never
-blocks a dictation. The file holds no secret: a transcriber's key comes from the environment only.
-The full page is [`docs/features/configuration.md`](docs/features/configuration.md).
+blocks a dictation. The file holds no secret: a transcriber's key comes from the environment only
+([ADR-0010](docs/adr/0010-configuration.md)).
+
+After a dictation whose text was pasted, the sessions beyond `keep` are removed, oldest first. A
+dictation that failed or was cancelled prunes nothing, a crashed run prunes nothing, and the session
+being recorded is never removed ([ADR-0005](docs/adr/0005-prune.md)).
 
 ### Waybar module (optional)
 
 `contrib/waybar/tiny-dictate-module.jsonc` puts the dictation state in the bar: `tiny-dictate status`
 prints `idle` or `working`, and the module maps either to an icon, a tooltip and a CSS class. A click
-runs `tiny-dictate toggle`.
+runs `tiny-dictate toggle`. The module runs the command rather than reading the state file, which is
+internal to the tool ([ADR-0013](docs/adr/0013-the-bar-goes-through-the-cli.md)).
 
 ```bash
 cp contrib/waybar/tiny-dictate-module.jsonc ~/.config/waybar/
@@ -134,8 +186,12 @@ receives the recorded audio file as `$1`, writes the transcribed text to stdout,
 on failure, in which case its stderr is shown to the user.
 
 It is resolved with `command -v`: `$TINY_DICTATE_TRANSCRIBE` if set, else `tiny-dictate-transcribe`
-on `PATH`. An unresolvable command is reported before any recording starts. The full contract is in
-[`docs/features/transcriber.md`](docs/features/transcriber.md).
+on `PATH`. An unresolvable command is reported before any recording starts. The command may declare
+the largest audio file it accepts by answering `--print-audio-limit` with a byte count; the probe is
+asked once per dictation before the microphone is opened, and that count becomes a maximum duration
+at the encoder's 64 kbit/s, at which the recording stops as if the shortcut had been pressed
+([ADR-0006](docs/adr/0006-the-limit-and-the-bar.md)). A transcriber that declares nothing leaves the
+dictation unbounded.
 
 `transcribers/groq` is the reference implementation (Groq Whisper):
 
@@ -152,8 +208,24 @@ Plug in anything else — another service, a local `whisper.cpp`, your own scrip
 export TINY_DICTATE_TRANSCRIBE=~/.local/bin/my-transcriber
 ```
 
-Tuning what a transcriber makes of your audio (hallucinations on silence, a vocabulary) is on the
-[transcriber page](docs/features/transcriber.md).
+Tuning what a transcriber makes of your audio is done by rewriting its output — the transcript is
+plain text, and a wrapper does that in three lines.
+
+### When it hallucinates on silence
+
+Whisper answers `"."` or `"♪♪"` to audio that holds no speech, and no single signal settles whether a
+segment is real: the same audio gives `no_speech_prob` of 0.0001 on one run and 0.993 on the next. The
+reference setup drops a segment when any of three heuristics fires —
+
+- `no_speech_prob >= 0.6`, Whisper's own default,
+- `avg_logprob <= -1.0`, the one that catches non-speech here,
+- `compression_ratio >= 2.4`, repetition loops,
+
+— then drops a transcript that holds no word at all. A recording under half a second, or one whose
+peak volume is under -45 dB, is not sent: a muted microphone reads as `-inf`. `verbose_json` is the
+response format that reports `no_speech_prob`, and it costs the request, which Groq bills with a
+ten-second minimum. The robust answer is a real voice activity detector on the audio before the
+request.
 
 ### Keys from a password manager
 
@@ -193,8 +265,10 @@ Commands:
   session delete <id|last>                       Remove exactly one session
 ```
 
-Every dictation is kept as a [session](docs/features/sessions.md): the recording, the transcript,
-the provider's raw response and the metadata. `session list` prints them newest first, `session
+Every dictation is kept as a session: the recording, the transcript,
+the provider's raw response and the metadata, one directory per dictation under
+`$XDG_STATE_HOME/tiny-dictate/sessions`, named by the local time it started
+([ADR-0003](docs/adr/0003-sessions-on-disk.md)). `session list` prints them newest first, `session
 browse` reads them on a terminal (bare `session` does one or the other, depending on whether its
 stdout is a terminal), `session show <id|last>` reads one in full (its fields, its path and its
 transcript), `session copy` puts one's transcript on the clipboard, transcribing it first when it

@@ -1,6 +1,16 @@
 //! The command line: one verb per invocation, and the usage text.
+//!
+//! At most one command is accepted per invocation; an unknown argument prints the usage and exits
+//! non-zero. `start`, `stop`, `cancel` and `toggle` take an exclusive command lock for the duration
+//! of the command, so two shortcuts pressed at once cannot interleave; `status` queries only — it
+//! never perturbs a live session and takes no lock. The `session` group carries every verb that
+//! touches a kept session and no verb that touches one lives anywhere else; each of them is given an
+//! id, with `last` meaning the newest session, and `session list` and `session show` take
+//! `--output text|json`, in the separated and the `=` form. Dependency checks live in the commands
+//! that need them, so the `session` verbs run on a machine without the encoder or the clipboard
+//! tools.
 
-/// The usage, as `docs/SPECS.md` documents it.
+/// The usage, as `README.md` shows it.
 pub const USAGE: &str = "\
 Usage: tiny-dictate <command>
 

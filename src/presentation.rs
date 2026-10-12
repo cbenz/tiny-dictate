@@ -42,9 +42,10 @@ impl Presenter {
     /// The default is this binary's own `_present` mode, handed the state file, the pid it
     /// must outlive, the waveform file, the command that re-invokes the tool, the recording's
     /// limit in seconds (empty when the transcriber declared none, in which case no bar is
-    /// drawn) and the colour of the waveform, read from the configuration. `TINY_DICTATE_PRESENT_COMMAND`
-    /// names another command instead — the internal test seam documented in `docs/SPECS.md`. A
-    /// presenter that cannot start costs the pill only: the dictation goes on without one.
+    /// drawn) and the colour of the waveform, read from the configuration.
+    /// `TINY_DICTATE_PRESENT_COMMAND` names another command instead, with the same arguments: it is
+    /// the seam `tests/run.sh` stubs the pill through, internal and unadvertised. A presenter that
+    /// cannot start costs the pill only: the dictation goes on without one.
     pub fn start(paths: &Paths, word: &str, limit: Option<Duration>, color: &str) -> Self {
         write_state(&paths.state, word);
 
