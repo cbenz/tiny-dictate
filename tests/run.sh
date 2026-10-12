@@ -1204,7 +1204,7 @@ test_waveform_channel() {
 }
 
 # A recording that reached full scale is clipped, and the pill could not have shown it: the meter
-# is relative, so a saturated recording and a loud one draw the same. The pump watches the samples
+# is relative, so a clipped recording and a loud one draw the same. The pump watches the samples
 # it already copies, and the session says what it saw once the text is in and the pill is gone
 # ([ADR-0018](../adr/0018-the-meter-is-relative.md)).
 test_clipped_recording() {

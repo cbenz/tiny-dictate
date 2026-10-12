@@ -17,7 +17,7 @@ watch a meter (`src/microphone.rs`, `src/session.rs`).
 microphone it was tuned on and lies about every other one: on the reference machine the internal
 microphone peaks 30 dB under full scale at the base volume, so the meter is a flat line — which is
 exactly what the pill used to show, and what leads a user to raise the level until the recording
-clips. The same meter on a USB microphone with make-up gain reads saturated.
+clips. The same meter on a USB microphone with make-up gain reads clipped.
 
 **A dB scale against the followed reference.** With the reference on the voice, room tone sits about
 20 dB under it, and a 36 dB scale draws that at 44 % of the meter: the meter would sit half full in a

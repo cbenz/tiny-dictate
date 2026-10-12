@@ -34,9 +34,8 @@ The tool is one Rust binary — the command line, the audio pipeline and the pil
 as a daemon: `start` forks a session process that owns the whole lifecycle, and nothing of the tool
 outlives a dictation beyond the clipboard offer that carries the text.
 
-A dictation is batch: the whole utterance is recorded, then transcribed once. Streaming
-transcription is out of scope — it is a different contract (long-lived process, incremental text,
-partials that get revised, key injection while speaking), not an extension of this one.
+A dictation is batch: the whole utterance is recorded, then transcribed once
+([ADR-0019](docs/adr/0019-a-dictation-is-batch.md)).
 
 ## Installation
 

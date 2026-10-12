@@ -1,10 +1,11 @@
 # The microphone is set to its base volume before a dictation
 
 A dictation records from the audio server's default source, whose level is whatever the user last
-left it at: at 100 % the ADC saturates, the transcript degrades and the waveform reads as a flat
-block. The tool therefore sets that source to its base volume at each `start`, after the claim and
-before the recorder opens, and unmutes it. The level stays there afterwards — the base is the sane
-point, and restoring the previous one would only re-arm the saturation.
+left it at: at 100 % the ADC runs past full scale, the recording clips, the transcript degrades and
+the waveform reads as a flat block. The tool therefore sets that source to its base volume at each
+`start`, after the claim and before the recorder opens, and unmutes it. The level stays there
+afterwards — the base is the sane point, and restoring the previous one would only re-arm the
+clipping.
 
 ## Considered options
 
@@ -21,5 +22,4 @@ line, and `input_level_pct` (10 by default) stands in only when that line is mis
 cannot read it.
 
 On the reference machine the hardware gain is the volume's dB plus 60 — 10 % is 0 dB, 20 % is
-+18 dB, 100 % is +60 dB — which is what saturated the ADC and what made the slider useless as a
-knob: the sane range sits under 20 %, where a step of one percent is nearly a step of two decibels.
++18 dB, 100 % is +60 dB — which is what clipped the recording at the top of the range.
