@@ -500,6 +500,27 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_waveform_or_command_parses_to_none() {
+        // An empty waveform with a command beside it, and an empty command with a waveform: each
+        // alone is an absent one, not a parse failure.
+        let no_waveform = parse(&["state", "1234", "", "tool"]).expect("four arguments");
+        assert_eq!(no_waveform.waveform, None);
+        assert_eq!(no_waveform.command.as_deref(), Some("tool"));
+
+        let no_command = parse(&["state", "1234", "wave", ""]).expect("four arguments");
+        assert_eq!(no_command.waveform, Some(PathBuf::from("wave")));
+        assert_eq!(no_command.command, None);
+    }
+
+    #[test]
+    fn the_three_argument_call_parses() {
+        let options = parse(&["state", "1234", "wave"]).expect("three arguments");
+
+        assert_eq!(options.command, None);
+        assert_eq!(options.color, Color::default());
+    }
+
+    #[test]
     fn a_missing_colour_keeps_the_default() {
         let options = parse(&["state", "1234", "wave", "tool"]).expect("four arguments");
 

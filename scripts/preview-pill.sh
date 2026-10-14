@@ -25,12 +25,15 @@ set -euo pipefail
 
 readonly ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly BINARY="${TINY_DICTATE_BIN:-$ROOT/target/release/tiny-dictate}"
-# The configuration's default waveform colour, passed as the presenter's fifth argument.
+# The configuration's default waveform colour, passed as the presenter's fifth argument; keep it
+# in sync with `config::DEFAULT_COLOR` in `src/config.rs`.
 readonly COLOR="#e4e4e7"
-# One tick per frame: thirty of them are three seconds.
+# One tick per frame, the cadence `src/pill/mod.rs` draws at (`TICK_MS`): thirty of them are three
+# seconds.
 readonly TICKS_PER_STATE=30
 readonly TICK_SECONDS=0.1
-# The waveform line holds one `low high` pair per slice.
+# The waveform line holds one `low high` pair per slice, as many as `audio::SLICES_PER_LINE` in
+# `src/audio.rs` writes per line.
 readonly SLICES=24
 
 frozen="${TINY_DICTATE_PREVIEW_STATE:-}"
@@ -153,13 +156,12 @@ while :; do
             printf 'preview: %s\n' "$state"
             last_state="$state"
         fi
-        if [ "$state" = recording ]; then
-            for ((tick = 0; tick < TICKS_PER_STATE; tick++)); do
+        # Every state lasts the same number of ticks; only the recording one publishes a waveform.
+        for ((tick = 0; tick < TICKS_PER_STATE; tick++)); do
+            if [ "$state" = recording ]; then
                 write_waveform
-                sleep "$TICK_SECONDS"
-            done
-        else
-            sleep 3
-        fi
+            fi
+            sleep "$TICK_SECONDS"
+        done
     done
 done

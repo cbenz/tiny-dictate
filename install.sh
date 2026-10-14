@@ -145,8 +145,8 @@ install_dev() {
         rm -f "$presenter_link"
     fi
 
-    # The reference transcriber, under the tool's default command name: it answers the audio-limit
-    # probe the pill's progress bar is drawn from, which an older wrapper did not.
+    # The reference transcriber, under the tool's default command name: it answers the
+    # `--print-audio-limit` probe the core bounds a dictation with, which an older wrapper did not.
     local transcriber="$root/$reference_transcriber_rel"
     [ -f "$transcriber" ] || die "$transcriber is missing from this checkout"
     backup_transcriber

@@ -26,4 +26,4 @@ the pill shows state, not text.
 The latency is the transcription of the whole utterance, and the pill carries no partial text: while
 transcribing, it says `transcribing` and nothing else. A long dictation is bounded by the
 transcriber's declared audio limit instead, at which the recording stops by itself
-([ADR-0006](0006-the-limit-and-the-bar.md)).
+([ADR-0020](0020-the-limit-leaves-the-pill.md)).
