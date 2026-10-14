@@ -40,18 +40,17 @@ impl Presenter {
     /// Publish the first state and spawn the presenter.
     ///
     /// The default is this binary's own `_present` mode, handed the state file, the pid it
-    /// must outlive, the waveform file, the command that re-invokes the tool, the recording's
-    /// limit in seconds (empty when the transcriber declared none, in which case no bar is
-    /// drawn) and the colour of the waveform, read from the configuration.
+    /// must outlive, the waveform file, the command that re-invokes the tool and the colour of
+    /// the waveform, read from the configuration.
     /// `TINY_DICTATE_PRESENT_COMMAND` names another command instead, with the same arguments: it is
     /// the seam `tests/run.sh` stubs the pill through, internal and unadvertised. A presenter that
     /// cannot start costs the pill only: the dictation goes on without one.
-    pub fn start(paths: &Paths, word: &str, limit: Option<Duration>, color: &str) -> Self {
+    pub fn start(paths: &Paths, word: &str, color: &str) -> Self {
         write_state(&paths.state, word);
 
         Self {
             state: paths.state.clone(),
-            child: spawn(paths, limit, color),
+            child: spawn(paths, color),
         }
     }
 
@@ -75,7 +74,7 @@ impl Presenter {
     }
 }
 
-fn spawn(paths: &Paths, limit: Option<Duration>, color: &str) -> Option<Child> {
+fn spawn(paths: &Paths, color: &str) -> Option<Child> {
     let self_command = self_executable();
     let own_pid = std::process::id().to_string();
 
@@ -96,14 +95,7 @@ fn spawn(paths: &Paths, limit: Option<Duration>, color: &str) -> Option<Child> {
         .arg(own_pid)
         .arg(&paths.waveform)
         .arg(&self_command)
-        // The 5th argument is the recording's limit in seconds; an empty argument means the
-        // transcriber declared none, and the pill draws no bar for it.
-        .arg(
-            limit
-                .map(|limit| limit.as_secs_f64().to_string())
-                .unwrap_or_default(),
-        )
-        // The 6th argument is the pill's colour, read from the configuration by the session; an
+        // The 5th argument is the pill's colour, read from the configuration by the session; an
         // empty argument means the default, and the presenter parses it.
         .arg(color)
         // The pill's own chatter stays out of the journal, like the recorder's and the encoder's

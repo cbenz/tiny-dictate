@@ -613,7 +613,7 @@ fn session_body(
     config: &Config,
     sessions: &Path,
 ) -> ExitCode {
-    let mut presenter = Presenter::start(paths, "recording", limit, &config.color);
+    let mut presenter = Presenter::start(paths, "recording", &config.color);
 
     // The deadline is the limit counted from the moment the session takes over the recording:
     // the recorder was started just before the fork. When it passes, the recording is stopped

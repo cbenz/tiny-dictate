@@ -13,16 +13,14 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use gtk4 as gtk;
 use gtk4::glib::{self, ControlFlow};
 use gtk4::prelude::*;
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 
-use frame::{
-    Band, Bar, Frame, METER_HEIGHT_PX, METER_WIDTH_PX, Pill, Reading, SPINNER, Slice, State,
-};
+use frame::{Frame, METER_HEIGHT_PX, METER_WIDTH_PX, Pill, Reading, SPINNER, Slice, State};
 
 /// One tick per frame: the cadence the waveform channel is published at, and what bounds how long
 /// a pill can outlive its session.
@@ -32,11 +30,6 @@ const BAR_WIDTH_PX: f64 = 2.0;
 const BAR_STEP_PX: f64 = 4.5;
 /// Clears the bar that usually sits at the bottom of the screen.
 const MARGIN_PX: i32 = 64;
-/// The progress bar's height, under the meter and on the meter's width.
-const BAR_HEIGHT_PX: i32 = 3;
-/// The amber and red of the bar's last two bands; the plain band is the pill's own colour.
-const BAR_AMBER: (f32, f32, f32) = (251.0 / 255.0, 191.0 / 255.0, 36.0 / 255.0);
-const BAR_RED: (f32, f32, f32) = (239.0 / 255.0, 68.0 / 255.0, 68.0 / 255.0);
 /// Enough of the waveform channel to hold whole lines whatever the cadence is.
 const LEVEL_TAIL_BYTES: u64 = 4096;
 
@@ -92,28 +85,26 @@ impl Color {
 }
 
 /// What `_present` was handed: the state file, the pid the pill outlives, the waveform channel,
-/// the command the buttons run and the recording's limit.
+/// the command the buttons run and the colour of the waveform.
 pub struct Options {
     pub state_file: PathBuf,
     pub owner: u32,
     pub waveform: Option<PathBuf>,
     pub command: Option<String>,
-    pub limit: Option<Duration>,
     pub color: Color,
 }
 
 /// The `_present` usage, printed on stderr when the arguments are wrong.
 pub const USAGE: &str = "usage: tiny-dictate _present <state file> <owner pid> [waveform file] \
-[command] [limit seconds] [color]";
+[command] [color]";
 
 impl Options {
-    /// Read the arguments the session passes, tolerating an absent waveform, command or limit.
+    /// Read the arguments the session passes, tolerating an absent waveform or command.
     ///
     /// An empty argument is an absent one: the contract allows a presenter with no waveform
-    /// channel and no command, and the session passes an empty fifth argument when the transcriber
-    /// declared no limit. The colour is absent too when no configuration file says otherwise.
+    /// channel and no command. The colour is absent too when no configuration file says otherwise.
     pub fn parse(arguments: &[String]) -> Result<Self, String> {
-        if !(3..=6).contains(&arguments.len()) {
+        if !(3..=5).contains(&arguments.len()) {
             return Err(USAGE.to_owned());
         }
 
@@ -133,11 +124,7 @@ impl Options {
             owner,
             waveform: argument(2).map(PathBuf::from),
             command: argument(3).map(str::to_owned),
-            limit: argument(4)
-                .and_then(|value| value.parse::<f64>().ok())
-                .filter(|seconds| *seconds > 0.0)
-                .map(Duration::from_secs_f64),
-            color: argument(5).and_then(Color::parse_hex).unwrap_or_default(),
+            color: argument(4).and_then(Color::parse_hex).unwrap_or_default(),
         })
     }
 }
@@ -189,7 +176,10 @@ pub fn run(options: Options) -> ExitCode {
     spinner.add_css_class("spinner");
     spinner.set_visible(false);
     let meter = gtk::DrawingArea::new();
+    // The meter is the pill's whole middle: it is stretched to the pill's height and draws its
+    // bars around the middle of what it was allocated, so the waveform is centred.
     meter.set_size_request(METER_WIDTH_PX as i32, METER_HEIGHT_PX as i32);
+    meter.set_vexpand(true);
     meter.set_visible(false);
     let label = gtk::Label::new(None);
     label.set_visible(false);
@@ -216,41 +206,9 @@ pub fn run(options: Options) -> ExitCode {
         let _ = cr.stroke();
     });
 
-    // The progress bar sits under the meter, on the meter's width: a filled rectangle whose
-    // colour is the band the elapsed fraction falls in. It is absent when the transcriber
-    // declared no limit, and it leaves the screen with the meter once the recording is over.
-    let bar_area = gtk::DrawingArea::new();
-    bar_area.set_size_request(METER_WIDTH_PX as i32, BAR_HEIGHT_PX);
-    bar_area.set_visible(false);
-    let bar_value = Rc::new(RefCell::new(None::<Bar>));
-    let drawn_bar = Rc::clone(&bar_value);
-    bar_area.set_draw_func(move |_area, cr, width, height| {
-        let Some(bar) = *drawn_bar.borrow() else {
-            return;
-        };
-        let (red, green, blue) = match bar.band {
-            Band::Plain => (color.red, color.green, color.blue),
-            Band::Amber => BAR_AMBER,
-            Band::Red => BAR_RED,
-        };
-        cr.set_source_rgb(f64::from(red), f64::from(green), f64::from(blue));
-        cr.rectangle(
-            0.0,
-            0.0,
-            f64::from(width) * f64::from(bar.fraction),
-            f64::from(height),
-        );
-        let _ = cr.fill();
-    });
-
-    // The bar is drawn under the meter, so the two share a vertical box on the meter's width.
-    let gauge = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    gauge.append(&meter);
-    gauge.append(&bar_area);
-
     pill.append(&cancel);
     pill.append(&spinner);
-    pill.append(&gauge);
+    pill.append(&meter);
     pill.append(&label);
     pill.append(&confirm);
     window.set_child(Some(&pill));
@@ -277,8 +235,6 @@ pub fn run(options: Options) -> ExitCode {
     let widgets = Widgets {
         spinner,
         meter,
-        bar_area,
-        bar_value,
         label,
         cancel,
         confirm,
@@ -290,7 +246,6 @@ pub fn run(options: Options) -> ExitCode {
 
     let main_loop = glib::MainLoop::new(None, false);
     let pill_state = Rc::new(RefCell::new(Pill::new(options.command.is_some())));
-    let recording_since = Rc::new(RefCell::new(None::<Instant>));
 
     glib::timeout_add_local(Duration::from_millis(TICK_MS), {
         let window = window.clone();
@@ -327,22 +282,9 @@ pub fn run(options: Options) -> ExitCode {
                 None
             };
 
-            // The elapsed time is the pill's own monotonic clock, started when it first read the
-            // recording state.
-            let elapsed = if known == Some(State::Recording) {
-                let mut since = recording_since.borrow_mut();
-                let start = *since.get_or_insert_with(Instant::now);
-                start.elapsed()
-            } else {
-                *recording_since.borrow_mut() = None;
-                Duration::ZERO
-            };
-
             let reading = Reading {
                 state: parsed,
                 waveform: waveform.as_deref(),
-                elapsed,
-                limit: options.limit,
             };
             let previous = pill_state.borrow().known();
             let (frame, next) = pill_state.borrow().advance(&reading);
@@ -363,8 +305,6 @@ pub fn run(options: Options) -> ExitCode {
 struct Widgets {
     spinner: gtk::Label,
     meter: gtk::DrawingArea,
-    bar_area: gtk::DrawingArea,
-    bar_value: Rc<RefCell<Option<Bar>>>,
     label: gtk::Label,
     cancel: gtk::Button,
     confirm: gtk::Button,
@@ -377,8 +317,6 @@ fn apply(frame: &Frame, next: &Pill, previous: Option<State>, widgets: &Widgets)
     let Widgets {
         spinner,
         meter,
-        bar_area,
-        bar_value,
         label,
         cancel,
         confirm,
@@ -402,14 +340,6 @@ fn apply(frame: &Frame, next: &Pill, previous: Option<State>, widgets: &Widgets)
     if meter_drawn {
         *bars.borrow_mut() = frame.bars.clone();
         meter.queue_draw();
-    }
-
-    // The bar leaves the screen with the meter: `frame.bar` is `None` once the state is no longer
-    // recording, and when no limit was declared.
-    bar_area.set_visible(frame.bar.is_some());
-    if let Some(bar) = frame.bar {
-        *bar_value.borrow_mut() = Some(bar);
-        bar_area.queue_draw();
     }
 
     // Classes are never removed: the pill carries every state it has ever been in.
@@ -535,14 +465,12 @@ mod tests {
 
     #[test]
     fn the_session_arguments_are_read() {
-        let options = parse(&["state", "1234", "wave", "tool", "120"]).expect("five arguments");
+        let options = parse(&["state", "1234", "wave", "tool", "#ff0000"]).expect("five arguments");
 
         assert_eq!(options.state_file, PathBuf::from("state"));
         assert_eq!(options.owner, 1234);
         assert_eq!(options.waveform, Some(PathBuf::from("wave")));
         assert_eq!(options.command.as_deref(), Some("tool"));
-        assert_eq!(options.limit, Some(Duration::from_secs(120)));
-        assert_eq!(options.color, Color::default());
     }
 
     #[test]
@@ -551,20 +479,19 @@ mod tests {
 
         assert_eq!(options.waveform, None);
         assert_eq!(options.command, None);
-        assert_eq!(options.limit, None);
+        assert_eq!(options.color, Color::default());
     }
 
     #[test]
-    fn a_missing_limit_means_no_limit() {
+    fn a_missing_colour_keeps_the_default() {
         let options = parse(&["state", "1234", "wave", "tool"]).expect("four arguments");
 
-        assert_eq!(options.limit, None);
+        assert_eq!(options.color, Color::default());
     }
 
     #[test]
-    fn the_colour_is_read_from_the_sixth_argument() {
-        let options =
-            parse(&["state", "1234", "wave", "tool", "120", "#ff0000"]).expect("six arguments");
+    fn the_colour_is_read_from_the_fifth_argument() {
+        let options = parse(&["state", "1234", "wave", "tool", "#ff0000"]).expect("five");
 
         assert_eq!(
             options.color,
@@ -576,7 +503,7 @@ mod tests {
         );
 
         // An unreadable or absent colour keeps the default rather than failing the pill.
-        let default = parse(&["state", "1234", "wave", "tool", "120", "red"]).expect("six");
+        let default = parse(&["state", "1234", "wave", "tool", "red"]).expect("five");
         assert_eq!(default.color, Color::default());
     }
 
@@ -584,6 +511,6 @@ mod tests {
     fn a_wrong_call_prints_the_usage() {
         assert!(parse(&["state"]).is_err());
         assert!(parse(&["state", "not-a-pid", "wave", "tool"]).is_err());
-        assert!(parse(&["a", "1", "b", "c", "d", "e", "f"]).is_err());
+        assert!(parse(&["a", "1", "b", "c", "d", "e"]).is_err());
     }
 }
