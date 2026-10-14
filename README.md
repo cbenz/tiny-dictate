@@ -52,6 +52,22 @@ cargo build --release
 The GUI toolkit is linked into every invocation, `tiny-dictate status` included. That is deliberate,
 not a packaging mistake.
 
+### Preview the pill
+
+The pill's three states can be put on screen without a microphone: `scripts/preview-pill.sh`
+fabricates the state file, the owner process and the waveform channel the presenter reads, and
+launches the real presenter against them, cycling `recording` (with the meter moving), `transcribing`
+and `cancelled`, three seconds each. It needs a display and layer-shell, and it stays out of the
+integration suite; Ctrl-C leaves no pill and no child process behind.
+
+```bash
+cargo build --release
+scripts/preview-pill.sh
+
+# freeze on one state, to compare two of them deliberately
+TINY_DICTATE_PREVIEW_STATE=transcribing scripts/preview-pill.sh
+```
+
 ### Runtime dependencies
 
 - `arecord` (alsa-utils)
