@@ -140,37 +140,45 @@ out="${*: -1}"
 # Real lame banners on stderr. The tool must keep the encoder's chatter out of the journal, so the
 # stub says something the suite can look for while the dictation runs.
 printf 'LAME 3.100 64bits (http://lame.sf.net)\n' >&2
-# Real lame encodes as fast as it reads and the recorder above is not clocked, so a plain
-# copy would fill /tmp and keep the recorder blocked in write() forever. Write a plausible
-# amount slowly (like a real recording), then drain and discard the rest until the recorder
-# closes the pipe: real lame lives until EOF.
+# Real lame encodes as fast as it reads and the recorder above is not clocked, so a plain copy
+# would fill /tmp and keep the recorder blocked in write() forever. The stub instead writes 64
+# kbit/s CBR -- 8000 bytes for every second of the recording -- and discards the PCM it reads: a
+# real lame would encode those samples, but here the file is a byte count for the recording's
+# duration. Reading runs unthrottled beside the writes, so the fifo is drained as fast as it fills
+# and the bytes owed are flushed on every read: a short recording leaves a small file, and the end
+# of file is seen within a gulp of the recorder's death.
 report() { printf 'lame %s at %s\n' "$1" "$(date +%s.%N)" >> "$WORK/lame-report"; }
 report "start pid=$$"
 : > "$out"
-for _ in 1 2 3 4 5; do
-    # A real lame reads as soon as it starts and exits on end-of-file. The stub normally
-    # stays alive for a quarter of a second whatever happens, which is long enough for the
-    # pump to open the fifo -- hiding a fifo the encoder finds writerless. LAME_STRICT_EOF=1
-    # lets the first read decide, the way the real encoder does.
-    if [ -n "${LAME_STRICT_EOF:-}" ]; then
-        bytes="$(dd bs=1600 count=1 status=none 2>/dev/null | tee -a "$out" | wc -c)"
-        if [ "$bytes" -eq 0 ]; then
+start="${EPOCHREALTIME/./}"
+written=0
+# A real lame reads on its first breath and exits on end-of-file: a fifo with no writer hands it
+# EOF at once. The stub normally survives a writerless fifo for a quarter of a second instead,
+# long enough for the pump -- which loads GTK first -- to open the write end. LAME_STRICT_EOF=1
+# lets the first read decide, the way the real encoder does.
+grace=5
+while :; do
+    bytes="$(dd bs=65536 count=1 status=none 2>/dev/null | wc -c)"
+    if [ "$bytes" -eq 0 ]; then
+        if [ -n "${LAME_STRICT_EOF:-}" ] || [ "$grace" -le 0 ]; then
             report "saw EOF"
             break
         fi
-    else
-        dd bs=1600 count=1 status=none 2>/dev/null >> "$out"
+        grace=$((grace - 1))
+        sleep 0.05
+        continue
     fi
-    sleep 0.05
-done
-report "draining, file=$(wc -c < "$out") bytes"
-while :; do
-    bytes="$(dd bs=1600 count=1 status=none 2>/dev/null | tee -a "$out" | wc -c)"
-    if [ "$bytes" -eq 0 ]; then
-        report "saw EOF"
-        break
+    grace=0
+    # The bytes the recording has lasted so far: 8000 bytes per second is the encoder's rate.
+    owed=$(( (${EPOCHREALTIME/./} - start) * 8000 / 1000000 ))
+    if [ "$owed" -gt "$written" ]; then
+        dd if=/dev/zero bs=$((owed - written)) count=1 status=none >> "$out"
+        written="$owed"
     fi
 done
+# The last frames of the file are flushed at end-of-file, once the recording's length is known.
+owed=$(( (${EPOCHREALTIME/./} - start) * 8000 / 1000000 ))
+[ "$owed" -gt "$written" ] && dd if=/dev/zero bs=$((owed - written)) count=1 status=none >> "$out"
 report "exiting"
 STUB
 
@@ -770,6 +778,14 @@ wait_idle() {
 
 audio_size() { cat "$WORK/transcribe-size" 2>/dev/null || echo "none"; }
 
+# A journal duration within a second of an expected one: the deadline is checked every 100 ms and
+# the recording ends after a fork, so the duration it lands on is never exact.
+within_a_second_of() { # within_a_second_of <measured seconds> <expected seconds>
+    [ -n "$1" ] || return 1
+    awk -v measured="$1" -v expected="$2" \
+        'BEGIN { exit !(measured - expected < 1 && measured - expected > -1) }'
+}
+
 waveform_file() { printf '%s/tiny-dictate/session/waveform' "$RUN"; }
 
 # The waveform file holds one line per 96 ms of audio: 24 slices, each the lowest and highest
@@ -1027,6 +1043,19 @@ journal_line_names_session() { # journal_line_names_session <session id> <event>
     grep -Eq "^tiny-dictate: $1: $2\$" "$JOURNAL"
 }
 
+# The recording's end line carries the duration it lasted and the bytes it produced; each is read
+# back here rather than only matched, so a case can measure the recording. The last line wins: a
+# session logs the end once, but a rerun of a case must not read a stale one.
+journal_recording_duration() { # journal_recording_duration <session id>
+    sed -n "s/^tiny-dictate: $1: recording ended duration=\([0-9.]*\)s bytes=[0-9]*$/\1/p" \
+        "$JOURNAL" | tail -1
+}
+
+journal_recording_bytes() { # journal_recording_bytes <session id>
+    sed -n "s/^tiny-dictate: $1: recording ended duration=[0-9.]*s bytes=\([0-9]*\)$/\1/p" \
+        "$JOURNAL" | tail -1
+}
+
 # Every line of a dictation names its session: everything a dictation logs concerns it.
 journal_every_line_names_session() { # journal_every_line_names_session <session id>
     [ -s "$JOURNAL" ] || return 1
@@ -1257,22 +1286,61 @@ test_encoder_finds_a_writer() {
 }
 
 # The transcriber declares the largest audio file it accepts; the recording then stops on its
-# own at the duration the encoder's 64 kbit/s makes of that byte count, and the text is
-# transcribed and pasted exactly as if the shortcut had been pressed.
+# own at the duration the encoder's 64 kbit/s makes of that byte count minus the guard, and the
+# text is transcribed and pasted exactly as if the shortcut had been pressed.
 test_audio_limit() {
     start_test "the transcriber's audio limit ends the recording by itself"
-    # 8000 bytes at 8000 bytes per second (64 kbit/s) is one second. The transcription takes a
-    # moment so the pill has time to be seen leaving the recording state, as in the normal flow.
-    TRANSCRIBE_LIMIT=8000 TRANSCRIBE_SLEEP=0.3 td start 2> "$WORK/limit.err"
+    # 8000 bytes at 8000 bytes per second (64 kbit/s) is one second of audio. The guard never
+    # reserves more than half the cap, and a cap this small cannot carry ten seconds, so the
+    # recording stops at half a second. The transcription takes a moment so the pill has time to
+    # be seen leaving the recording state, as in the normal flow.
+    TRANSCRIBE_LIMIT=8000 TRANSCRIBE_SLEEP=0.3 td start 2>> "$JOURNAL"
     check "session finishes by itself" wait_idle
     check "transcription pasted" [ "$(pasted_text)" = "text transcribed" ]
-    check "audio given to the transcriber is not empty (was $(audio_size) bytes)" \
-        [ "$(audio_size)" -gt 0 ] 2>/dev/null
+
+    local id bytes
+    id="$(basename "$(single_session_dir)")"
+    bytes="$(journal_recording_bytes "$id")"
+
+    check "the recording stopped by itself at the limit minus the guard" \
+        within_a_second_of "$(journal_recording_duration "$id")" 0.5
+    check "the transcriber received the file the session recorded (journal says $bytes bytes)" \
+        bash -c '[ -n "$1" ] && [ "$1" = "$2" ] && [ "$1" -gt 0 ]' _ "$(audio_size)" "$bytes"
+    check "that file is strictly under the declared cap" [ "$bytes" -lt 8000 ] 2>/dev/null
     check "the pill showed recording then transcribing" pill_showed_both_states
-    check "the log says why the recording stopped" grep -q 'audio limit' "$WORK/limit.err"
+    check "the log says why the recording stopped" \
+        journal_line_names_session "$id" "recording stopped at the transcriber's audio limit"
     check "no presentation left behind" presenter_left
     check "no leftover process" no_leftover_process
     check "session directory removed" session_dir_gone
+}
+
+# Reaching the limit and failing to transcribe are two different things: the recording is over and
+# kept, so a failed transcription loses the words but never the audio it would have read from. The
+# file the transcriber received is that same kept file.
+test_audio_limit_keeps_audio_on_failure() {
+    start_test "a dictation stopped at its limit keeps its audio when the transcription fails"
+    TRANSCRIBE_LIMIT=8000 TRANSCRIBE_FAIL=1 td start 2>> "$JOURNAL"
+    check "session finishes by itself" wait_idle
+    check "nothing pasted" [ -z "$(pasted_text)" ]
+
+    local dir id bytes
+    dir="$(single_session_dir)"
+    id="$(basename "$dir")"
+    bytes="$(journal_recording_bytes "$id")"
+
+    check "the transcription failed" [ "$(metadata_value "$dir" outcome)" = '"failed"' ]
+    check "the recording stopped by itself at the limit minus the guard" \
+        within_a_second_of "$(journal_recording_duration "$id")" 0.5
+    check "the audio is kept in the session directory" \
+        bash -c '[ -n "$1" ] && [ "$1" -gt 0 ] && [ "$(stat -c%s "$2/audio.mp3" 2>/dev/null)" = "$1" ]' \
+        _ "$bytes" "$dir"
+    check "the transcriber received the file the session recorded" [ "$(audio_size)" = "$bytes" ]
+    check "that file is strictly under the declared cap" [ "$bytes" -lt 8000 ] 2>/dev/null
+    check "the log says why the recording stopped" \
+        journal_line_names_session "$id" "recording stopped at the transcriber's audio limit"
+    check "no presentation left behind" presenter_left
+    check "no leftover process" no_leftover_process
 }
 
 # A transcriber that does not answer the probe declares no limit: the dictation is otherwise
@@ -3754,6 +3822,7 @@ run_test test_waveform_channel
 run_test test_clipped_recording
 run_test test_encoder_finds_a_writer
 run_test test_audio_limit
+run_test test_audio_limit_keeps_audio_on_failure
 run_test test_no_audio_limit
 run_test test_broken_meter
 run_test test_stop_immediately

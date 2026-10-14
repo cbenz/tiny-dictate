@@ -90,15 +90,19 @@ fn parse_limit_bytes(stdout: &[u8]) -> Option<u64> {
 /// The longest recording a byte limit allows, from the encoder's bitrate.
 ///
 /// The encoder runs `lame … -b 64`, i.e. 64 kbit/s, i.e. 8000 bytes per second: seconds =
-/// bytes / 8000. Zero bytes is no limit at all, not a recording of no length.
+/// bytes / 8000. Ten seconds of audio are held back as a guard, so the file handed to the
+/// transcriber stays under the cap whatever the timing, and the guard is never more than half
+/// the cap: a cap too small to carry ten seconds keeps half of itself, so the dictation still
+/// records something. Zero bytes is no limit at all, not a recording of no length.
 pub fn limit_from_bytes(bytes: u64) -> Option<Duration> {
     if bytes == 0 {
         return None;
     }
 
-    Some(Duration::from_secs_f64(
-        bytes as f64 / audio::BYTES_PER_SECOND as f64,
-    ))
+    let duration = Duration::from_secs_f64(bytes as f64 / audio::BYTES_PER_SECOND as f64);
+    let guard = Duration::from_secs(10).min(duration / 2);
+
+    Some(duration - guard)
 }
 
 /// The transcriber, running: a child process whose answer and errors land in files rather than
@@ -482,14 +486,30 @@ mod tests {
     #[test]
     fn a_byte_limit_becomes_a_duration_at_the_encoder_bitrate() {
         // 64 kbit/s is 8000 bytes per second: 8000 bytes is one second, and Groq's 25 MB
-        // free-tier ceiling is 25_000_000 / 8000 = 3125 seconds.
-        assert_eq!(limit_from_bytes(8000), Some(Duration::from_secs(1)));
-        assert_eq!(limit_from_bytes(4000), Some(Duration::from_secs_f64(0.5)));
+        // free-tier ceiling is 25_000_000 / 8000 = 3125 seconds. Ten seconds of audio are
+        // held back as a guard, so the recording stops at 3115 seconds -- a few kilobytes
+        // under the cap.
+        assert_eq!(limit_from_bytes(8000), Some(Duration::from_secs_f64(0.5)));
+        assert_eq!(limit_from_bytes(4000), Some(Duration::from_secs_f64(0.25)));
         assert_eq!(
             limit_from_bytes(25_000_000),
-            Some(Duration::from_secs_f64(3125.0))
+            Some(Duration::from_secs_f64(3115.0))
         );
         assert_eq!(limit_from_bytes(0), None, "zero bytes is no limit");
+    }
+
+    #[test]
+    fn a_cap_that_cannot_carry_the_guard_keeps_half_of_itself() {
+        // Ten seconds of audio is 80 000 bytes, below twice the guard, so the cap keeps half of
+        // itself rather than shrinking to nothing -- the dictation still records something.
+        assert_eq!(limit_from_bytes(80_000), Some(Duration::from_secs(5)));
+        assert_eq!(
+            limit_from_bytes(20_000),
+            Some(Duration::from_secs_f64(1.25))
+        );
+        // Above twice the guard the guard saturates at ten seconds: 30 seconds of audio stops at
+        // 20, not at 15.
+        assert_eq!(limit_from_bytes(240_000), Some(Duration::from_secs(20)));
     }
 
     #[test]
