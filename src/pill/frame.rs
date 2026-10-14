@@ -1,11 +1,9 @@
 //! What the pill draws in one frame: the pure computation behind the GTK adapter.
 //!
-//! Everything here is a function of what was read — the state word, the newest waveform line,
-//! the elapsed time and the limit — and of what the pill carries from tick to tick: the state it
-//! last knew and the level the meter is calibrated on. Nothing here opens a file, reads a clock
-//! or touches GTK, so the frame a tick draws is testable without a display.
-
-use std::time::Duration;
+//! Everything here is a function of what was read — the state word and the newest waveform line —
+//! and of what the pill carries from tick to tick: the state it last knew and the level the meter
+//! is calibrated on. Nothing here opens a file, reads a clock or touches GTK, so the frame a tick
+//! draws is testable without a display.
 
 use crate::audio::SLICES_PER_LINE;
 use crate::store::CANCELLED;
@@ -99,23 +97,6 @@ impl State {
     }
 }
 
-/// The band of the progress bar: the end of the limit coming closer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Band {
-    Plain,
-    Amber,
-    Red,
-}
-
-/// The progress bar under the meter: how far the limit has been reached, and the band that
-/// falls in.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Bar {
-    /// How much of the limit has elapsed, clamped to `0..=1`.
-    pub fraction: f32,
-    pub band: Band,
-}
-
 /// What one tick draws.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Frame {
@@ -129,20 +110,14 @@ pub struct Frame {
     pub cancel: bool,
     /// Whether the check is offered.
     pub confirm: bool,
-    /// The progress bar, when the state is recording and a limit is known.
-    pub bar: Option<Bar>,
 }
 
-/// What one tick read: the word in the state file, the newest waveform line and the clock.
+/// What one tick read: the word in the state file and the newest waveform line.
 pub struct Reading<'a> {
     /// The state just read; `None` for an empty or unknown word, which changes nothing.
     pub state: Option<State>,
     /// The newest waveform line, when there is one to draw.
     pub waveform: Option<&'a [Slice]>,
-    /// How long the recording has been running; zero outside recording.
-    pub elapsed: Duration,
-    /// The recording's limit, when the transcriber declared one.
-    pub limit: Option<Duration>,
 }
 
 /// The level the meter is calibrated on, and how long a pause still holds it.
@@ -288,28 +263,10 @@ impl Pill {
             // stopping has nothing left to do once the transcription is running.
             cancel: live && self.command,
             confirm: known == Some(State::Recording) && self.command,
-            bar: bar(known, reading.elapsed, reading.limit),
         };
 
         (frame, next)
     }
-}
-
-/// The progress bar of a recording: how far the limit has been reached, and its band.
-fn bar(known: Option<State>, elapsed: Duration, limit: Option<Duration>) -> Option<Bar> {
-    if known != Some(State::Recording) {
-        return None;
-    }
-    let limit = limit.filter(|limit| !limit.is_zero())?;
-    let fraction = (elapsed.as_secs_f32() / limit.as_secs_f32()).clamp(0.0, 1.0);
-    let band = if fraction > 0.95 {
-        Band::Red
-    } else if fraction >= 0.8 {
-        Band::Amber
-    } else {
-        Band::Plain
-    };
-    Some(Bar { fraction, band })
 }
 
 /// The newest whole line of slices in the tail of the waveform channel, or `None`.
@@ -366,12 +323,7 @@ mod tests {
     }
 
     fn reading<'a>(state: Option<State>, waveform: Option<&'a [Slice]>) -> Reading<'a> {
-        Reading {
-            state,
-            waveform,
-            elapsed: Duration::ZERO,
-            limit: None,
-        }
+        Reading { state, waveform }
     }
 
     #[test]
@@ -565,42 +517,6 @@ mod tests {
             (next.calibration.reference - 0.36).abs() < 1e-6,
             "0.4 * 0.9"
         );
-    }
-
-    #[test]
-    fn the_bar_band_follows_how_much_of_the_limit_has_elapsed() {
-        let pill = Pill::new(true);
-        let waveform = flat(0);
-        let bar = |elapsed: f64, limit: Option<u64>| {
-            let reading = Reading {
-                state: Some(State::Recording),
-                waveform: Some(&waveform),
-                elapsed: Duration::from_secs_f64(elapsed),
-                limit: limit.map(Duration::from_secs),
-            };
-            pill.advance(&reading).0.bar
-        };
-
-        assert_eq!(bar(10.0, None), None, "no limit, no bar");
-        assert_eq!(bar(10.0, Some(100)).unwrap().band, Band::Plain);
-        assert_eq!(bar(80.0, Some(100)).unwrap().band, Band::Amber);
-        assert_eq!(bar(90.0, Some(100)).unwrap().band, Band::Amber);
-        assert_eq!(bar(96.0, Some(100)).unwrap().band, Band::Red);
-        assert_eq!(bar(200.0, Some(100)).unwrap().fraction, 1.0);
-        assert_eq!(bar(200.0, Some(100)).unwrap().band, Band::Red);
-    }
-
-    #[test]
-    fn there_is_no_bar_outside_recording() {
-        let pill = Pill::new(true);
-        let reading = Reading {
-            state: Some(State::Transcribing),
-            waveform: None,
-            elapsed: Duration::from_secs(50),
-            limit: Some(Duration::from_secs(100)),
-        };
-
-        assert_eq!(pill.advance(&reading).0.bar, None);
     }
 
     #[test]
