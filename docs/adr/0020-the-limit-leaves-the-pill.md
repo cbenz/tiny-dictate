@@ -8,10 +8,13 @@ where the recording is owned (`src/session.rs`, `src/text.rs`).
 
 ADR-0006's promise is corrected with it. A dictation stopped by its declared audio limit is
 transcribed and pasted like any other, and the file handed to the transcriber stays strictly under
-the limit that transcriber declared. Ten seconds of audio — 80 000 bytes at the encoder's 64 kbit/s
-— are held back as a guard, and never more than half the declared limit: a limit too small to carry
-ten seconds keeps half of itself, so the dictation still records something. Zero bytes stays no
-limit at all. The guard is subtracted where a byte limit becomes a duration
+the limit that transcriber declared, as long as the limit is large enough for the guard to cover the
+margin below — about 32 000 bytes. Below that the guard is half the limit, and the margin can carry
+the file past it: such a limit is smaller than one recording can honour. Ten seconds of audio —
+80 000 bytes at the encoder's 64 kbit/s — are held back as a guard, and never more than half the
+declared limit: a limit too small to carry ten seconds keeps half of itself, so the dictation still
+records something. Zero bytes stays no limit at all. The guard is subtracted where a byte limit
+becomes a duration
 (`text::limit_from_bytes`), the single place the deadline is defined, so the guard cannot drift from
 the stop.
 
