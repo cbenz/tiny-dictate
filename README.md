@@ -110,11 +110,10 @@ a later `cargo build --release` is picked up without re-running it, and removes 
 `tiny-dictate-present` symlink the bash implementation installed — the binary draws the pill itself.
 It also links `~/.local/bin/tiny-dictate-transcribe` at this checkout's `transcribers/groq`, keeping
 whatever held that name as `tiny-dictate-transcribe.bak` (once, so a personal wrapper is never
-lost): the reference transcriber answers the audio-limit probe the progress bar is drawn from, and
-reads `GROQ_API_KEY` from the environment. It refuses to replace `~/.local/bin/tiny-dictate` when
-that is not a symlink, since `restore` can only undo a symlink and a copy left by the production
-install is not promised back. `restore` rebuilds the two symlinks from the main worktree and puts
-the transcriber backup back when there is one.
+lost): the reference transcriber reads `GROQ_API_KEY` from the environment. It refuses to replace
+`~/.local/bin/tiny-dictate` when that is not a symlink, since `restore` can only undo a symlink and
+a copy left by the production install is not promised back. `restore` rebuilds the two symlinks from
+the main worktree and puts the transcriber backup back when there is one.
 
 Missing build dependencies stop the install before the build, each named with its Arch package;
 missing runtime commands are only listed.
@@ -204,9 +203,10 @@ It is resolved with `command -v`: `$TINY_DICTATE_TRANSCRIBE` if set, else `tiny-
 on `PATH`. An unresolvable command is reported before any recording starts. The command may declare
 the largest audio file it accepts by answering `--print-audio-limit` with a byte count; the probe is
 asked once per dictation before the microphone is opened, and that count becomes a maximum duration
-at the encoder's 64 kbit/s, at which the recording stops as if the shortcut had been pressed
-([ADR-0006](docs/adr/0006-the-limit-and-the-bar.md)). A transcriber that declares nothing leaves the
-dictation unbounded.
+at the encoder's 64 kbit/s. The recording stops under it, early enough that the file handed to the
+transcriber stays within the declared limit, and the dictation is transcribed and pasted like any
+other ([ADR-0020](docs/adr/0020-the-limit-leaves-the-pill.md)). A transcriber that declares nothing
+leaves the dictation unbounded.
 
 `transcribers/groq` is the reference implementation (Groq Whisper):
 

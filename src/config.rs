@@ -19,7 +19,7 @@ pub const DEFAULT_COLOR: &str = "#e4e4e7";
 pub struct Config {
     /// The number of past sessions retained.
     pub keep: usize,
-    /// The pill's colour: the waveform, and the plain band of the progress bar.
+    /// The pill's colour: the waveform and the recording spinner.
     pub color: String,
     /// How long the transcript stays offered on the clipboard, in seconds; `0` means no expiry.
     /// Consumed by the clipboard lease ([ADR-0007](../docs/adr/0007-the-clipboard-lease.md)).
