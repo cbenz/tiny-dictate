@@ -278,7 +278,7 @@ waveform_file="$3"
 # Real GTK warns on stderr. The tool must keep the presenter's chatter out of the journal, so the
 # stub says something the suite can look for while the dictation runs.
 printf 'presenter: stub chatter\n' >&2
-printf 'PRESENT start color=%s owner=%s file=%s waveform=%s caller=%s command=%s\n' "${5:-}" "$owner" "$state_file" "$waveform_file" "$PPID" "${4:-}" >> "$WORK/events.log"
+printf 'PRESENT start argc=%s color=%s owner=%s file=%s waveform=%s caller=%s command=%s\n' "$#" "${5:-}" "$owner" "$state_file" "$waveform_file" "$PPID" "${4:-}" >> "$WORK/events.log"
 state=""
 while :; do
     if ! current="$(cat "$state_file" 2>/dev/null)"; then
@@ -778,12 +778,14 @@ wait_idle() {
 
 audio_size() { cat "$WORK/transcribe-size" 2>/dev/null || echo "none"; }
 
-# A journal duration within a second of an expected one: the deadline is checked every 100 ms and
-# the recording ends after a fork, so the duration it lands on is never exact.
-within_a_second_of() { # within_a_second_of <measured seconds> <expected seconds>
+# A journal duration within a tolerance of an expected one. The deadline is taken when the session
+# process takes over, after the recording's start timestamp, and it is checked every 100 ms: the
+# measured duration always sits above the deadline by that offset, so the tolerance is what tells a
+# stop at the guard-reduced deadline from one at the full declared limit.
+within_of() { # within_of <measured seconds> <expected seconds> <tolerance seconds>
     [ -n "$1" ] || return 1
-    awk -v measured="$1" -v expected="$2" \
-        'BEGIN { exit !(measured - expected < 1 && measured - expected > -1) }'
+    awk -v measured="$1" -v expected="$2" -v tolerance="$3" \
+        'BEGIN { exit !(measured - expected < tolerance && measured - expected > -tolerance) }'
 }
 
 waveform_file() { printf '%s/tiny-dictate/session/waveform' "$RUN"; }
@@ -808,7 +810,13 @@ waveform_file_is_a_slice_series() {
 
 # The pill is handed the colour it draws with as $5: the waveform.
 presenter_got_color() {
-    grep -q "^PRESENT start color=$1 " "$WORK/events.log"
+    grep -q "^PRESENT start argc=[0-9]* color=$1 " "$WORK/events.log"
+}
+
+# The pill is handed exactly the five arguments the presenter's contract names: state file, owner
+# pid, waveform channel, command and colour, and nothing else.
+presenter_got_five_arguments() {
+    grep -q '^PRESENT start argc=5 ' "$WORK/events.log"
 }
 
 # The pill is handed the waveform file as $3, so the waveform it draws is the recording it
@@ -1043,17 +1051,21 @@ journal_line_names_session() { # journal_line_names_session <session id> <event>
     grep -Eq "^tiny-dictate: $1: $2\$" "$JOURNAL"
 }
 
-# The recording's end line carries the duration it lasted and the bytes it produced; each is read
-# back here rather than only matched, so a case can measure the recording. The last line wins: a
-# session logs the end once, but a rerun of a case must not read a stale one.
-journal_recording_duration() { # journal_recording_duration <session id>
-    sed -n "s/^tiny-dictate: $1: recording ended duration=\([0-9.]*\)s bytes=[0-9]*$/\1/p" \
+# The recording's end line carries the duration it lasted and the bytes it produced; both are read
+# back here rather than only matched, so a case can measure the recording. One sed parses that line
+# once, and the accessors name the field they return. The last line wins: a session logs the end
+# once, but a rerun of a case must not read a stale one.
+journal_recording_ended() { # journal_recording_ended <session id> -> "<duration> <bytes>"
+    sed -n "s/^tiny-dictate: $1: recording ended duration=\([0-9.]*\)s bytes=\([0-9]*\)$/\1 \2/p" \
         "$JOURNAL" | tail -1
 }
 
+journal_recording_duration() { # journal_recording_duration <session id>
+    journal_recording_ended "$1" | cut -d' ' -f1
+}
+
 journal_recording_bytes() { # journal_recording_bytes <session id>
-    sed -n "s/^tiny-dictate: $1: recording ended duration=[0-9.]*s bytes=\([0-9]*\)$/\1/p" \
-        "$JOURNAL" | tail -1
+    journal_recording_ended "$1" | cut -d' ' -f2
 }
 
 # Every line of a dictation names its session: everything a dictation logs concerns it.
@@ -1218,6 +1230,7 @@ test_normal_flow() {
     check "transcription pasted" [ "$(pasted_text)" = "text transcribed" ]
     check "audio given to the transcriber is not empty (was $(audio_size) bytes)" \
         [ "$(audio_size)" -gt 0 ] 2>/dev/null
+    check "the presenter was handed exactly five arguments" presenter_got_five_arguments
     check "the pill showed recording then transcribing" pill_showed_both_states
     check "the happy path notifies nothing" no_notification_at_all
     check "no presentation left behind" presenter_left
@@ -1291,7 +1304,7 @@ test_encoder_finds_a_writer() {
 test_audio_limit() {
     start_test "the transcriber's audio limit ends the recording by itself"
     # 8000 bytes at 8000 bytes per second (64 kbit/s) is one second of audio. The guard never
-    # reserves more than half the cap, and a cap this small cannot carry ten seconds, so the
+    # reserves more than half the limit, and a limit this small cannot carry ten seconds, so the
     # recording stops at half a second. The transcription takes a moment so the pill has time to
     # be seen leaving the recording state, as in the normal flow.
     TRANSCRIBE_LIMIT=8000 TRANSCRIBE_SLEEP=0.3 td start 2>> "$JOURNAL"
@@ -1302,11 +1315,14 @@ test_audio_limit() {
     id="$(basename "$(single_session_dir)")"
     bytes="$(journal_recording_bytes "$id")"
 
+    # Half a second of tolerance around the guard-reduced deadline: the measured duration sits
+    # above it by the fork and the 100 ms check, and its upper bound is exactly the one second a
+    # guardless deadline would have run for, so a lost guard fails this check.
     check "the recording stopped by itself at the limit minus the guard" \
-        within_a_second_of "$(journal_recording_duration "$id")" 0.5
+        within_of "$(journal_recording_duration "$id")" 0.5 0.5
     check "the transcriber received the file the session recorded (journal says $bytes bytes)" \
         bash -c '[ -n "$1" ] && [ "$1" = "$2" ] && [ "$1" -gt 0 ]' _ "$(audio_size)" "$bytes"
-    check "that file is strictly under the declared cap" [ "$bytes" -lt 8000 ] 2>/dev/null
+    check "that file is strictly under the declared limit" [ "$bytes" -lt 8000 ] 2>/dev/null
     check "the pill showed recording then transcribing" pill_showed_both_states
     check "the log says why the recording stopped" \
         journal_line_names_session "$id" "recording stopped at the transcriber's audio limit"
@@ -1331,12 +1347,12 @@ test_audio_limit_keeps_audio_on_failure() {
 
     check "the transcription failed" [ "$(metadata_value "$dir" outcome)" = '"failed"' ]
     check "the recording stopped by itself at the limit minus the guard" \
-        within_a_second_of "$(journal_recording_duration "$id")" 0.5
+        within_of "$(journal_recording_duration "$id")" 0.5 0.5
     check "the audio is kept in the session directory" \
         bash -c '[ -n "$1" ] && [ "$1" -gt 0 ] && [ "$(stat -c%s "$2/audio.mp3" 2>/dev/null)" = "$1" ]' \
         _ "$bytes" "$dir"
     check "the transcriber received the file the session recorded" [ "$(audio_size)" = "$bytes" ]
-    check "that file is strictly under the declared cap" [ "$bytes" -lt 8000 ] 2>/dev/null
+    check "that file is strictly under the declared limit" [ "$bytes" -lt 8000 ] 2>/dev/null
     check "the log says why the recording stopped" \
         journal_line_names_session "$id" "recording stopped at the transcriber's audio limit"
     check "no presentation left behind" presenter_left
