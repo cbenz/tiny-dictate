@@ -61,11 +61,9 @@ _Avoid_: backend, provider
 
 **Audio limit**:
 The largest recording a transcriber accepts, declared by the transcriber. It bounds a dictation's
-duration and drives the progress bar; a transcriber that declares none leaves both unbounded.
+duration: the recording stops under it, early enough that the file handed to the transcriber stays
+within it. A transcriber that declares none leaves the duration unbounded.
 _Avoid_: cap, timeout
-
-**Progress bar**:
-The bar under the waveform showing how much of the audio limit has elapsed.
 
 ## The microphone
 
