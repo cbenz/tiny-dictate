@@ -270,7 +270,7 @@ waveform_file="$3"
 # Real GTK warns on stderr. The tool must keep the presenter's chatter out of the journal, so the
 # stub says something the suite can look for while the dictation runs.
 printf 'presenter: stub chatter\n' >&2
-printf 'PRESENT start color=%s owner=%s file=%s waveform=%s caller=%s limit=%s command=%s\n' "${6:-}" "$owner" "$state_file" "$waveform_file" "$PPID" "${5:-}" "${4:-}" >> "$WORK/events.log"
+printf 'PRESENT start color=%s owner=%s file=%s waveform=%s caller=%s command=%s\n' "${5:-}" "$owner" "$state_file" "$waveform_file" "$PPID" "${4:-}" >> "$WORK/events.log"
 state=""
 while :; do
     if ! current="$(cat "$state_file" 2>/dev/null)"; then
@@ -790,7 +790,7 @@ waveform_file_is_a_slice_series() {
     ' "$file"
 }
 
-# The pill is handed the colour it draws with as $6: the waveform and the plain band of the bar.
+# The pill is handed the colour it draws with as $5: the waveform.
 presenter_got_color() {
     grep -q "^PRESENT start color=$1 " "$WORK/events.log"
 }
@@ -805,16 +805,6 @@ presenter_got_waveform_file() {
 # and the check of the reference presenter) end a dictation through the path the keyboard uses.
 presenter_got_command() {
     grep -q "^PRESENT start .*command=$(readlink -f "$SCRIPT")$" "$WORK/events.log"
-}
-
-# The pill is handed the limit in seconds as $5 when the transcriber declared one, and an empty
-# argument otherwise: the presenter draws the bar from it, so both sides are asserted here.
-presenter_got_limit() {
-    grep -q "^PRESENT start .*limit=$1 command=" "$WORK/events.log"
-}
-
-presenter_got_no_limit() {
-    grep -q "^PRESENT start .*limit= command=" "$WORK/events.log"
 }
 
 # The transcriber declared no limit, so nothing stopped the recording before the shortcut did.
@@ -1278,7 +1268,6 @@ test_audio_limit() {
     check "transcription pasted" [ "$(pasted_text)" = "text transcribed" ]
     check "audio given to the transcriber is not empty (was $(audio_size) bytes)" \
         [ "$(audio_size)" -gt 0 ] 2>/dev/null
-    check "the pill is handed the limit in seconds" presenter_got_limit 1
     check "the pill showed recording then transcribing" pill_showed_both_states
     check "the log says why the recording stopped" grep -q 'audio limit' "$WORK/limit.err"
     check "no presentation left behind" presenter_left
@@ -1287,12 +1276,11 @@ test_audio_limit() {
 }
 
 # A transcriber that does not answer the probe declares no limit: the dictation is otherwise
-# unchanged, and the pill is handed no limit so it draws no bar.
+# unchanged, and nothing bounds how long it records.
 test_no_audio_limit() {
     start_test "a transcriber that declares no limit"
     TRANSCRIBE_LIMIT_FAIL=1 td start 2> "$WORK/no-limit.err"
     sleep 0.3
-    check "the pill is handed no limit" presenter_got_no_limit
     td stop
     check "session finishes" wait_idle
     check "transcription pasted" [ "$(pasted_text)" = "text transcribed" ]
