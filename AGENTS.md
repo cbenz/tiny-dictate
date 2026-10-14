@@ -11,6 +11,8 @@ to install.
 - `transcribers/`: the transcribers shipped with the tool
 - `tests/run.sh`: the integration suite, every external command stubbed
 - `contrib/`: integrations with other tools, none of which the tool needs at runtime
+- `scripts/`: development aids, not part of the tool: the glossary's vocabulary check and the pill
+  preview
 
 ## Toolchain
 
