@@ -3,6 +3,9 @@ name = "tiny-dictate"
 version = "0.1.0"
 edition = "2024"
 description = "Minimal voice dictation for Linux"
+license = "MIT"
+repository = "https://github.com/cbenz/tiny-dictate"
+readme = "README.md"
 publish = false
 
 [dependencies]
