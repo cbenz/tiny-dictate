@@ -59,7 +59,8 @@ Rules the tool does not break, whatever implementation runs them:
 
 ## Documentation
 
-- `README.md`: the front door — installing the tool, configuring it, and how a dictation runs.
+- `README.md`: the front door — installing the tool, configuring it and its features.
+- `docs/development.md`: building it, the tests, the pill preview, and how the tool is shaped.
 - `GLOSSARY.md`: the vocabulary. Use its terms.
 - `docs/adr/`: the decisions taken during design, numbered. Read the ones that touch your area, and
   record a new decision there rather than in prose elsewhere.
