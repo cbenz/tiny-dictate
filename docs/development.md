@@ -85,6 +85,17 @@ replace `~/.local/bin/tiny-dictate` when that is not a symlink, since `restore` 
 symlink. Missing build dependencies stop the install before the build, each named with its Arch
 package; missing runtime commands are only listed.
 
+## Releasing
+
+Bump `version` in `Cargo.toml`, commit, then tag `v<version>` and push the tag. The Release workflow
+builds in the same Arch container as CI and attaches `tiny-dictate-<version>-x86_64-linux.tar.gz`
+(the binary, the reference transcriber, the README and the LICENSE) to a GitHub release. It refuses a
+tag that does not match the crate version, and a manual run of the workflow packages the archive
+without publishing it.
+
+The AUR package in [`contrib/aur/`](../contrib/aur/) installs that archive; see its README for the
+`updpkgsums` / `.SRCINFO` steps.
+
 ## How the tool is shaped
 
 The tool is one binary: `main.rs` parses the command line, and each layer of it lives in a module.

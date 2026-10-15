@@ -1,0 +1,21 @@
+pkgbase = tiny-dictate-bin
+	pkgdesc = Minimal desktop voice dictation for Linux
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/cbenz/tiny-dictate
+	arch = x86_64
+	license = MIT
+	depends = gtk4
+	depends = gtk4-layer-shell
+	depends = alsa-utils
+	depends = lame
+	depends = ydotool
+	depends = libnotify
+	depends = wl-clipboard
+	optdepends = curl: the reference transcriber calls the Groq API
+	provides = tiny-dictate
+	conflicts = tiny-dictate
+	source = tiny-dictate-bin-0.1.0.tar.gz::https://github.com/cbenz/tiny-dictate/releases/download/v0.1.0/tiny-dictate-0.1.0-x86_64-linux.tar.gz
+	sha256sums = SKIP
+
+pkgname = tiny-dictate-bin

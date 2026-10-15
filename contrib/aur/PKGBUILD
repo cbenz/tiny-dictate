@@ -1,0 +1,23 @@
+# Maintainer: Christophe Benz <christophe.benz@gmail.com>
+pkgname=tiny-dictate-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Minimal desktop voice dictation for Linux"
+arch=('x86_64')
+url="https://github.com/cbenz/tiny-dictate"
+license=('MIT')
+depends=('gtk4' 'gtk4-layer-shell' 'alsa-utils' 'lame' 'ydotool' 'libnotify' 'wl-clipboard')
+optdepends=('curl: the reference transcriber calls the Groq API')
+provides=('tiny-dictate')
+conflicts=('tiny-dictate')
+# The release archive built by CI: nothing is compiled here. Run `updpkgsums` after changing
+# `pkgver`, then `makepkg --printsrcinfo > .SRCINFO`.
+source=("$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/tiny-dictate-$pkgver-x86_64-linux.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+    install -Dm755 "$srcdir/tiny-dictate-$pkgver/tiny-dictate" "$pkgdir/usr/bin/tiny-dictate"
+    install -Dm755 "$srcdir/tiny-dictate-$pkgver/tiny-dictate-transcribe" "$pkgdir/usr/bin/tiny-dictate-transcribe"
+    install -Dm644 "$srcdir/tiny-dictate-$pkgver/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 "$srcdir/tiny-dictate-$pkgver/README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

@@ -20,6 +20,8 @@ tiny-dictate is a single binary. Download the archive for your architecture from
 [releases page](https://github.com/cbenz/tiny-dictate/releases), unpack it, and put `tiny-dictate`
 and `tiny-dictate-transcribe` on your `PATH`.
 
+On Arch, `yay -S tiny-dictate-bin` (or any AUR helper) does that and pulls the runtime libraries.
+
 At runtime it needs:
 
 - `arecord` — recording (alsa-utils)

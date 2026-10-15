@@ -10,7 +10,8 @@ to install.
   and each layer of the tool lives in its own module.
 - `transcribers/`: the transcribers shipped with the tool
 - `tests/run.sh`: the integration suite, every external command stubbed
-- `contrib/`: integrations with other tools, none of which the tool needs at runtime
+- `contrib/`: integrations with other tools and the AUR packaging, none of which the tool needs at
+  runtime
 - `scripts/`: development aids, not part of the tool: the glossary's vocabulary check and the pill
   preview
 

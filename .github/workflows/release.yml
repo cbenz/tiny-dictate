@@ -1,0 +1,74 @@
+name: Release
+
+# A tag is the release. The archive is built in the same Arch container as CI, so the binary links
+# the GTK4 and gtk4-layer-shell the desktop runs — the reason a checkout cannot be trusted to build
+# a portable binary — and it is attached to a GitHub release. The AUR package in `contrib/aur`
+# installs that archive, so an Arch user needs neither a compiler nor this repository.
+
+on:
+  push:
+    tags: ['v*']
+  # A manual run builds and packages without publishing, so the workflow can be tried before a tag.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build the Linux archive and publish it
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      # `git` is what actions/checkout drives, and the minimal Arch image does not carry it. The
+      # rest is what the build links (`gtk4`, `gtk4-layer-shell`) and what compiles it (`rust`
+      # brings cargo; `base-devel` brings pkg-config and a C compiler).
+      - name: Install the toolchain and the linked libraries
+        run: |
+          pacman -Syu --noconfirm --needed \
+            base-devel git gtk4 gtk4-layer-shell rust alsa-utils python
+      - uses: actions/checkout@v4
+      - name: Read the version, and refuse a tag that does not match the crate
+        id: version
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "v$version" != "${GITHUB_REF_NAME}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match Cargo.toml version $version" >&2
+            exit 1
+          fi
+      - name: Build
+        run: cargo build --release --locked
+      # A published binary is worth the whole check: the tag's tree is CI-green before it ships.
+      - name: Test
+        run: |
+          cargo fmt --all --check
+          cargo clippy --all-targets -- -D warnings
+          scripts/check-vocabulary.sh
+          cargo test
+          tests/run.sh
+      - name: Package the archive
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          name="tiny-dictate-$version"
+          mkdir -p "dist/$name"
+          install -m 755 target/release/tiny-dictate "dist/$name/tiny-dictate"
+          install -m 755 transcribers/groq "dist/$name/tiny-dictate-transcribe"
+          install -m 644 README.md LICENSE "dist/$name/"
+          tar -C dist -czf "dist/$name-x86_64-linux.tar.gz" "$name"
+          (cd dist && sha256sum "$name-x86_64-linux.tar.gz" > "$name-x86_64-linux.tar.gz.sha256")
+          cat "dist/$name-x86_64-linux.tar.gz.sha256"
+      # A manual run keeps the archive as a workflow artifact; a tag also publishes it.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tiny-dictate-linux-x86_64
+          path: dist/*.tar.gz
+          if-no-files-found: error
+      - name: Publish the release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          generate_release_notes: true
