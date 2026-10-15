@@ -28,9 +28,9 @@ const TICK_MS: u64 = 100;
 /// The bar width, and the distance between the middle of two bars, in pixels.
 const BAR_WIDTH_PX: f64 = 2.0;
 const BAR_STEP_PX: f64 = 4.5;
-/// The side of one action slot, in pixels. The two slots are what balances the middle and what
-/// gives the pill its height, so the layout and the stylesheet read the same number.
-const ACTION_SLOT_PX: i32 = 26;
+/// The side of one action button, in pixels. It is the margin the glyph sits in, and what gives
+/// the pill its height, so the layout and the stylesheet read the same number.
+const ACTION_SLOT_PX: i32 = 20;
 /// Clears the bar that usually sits at the bottom of the screen.
 const MARGIN_PX: i32 = 64;
 /// Enough of the waveform channel to hold whole lines whatever the cadence is.
@@ -167,7 +167,7 @@ pub fn run(options: Options) -> ExitCode {
 
     let pill = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
-        .spacing(10)
+        .spacing(6)
         .build();
     pill.add_css_class("pill");
 
@@ -209,11 +209,11 @@ pub fn run(options: Options) -> ExitCode {
         let _ = cr.stroke();
     });
 
-    pill.append(&action_slot(&cancel));
+    pill.append(&cancel);
     pill.append(&spinner);
     pill.append(&meter);
     pill.append(&label);
-    pill.append(&action_slot(&confirm));
+    pill.append(&confirm);
     window.set_child(Some(&pill));
 
     let provider = gtk::CssProvider::new();
@@ -362,19 +362,6 @@ fn action_button(glyph: &str) -> gtk::Button {
     button
 }
 
-/// The slot one action lives in: a square that stays allocated whatever the frame offers.
-///
-/// The two action slots are the tallest children and the only thing balancing the middle, so a
-/// state that offers one button and not the other would pull the middle towards the offered side
-/// and drop the pill to the label's height when neither is offered. The button inside is shown or
-/// hidden; the slot it sits in never is.
-fn action_slot(button: &gtk::Button) -> gtk::Box {
-    let slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    slot.set_size_request(ACTION_SLOT_PX, ACTION_SLOT_PX);
-    slot.append(button);
-    slot
-}
-
 /// Run the tool's `verb`, as a keyboard shortcut would ask for it.
 ///
 /// The command is detached from the pill: leaving the screen must not take it down, and a command
@@ -446,7 +433,7 @@ window {{ background-color: transparent; }}
     background-color: rgba(24, 24, 27, 0.88);
     border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 999px;
-    padding: 5px 7px;
+    padding: 4px 6px;
 }}
 .pill label {{ color: #fafafa; font-size: 14px; }}
 .spinner {{ font-family: monospace; font-size: 16px; }}
