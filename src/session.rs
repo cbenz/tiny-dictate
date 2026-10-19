@@ -20,7 +20,6 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::audio;
 use crate::claim;
 use crate::config::{self, Config};
-use crate::files;
 use crate::log;
 use crate::microphone;
 use crate::presentation::{self, Presenter};
@@ -129,6 +128,11 @@ pub struct Paths {
     /// The clipped marker: created by the pump once a run of full-scale samples has gone by, so
     /// the file's existence is the fact.
     pub clipped: PathBuf,
+    /// The captured marker: created by the pump at the first byte it copies, so the file's
+    /// existence is the fact the session judges an empty recording from. Unlike the clipped
+    /// marker it is no report: it is the recording's own truth, and a dictation that never writes
+    /// it captured nothing.
+    pub captured: PathBuf,
     /// The recorder's stderr.
     pub recorder_error: PathBuf,
     /// The encoder's stderr.
@@ -150,6 +154,7 @@ impl Paths {
             fifo: session.join("audio.fifo"),
             waveform: session.join("waveform"),
             clipped: session.join("clipped"),
+            captured: session.join("captured"),
             recorder_error: session.join("arecord.err"),
             encoder_error: session.join("lame.err"),
             presenter_error: session.join("presenter.err"),
@@ -671,10 +676,15 @@ fn session_body(
 
     // The encoder exits once the recorder is gone and it has flushed its last frames: the pump's
     // input ends, it closes the fifo's write end, and the encoder reads end-of-file. The loop is
-    // still bounded, so a pump that somehow outlives the recorder cannot hold the session here
-    // forever. When nothing was captured there is nothing to flush, so do not wait at all.
-    let audio_present = files::file_size(&session.audio()) > 0;
-    if audio_present {
+    // still bounded, so an encoder that outlives the recorder anyway cannot hold the session here
+    // forever.
+    //
+    // Whether anything was captured is the pump's marker, not the size of the encoded file: a real
+    // encoder writes its last frames at end-of-file even when no sample ever reached it, so a
+    // non-empty file says nothing about whether the microphone was heard. With no byte captured
+    // there is nothing to flush, and waiting for the encoder would only delay the verdict.
+    let captured = paths.captured.exists();
+    if captured {
         for _ in 0..100 {
             if !pidfile_lives(&paths.encoder_pid) {
                 break;
@@ -708,7 +718,7 @@ fn session_body(
 
         let reason = if encoder_failed {
             "the audio encoder did not finish".to_owned()
-        } else if audio_present {
+        } else if captured {
             "the audio encoder stopped while recording".to_owned()
         } else {
             "no audio was captured".to_owned()
@@ -716,7 +726,7 @@ fn session_body(
         // The detail comes from the collaborator that failed: the recorder never captured a
         // byte, or the encoder stopped under a live recorder. Both were kept out of the
         // log and read back here, so the failure line carries what the user can act on.
-        let detail = if audio_present {
+        let detail = if captured {
             &paths.encoder_error
         } else {
             &paths.recorder_error

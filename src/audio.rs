@@ -194,14 +194,16 @@ pub fn start_pipeline(paths: &Paths, audio: &Path, session_id: &str) -> io::Resu
     fs::File::create(&paths.waveform)?;
 
     // The pump is handed the waveform path in its argv, which is what the suite's leftover check
-    // looks for, the session id so a failure it logs names the dictation it belongs to, and the
-    // clipped path it creates when the recording goes over full scale. The fifo's write end is
-    // its stdout, so it never has to open the fifo and find it writerless.
+    // looks for, the session id so a failure it logs names the dictation it belongs to, the
+    // clipped path it creates when the recording goes over full scale, and the captured path it
+    // creates at the first byte it copies. The fifo's write end is its stdout, so it never has to
+    // open the fifo and find it writerless.
     let mut pump = Command::new(self_executable())
         .arg("_pump")
         .arg(&paths.waveform)
         .arg(session_id)
         .arg(&paths.clipped)
+        .arg(&paths.captured)
         .stdin(Stdio::piped())
         .stdout(Stdio::from(writer))
         .spawn()?;
@@ -220,8 +222,8 @@ pub fn start_pipeline(paths: &Paths, audio: &Path, session_id: &str) -> io::Resu
     Ok(())
 }
 
-/// `_pump`: copy the recorder's stream into the fifo, append the waveform lines, and create
-/// `clipped` the first time the level reaches full scale.
+/// `_pump`: copy the recorder's stream into the fifo, append the waveform lines, create
+/// `captured` at the first byte and `clipped` the first time the level reaches full scale.
 pub fn pump(arguments: &[String]) -> ExitCode {
     let Some(waveform) = arguments.first() else {
         eprintln!("tiny-dictate: _pump needs a waveform path");
@@ -233,6 +235,11 @@ pub fn pump(arguments: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     };
 
+    let Some(captured) = arguments.get(3) else {
+        eprintln!("tiny-dictate: _pump needs a captured path");
+        return ExitCode::FAILURE;
+    };
+
     // The session id is optional: an absent or empty argument is a pump that cannot name the
     // dictation it belongs to, and a failure line without an id is better than no line.
     let session_id = arguments
@@ -240,7 +247,12 @@ pub fn pump(arguments: &[String]) -> ExitCode {
         .map(String::as_str)
         .filter(|id| !id.is_empty());
 
-    if let Err(error) = run_pump(Path::new(waveform), Path::new(clipped)) {
+    if let Err(error) = run_pump(
+        Path::new(waveform),
+        Path::new(clipped),
+        Path::new(captured),
+        session_id,
+    ) {
         log::line(
             session_id,
             &format!("failure: the waveform pump stopped: {error}"),
@@ -250,7 +262,12 @@ pub fn pump(arguments: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run_pump(waveform: &Path, clipped: &Path) -> io::Result<()> {
+fn run_pump(
+    waveform: &Path,
+    clipped: &Path,
+    captured: &Path,
+    session_id: Option<&str>,
+) -> io::Result<()> {
     // The raw stream goes to stdout, which `start` has already wired to the fifo's write end:
     // the pump never opens the fifo itself, so the encoder can never find it writerless. The
     // writes get the backpressure `tee`'s do, and a write error into a dead fifo is swallowed.
@@ -265,12 +282,27 @@ fn run_pump(waveform: &Path, clipped: &Path) -> io::Result<()> {
     let mut slicer = WaveformSlicer::new();
     let mut buffer = [0u8; 16 * 1024];
     let mut reported_clipping = false;
+    let mut reported_capture = false;
 
     loop {
         let read = match input.read(&mut buffer) {
             Ok(0) | Err(_) => break,
             Ok(read) => read,
         };
+
+        // The recorder's first byte is the fact the session judges an empty recording from, so the
+        // marker goes down before either report: a dead meter, or an encoder that died first,
+        // cannot hold it back. It is the one marker the recording pays for, so one that cannot be
+        // written is said out loud rather than swallowed.
+        if !reported_capture {
+            if let Err(error) = fs::File::create(captured) {
+                log::line(
+                    session_id,
+                    &format!("failure: cannot write the captured marker: {error}"),
+                );
+            }
+            reported_capture = true;
+        }
 
         // A write error into a dead fifo is swallowed: the shell's `tee -p`. A dead meter can
         // never end the recording.

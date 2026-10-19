@@ -55,8 +55,10 @@ Rules the tool does not break, whatever implementation runs them:
   would receive the text itself.
 - A cancelled dictation is neither transcribed nor reported as a failure.
 - The waveform channel is a copy of the stream: a meter that dies cannot end a recording.
-- A report is never worth a recording: a marker the pump cannot write, or a notification the desktop
-  cannot show, costs the report and nothing else.
+- A report is never worth a recording: a marker that says something about the recording, or a
+  notification the desktop cannot show, costs the report and nothing else. The captured marker is part
+  of the recording's truth: a dictation that never writes it captured nothing, and the pump logs the
+  line when it cannot write it.
 - No secret is ever written into the repository; secrets come from the environment.
 
 ## Documentation

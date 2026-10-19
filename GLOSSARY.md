@@ -79,6 +79,12 @@ is flattened to the sample's maximum — the top of the wave, cut off flat — a
 degrades. The tool reports it once the dictation is over; it never raises the level that causes it.
 _Avoid_: saturated, distorted, overloaded
 
+**Captured**:
+What a recording is once the recorder handed at least one byte to the pipeline. The pump writes a
+marker beside the recording at that first byte, and the session judges an empty recording from its
+existence. A real encoder writes its last frames at end-of-file even when it was handed nothing, so
+nothing about the encoded file says whether the microphone was heard.
+
 ## The result
 
 **Paste**:

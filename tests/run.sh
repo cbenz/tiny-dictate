@@ -150,6 +150,14 @@ printf 'LAME 3.100 64bits (http://lame.sf.net)\n' >&2
 report() { printf 'lame %s at %s\n' "$1" "$(date +%s.%N)" >> "$WORK/lame-report"; }
 report "start pid=$$"
 : > "$out"
+# LAME_STALL holds the encoder open before it reads anything: the recorder can then be gone while the
+# file the encoder writes is still empty, which is the instant the session must not judge the
+# recording from (`captured`, ADR-0021). The recorder has to be slow for that — the ordinary stub
+# execs the real `arecord -D null`, a firehose that fills the fifo and cannot die while nothing
+# reads it — which is what `ARECORD_LOUD`'s signal-driven stub is there for.
+if [ -n "${LAME_STALL:-}" ]; then
+    sleep "$LAME_STALL"
+fi
 start="${EPOCHREALTIME/./}"
 written=0
 # A real lame reads on its first breath and exits on end-of-file: a fifo with no writer hands it
@@ -1039,6 +1047,20 @@ wait_for_journal() { # wait_for_journal <extended regex>
     return 1
 }
 
+# A condition that must hold before a deadline, counted in tenths of a second: a case that pins a
+# short-circuit asks how long a stage may take instead of sleeping for it.
+within_seconds() { # within_seconds <seconds> <command...>
+    local attempts=$(( $1 * 10 ))
+    shift
+
+    while [ "$attempts" -gt 0 ]; do
+        "$@" && return 0
+        sleep 0.1
+        attempts=$((attempts - 1))
+    done
+    return 1
+}
+
 # Every line is the tool's own: a collaborator whose output reached the journal writes a line the
 # tool's prefix does not open.
 journal_holds_only_tool_lines() {
@@ -1295,6 +1317,43 @@ test_encoder_finds_a_writer() {
     check "no waveform channel process left behind" no_waveform_channel_process
     check "no presentation left behind" presenter_left
     check "no leftover process" no_leftover_process
+    check "session directory removed" session_dir_gone
+}
+
+# The recorder can die with its bytes still in flight: the encoded file is empty at that instant,
+# and a session that judged the recording from it would call a real dictation empty before the
+# encoder wrote a frame. The pump's `captured` marker is the fact, and the session waits for the
+# encoder that fact implies ([ADR-0021](../adr/0021-the-capture-fact-is-the-recorders.md)).
+test_verdict_waits_for_the_encoder() {
+    start_test "the verdict waits for the encoder once something was captured"
+    # The loud stub hands over a few hundred bytes and dies on the signal at once, while the encoder
+    # holds its start back for a second: `audio.mp3` is still empty when the recorder is gone, which
+    # is the instant the verdict used to be read from.
+    ARECORD_LOUD=1 LAME_STALL=1 td start 2>> "$JOURNAL"
+    sleep 0.05
+    td stop 2>> "$JOURNAL"
+    check "session finishes" wait_idle
+    check "the text is pasted, the recording was not called empty" \
+        wait_pasted_text "text transcribed"
+    check "nothing was reported as a failure" no_notification_at_all
+    check "no presentation left behind" presenter_left
+    check "no leftover process" no_leftover_process
+    check "session directory removed" session_dir_gone
+}
+
+# The mirror case: with nothing captured there is nothing to flush, so waiting for the encoder
+# would only delay the verdict. The stalled encoder outlives the report, which pins the short-circuit
+# an unconditional wait would remove.
+test_verdict_does_not_wait_without_a_capture() {
+    start_test "nothing captured: the failure lands without waiting for the encoder"
+    ARECORD_FAIL=1 LAME_STALL=10 td start 2>> "$JOURNAL"
+    check "the failure is reported while the encoder still sleeps" within_seconds 3 \
+        grep -q 'Recording failed: no audio was captured' "$WORK/events.log"
+    check "the recorder's error is shown to the user" \
+        grep -q 'Device or resource busy' "$WORK/events.log"
+    check "session finishes" wait_idle
+    check "nothing pasted" [ -z "$(pasted_text)" ]
+    check "no presentation left behind" presenter_left
     check "session directory removed" session_dir_gone
 }
 
@@ -3837,6 +3896,8 @@ run_test test_normal_flow
 run_test test_waveform_channel
 run_test test_clipped_recording
 run_test test_encoder_finds_a_writer
+run_test test_verdict_waits_for_the_encoder
+run_test test_verdict_does_not_wait_without_a_capture
 run_test test_audio_limit
 run_test test_audio_limit_keeps_audio_on_failure
 run_test test_no_audio_limit
