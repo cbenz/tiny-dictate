@@ -4,6 +4,11 @@
 //! `start` claims the microphone, starts the pipeline and forks the session process, then
 //! exits; the session outlives it and owns the whole lifecycle. The recorder and the encoder
 //! are orphaned with it and are found through their pidfiles.
+//!
+//! A process that exited but was never waited for stays in `/proc`, in state `Z`, so the
+//! directory alone does not tell liveness: an orphan that nothing reaps — a container's pid 1
+//! does not, and its orphaned recorder is one — would look alive forever, and every wait in this
+//! layer would spin on it. `process_alive` reads the state, and a zombie is dead.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -250,8 +255,26 @@ pub fn pid_in(pidfile: &Path) -> Option<u32> {
 }
 
 /// Whether a process lives, read through `/proc` rather than `kill -0`.
+///
+/// A process that exited and was never waited for is still in `/proc`, in state `Z`: it holds no
+/// thread, owns nothing, and can never run again, so it is dead here. Reading the directory alone
+/// would call it alive, and every wait in this layer would spin on it — a session waiting for a
+/// recorder no pid 1 will ever reap, a command lock waiting for a command that already returned.
 pub fn process_alive(pid: u32) -> bool {
-    Path::new("/proc").join(pid.to_string()).is_dir()
+    let Ok(stat) = fs::read_to_string(Path::new("/proc").join(pid.to_string()).join("stat")) else {
+        return false;
+    };
+
+    // The command name sits between parentheses and may hold both spaces and parentheses, so the
+    // fields after it start after the last `)`. The first of them is the state.
+    let Some((_, fields)) = stat.rsplit_once(')') else {
+        return false;
+    };
+
+    !matches!(
+        fields.split_whitespace().next(),
+        Some("Z" | "X" | "x") | None
+    )
 }
 
 /// Whether the process recorded in a pidfile is alive. The pidfile is read, never removed: a
@@ -891,4 +914,70 @@ fn show_verdict(
 
     presenter.stop();
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A process that exited but was never waited for is still in `/proc`, in state `Z`, and the
+    /// test is the parent that never waits until the end — so the zombie is there whatever reaps
+    /// the orphans of this machine, and a predicate that reads the directory alone fails here.
+    ///
+    /// The child leaves through `_exit` and nothing else: a forked child of a threaded test
+    /// process must not run any of its code or any destructor. The pipe is the clock: the child's
+    /// write end closes with it, so the read returns end-of-file once the process is gone.
+    #[test]
+    fn a_zombie_is_dead_and_a_living_process_is_alive() {
+        assert!(
+            process_alive(std::process::id()),
+            "the process running this test is alive"
+        );
+
+        let mut ends = [0 as libc::c_int; 2];
+        // Safety: `pipe` with an array of the two descriptors it writes.
+        assert_eq!(unsafe { libc::pipe(ends.as_mut_ptr()) }, 0);
+
+        // Safety: the child only leaves at once, which is all a forked child may do here.
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0, "fork failed");
+        if child == 0 {
+            // Safety: closing a descriptor this process owns, then leaving without running a
+            // destructor or an atexit handler.
+            unsafe {
+                libc::close(ends[0]);
+                libc::_exit(0);
+            }
+        }
+
+        // Safety: the parent's own copy of the write end, and the read end it then reads.
+        unsafe { libc::close(ends[1]) };
+        let mut byte = 0u8;
+        // Safety: a read of one byte into a buffer this process owns.
+        let read = unsafe { libc::read(ends[0], (&mut byte as *mut u8).cast(), 1) };
+        assert_eq!(read, 0, "the child's write end closed with its exit");
+
+        // Between the child's descriptors closing and the kernel marking it a zombie there is an
+        // instant, so the wait is bounded rather than a single reading.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while process_alive(child as u32) {
+            assert!(
+                Instant::now() < deadline,
+                "a zombie was still reported alive two seconds after its exit"
+            );
+            sleep(Duration::from_millis(1));
+        }
+
+        // It was judged dead while it was still there, unreaped: a zombie, never a process that
+        // left `/proc`.
+        let mut status = 0;
+        // Safety: the child this test forked and has not waited for yet.
+        assert_eq!(
+            unsafe { libc::waitpid(child, &mut status, libc::WNOHANG) },
+            child
+        );
+
+        // Safety: the read end this test opened.
+        unsafe { libc::close(ends[0]) };
+    }
 }

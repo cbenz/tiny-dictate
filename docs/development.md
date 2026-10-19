@@ -21,9 +21,10 @@ The crate is `publish = false`: it is distributed as a binary, not through crate
 ## Tests
 
 `tests/run.sh` runs the built binary against stubbed collaborators. It needs no microphone, no
-notification daemon, no layer-shell surface and no network; its one dependency is `python3`, which
-drives the pseudo-terminal the browser's cases are observed on. It runs the binary at
-`target/release/tiny-dictate` and never builds it:
+notification daemon, no layer-shell surface and no network. It does need `python3` — the
+pseudo-terminal the browser's cases are observed on, and the loud recorder that must really die on
+`SIGINT` — the real `arecord` the recorder stub execs, and `diffutils` and `procps` beside the
+coreutils. It runs the binary at `target/release/tiny-dictate` and never builds it:
 
 ```bash
 cargo build --release
@@ -47,6 +48,26 @@ tests/run.sh
 `tests/run.sh` kills leftover stubs with a global `pkill -f 'arecord -D null'`; two suites cannot
 run side by side unless each is wrapped in a private PID namespace
 (`unshare -Urpf --mount-proc bash -c 'tests/run.sh'`).
+
+## Reproducing CI
+
+CI runs the whole check in `archlinux:latest`, and a job container's pid 1 is not an init: it is
+whatever keeps the container alive, and it reaps nothing. The recorder and the encoder are orphaned by
+`start` on every dictation, so they stay zombies for the whole job — which a desktop with systemd never
+sees, because it waits for them at once. To reproduce it, keep the container alive with a `tail` and
+drive the suite through `docker exec`:
+
+```bash
+docker run -d --name td-ci -v "$PWD":/w -w /w archlinux:latest tail -f /dev/null
+docker exec td-ci bash -c 'pacman -Syu --noconfirm --needed base-devel gtk4 gtk4-layer-shell rust alsa-utils python'
+docker exec td-ci bash -c 'cd /w && cargo build --release && tests/run.sh'
+docker rm -f td-ci
+```
+
+`docker run --rm … bash -c '… tests/run.sh'` runs the same suite with a shell as pid 1, which does reap
+and cleans up its orphans: it passes where CI fails. `--init` on the job container would do the same,
+and the workflows run without it on purpose — the orphans stay, so the suite keeps exercising the
+liveness of a process nothing reaps.
 
 ## Preview the pill
 
