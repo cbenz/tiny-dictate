@@ -1,0 +1,24 @@
+#!/bin/bash
+# The C++ ydotool 0.1.8 that Debian and Ubuntu ship has no `key <code>:<state>` syntax: it reads
+# the token as a key name, types the first character of every argument, and exits 0. tiny-dictate's
+# Shift+Insert chord therefore becomes "&&" on an AZERTY layout, while the paste reports success.
+#
+# This shim translates the chord's three calls into what 0.1.8 understands -- `key Shift_L+Insert`,
+# emitted as one sequence at the Insert -- and passes everything else through.
+#
+# Drop it once the distribution ships a ydotool that takes `<code>:<state>`.
+
+YDOTOOL=/usr/bin/ydotool
+
+[ "${1:-}" = "key" ] || exec "$YDOTOOL" "$@"
+
+case "$*" in
+    "key 42:1" | "key 42:0")
+        exit 0   # the whole chord is emitted when the Insert arrives
+        ;;
+    "key 110:1 110:0")
+        exec "$YDOTOOL" key Shift_L+Insert
+        ;;
+esac
+
+exec "$YDOTOOL" "$@"

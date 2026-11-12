@@ -1,0 +1,13 @@
+[Unit]
+Description=tiny-dictate: double tap Right Ctrl to dictate
+After=graphical-session.target ydotoold.service
+
+[Service]
+EnvironmentFile=%h/.config/tiny-dictate/groq.env
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 %h/.local/bin/tiny-dictate-hotkey
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
