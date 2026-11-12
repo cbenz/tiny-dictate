@@ -1,0 +1,3 @@
+# Grant the active seat user read access to input devices (needed by the
+# tiny-dictate double-tap-right-ctrl watcher, which only listens).
+SUBSYSTEM=="input", KERNEL=="event*", TAG+="uaccess"

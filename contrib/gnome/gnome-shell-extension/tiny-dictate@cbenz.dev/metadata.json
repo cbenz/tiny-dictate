@@ -1,0 +1,8 @@
+{
+  "uuid": "tiny-dictate@cbenz.dev",
+  "name": "tiny-dictate",
+  "description": "Panel indicator for tiny-dictate: a red dot while the microphone records, a pulsing spinner while the transcription runs. Reads the state published by the tiny-dictate-hotkey watcher.",
+  "shell-version": ["46", "47", "48"],
+  "version": 1,
+  "url": "https://github.com/cbenz/tiny-dictate"
+}

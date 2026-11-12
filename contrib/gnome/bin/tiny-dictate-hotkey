@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""Double-tap Right Ctrl -> dictate. Also publishes the dictation state.
+
+Keys
+  double tap Right Ctrl          start / stop (and cancel while transcribing)
+  Shift + tap Right Ctrl         cancel
+
+This is the GNOME/Wayland adaptation of the keyd trick described in
+tiny-dictate's README. keyd has no double-tap primitive (only tap/hold), so
+instead of remapping a key to F19/F24 this watcher listens, read-only, on every
+keyboard exposing Right Ctrl. Right Ctrl keeps working as a normal modifier; the
+watcher never grabs nor injects anything.
+
+State
+  `tiny-dictate status` is the source of truth: it answers `working` while the
+  microphone records *and* while the transcription runs. The newest session's
+  metadata.json tells those two apart: its `outcome` is `recording` only while
+  the microphone is open. Both are polled and folded into
+
+    $XDG_STATE_HOME/tiny-dictate/state.json
+
+  which the GNOME Shell extension `tiny-dictate@cbenz.dev` watches to draw the
+  panel indicator. Polling also catches dictations started from a terminal.
+
+Environment:
+  TINY_DICTATE_DOUBLE_MS   max delay between the two taps (default 400)
+  TINY_DICTATE_BIN         path to the CLI (default: `tiny-dictate` on PATH)
+"""
+
+import json
+import os
+import select
+import shutil
+import subprocess
+import sys
+import time
+
+import evdev
+from evdev import ecodes
+
+DOUBLE_MS = int(os.environ.get("TINY_DICTATE_DOUBLE_MS", "400"))
+BIN = os.environ.get("TINY_DICTATE_BIN") or shutil.which("tiny-dictate") or os.path.expanduser(
+    "~/.local/bin/tiny-dictate"
+)
+
+STATE_HOME = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+STATE_DIR = os.path.join(STATE_HOME, "tiny-dictate")
+SESSIONS_DIR = os.path.join(STATE_DIR, "sessions")
+STATE_FILE = os.path.join(STATE_DIR, "state.json")
+LOG = os.path.join(STATE_DIR, "hotkey.log")
+CLI_LOG = os.path.join(STATE_DIR, "dictate.log")
+
+SHIFTS = {ecodes.KEY_LEFTSHIFT, ecodes.KEY_RIGHTSHIFT}
+TRIGGER = ecodes.KEY_RIGHTCTRL
+SKIP_CAPS = {ecodes.EV_REL}  # a device with relative motion is a mouse
+RESCAN_S = 5.0
+POLL_ACTIVE_S = 0.35
+POLL_IDLE_S = 1.0
+
+state = "idle"
+outcome = None
+error = None
+since = time.time()
+
+
+def log(msg):
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(LOG, "a") as fh:
+            fh.write("%s %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg))
+    except OSError:
+        pass
+
+
+def publish(new_state, new_outcome=None, new_error=None):
+    """Write state.json atomically, only when something changed."""
+    global state, outcome, error, since
+    new_state = new_state or "idle"
+    if new_state == state and new_outcome == outcome and new_error == error:
+        return
+    if new_state != state:
+        since = time.time()
+    state, outcome, error = new_state, new_outcome, new_error
+    payload = {
+        "state": state,
+        "outcome": outcome,
+        "error": error,
+        "since": since,
+        "updated": time.time(),
+        "pid": os.getpid(),
+    }
+    tmp = STATE_FILE + ".tmp"
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(tmp, "w") as fh:
+            json.dump(payload, fh)
+        os.replace(tmp, STATE_FILE)
+    except OSError as exc:
+        log("publish failed: %s" % exc)
+
+
+def spawn(action):
+    log("fire %s" % action)
+    try:
+        # The CLI logs its timeline on stderr ("text written", "paste failed"); keep it.
+        with open(CLI_LOG, "a") as fh:
+            fh.write("\n--- %s %s ---\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), action))
+            fh.flush()
+            subprocess.Popen(
+                [BIN, action],
+                stdin=subprocess.DEVNULL,
+                stdout=fh,
+                stderr=fh,
+                start_new_session=True,
+            )
+    except OSError as exc:
+        log("spawn failed: %s" % exc)
+
+
+def newest_session():
+    """(outcome, error) of the most recent session, newest name sorts last."""
+    try:
+        names = sorted(n for n in os.listdir(SESSIONS_DIR) if not n.startswith("."))
+    except OSError:
+        return None, None, None
+    if not names:
+        return None, None, None
+    path = os.path.join(SESSIONS_DIR, names[-1], "metadata.json")
+    try:
+        with open(path) as fh:
+            meta = json.load(fh)
+    except (OSError, ValueError):
+        return names[-1], None, None
+    return names[-1], meta.get("outcome"), meta.get("error")
+
+
+def cli_status():
+    try:
+        out = subprocess.run(
+            [BIN, "status"], capture_output=True, text=True, timeout=5
+        )
+        return out.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return "idle"
+
+
+def poll():
+    """Mirror the CLI: working + outcome 'recording' means the mic is open."""
+    session, new_outcome, new_error = newest_session()
+    if cli_status() != "working":
+        publish("idle", new_outcome, new_error)
+    elif new_outcome == "recording":
+        publish("recording")
+    else:
+        publish("transcribing")
+
+
+def on_trigger():
+    if state == "recording":
+        spawn("stop")
+    elif state == "transcribing":
+        spawn("cancel")
+    else:
+        spawn("start")
+
+
+def is_wanted(device):
+    try:
+        caps = device.capabilities(absinfo=False)
+    except OSError:
+        return False
+    if SKIP_CAPS & set(caps):
+        return False
+    return TRIGGER in set(caps.get(ecodes.EV_KEY, []))
+
+
+def main():
+    devices = {}
+    held = {}
+    last_tap = None
+    next_poll = 0.0
+    next_rescan = 0.0
+    log("watching for double Right Ctrl (bin=%s)" % BIN)
+    publish("idle")
+
+    while True:
+        now = time.monotonic()
+
+        if now >= next_rescan:
+            next_rescan = now + RESCAN_S
+            for path in evdev.list_devices():
+                if path in devices:
+                    continue
+                try:
+                    device = evdev.InputDevice(path)
+                except OSError:
+                    continue
+                if is_wanted(device):
+                    devices[path] = device
+                    held[path] = set()
+                    log("listening on %s (%s)" % (path, device.name))
+                else:
+                    device.close()
+
+        timeout = POLL_ACTIVE_S if state != "idle" else POLL_IDLE_S
+        timeout = max(0.05, min(timeout, next_poll - now))
+        try:
+            ready, _, _ = select.select(list(devices.values()), [], [], timeout)
+        except (OSError, ValueError):
+            ready = []
+            time.sleep(0.2)
+
+        for device in ready:
+            path = device.path
+            try:
+                events = list(device.read())
+            except OSError:
+                devices.pop(path, None)
+                held.pop(path, None)
+                log("lost %s" % path)
+                continue
+
+            for event in events:
+                if event.type != ecodes.EV_KEY:
+                    continue
+                pressed = event.value  # 1 press, 0 release, 2 autorepeat
+                if event.code in SHIFTS:
+                    if pressed == 1:
+                        held[path].add(event.code)
+                    elif pressed == 0:
+                        held[path].discard(event.code)
+                    continue
+                if event.code != TRIGGER or pressed != 1:
+                    continue
+
+                stamp = time.monotonic()
+                if held[path] & SHIFTS:
+                    last_tap = None
+                    spawn("cancel")
+                elif last_tap is not None and (stamp - last_tap) * 1000 <= DOUBLE_MS:
+                    last_tap = None
+                    on_trigger()
+                else:
+                    last_tap = stamp
+                next_poll = 0.0  # react immediately
+
+        if time.monotonic() >= next_poll:
+            poll()
+            next_poll = time.monotonic() + (
+                POLL_ACTIVE_S if state != "idle" else POLL_IDLE_S
+            )
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        publish("idle")
+        sys.exit(0)
