@@ -294,11 +294,20 @@ pub fn notify(message: &str, expire_ms: u32, urgency: &str) {
 /// CLIPBOARD selection took it. Every clipboard write in the tool goes through here, so the lease
 /// has exactly one place to replace. `clipboard_seconds` is the lease's duration, read from the
 /// configuration: `0` means no expiry.
+///
+/// PRIMARY is offered first, and the CLIPBOARD offer starts only once it serves the text: the chord
+/// reads PRIMARY, and two offers claimed within the same millisecond are not both granted. Mutter 46
+/// cancels one of them, which leaves the paste reading the previous dictation; measured here, the
+/// two writes three milliseconds apart lost the PRIMARY offer three runs out of five, and lost none
+/// once they were fifty milliseconds apart. Waiting for the first offer to be up is what makes the
+/// second one late enough, so the ordering and the wait are the same fix
+/// ([ADR-0015](../docs/adr/0015-the-paste-waits-for-the-offer.md)).
 pub fn copy_to_clipboard(value: &str, clipboard_seconds: u64) -> bool {
-    let clipboard = clipboard_write(value, false, clipboard_seconds);
-    let _ = clipboard_write(value, true, clipboard_seconds);
+    if !clipboard_write(value, true, clipboard_seconds) || !offer_serves(value) {
+        return false;
+    }
 
-    clipboard
+    clipboard_write(value, false, clipboard_seconds)
 }
 
 /// Offer the text on both selections and inject it with the `Shift+Insert` chord.
@@ -308,14 +317,16 @@ pub fn copy_to_clipboard(value: &str, clipboard_seconds: u64) -> bool {
 ///
 /// The chord waits for the offer to serve the text: `wl-copy` sets the selection a display
 /// roundtrip after its stdin was written, and until it does the chord would read what the previous
-/// offer still holds ([ADR-0015](../docs/adr/0015-the-paste-waits-for-the-offer.md)). An offer that
-/// never took the text leaves nothing to inject either, so both failures are the same one here.
+/// offer still holds ([ADR-0015](../docs/adr/0015-the-paste-waits-for-the-offer.md)). That wait
+/// lives in `copy_to_clipboard`, which offers PRIMARY first and does not start the CLIPBOARD offer
+/// until PRIMARY serves the text. An offer that never took the text leaves nothing to inject
+/// either, so both failures are the same one here.
 ///
 /// `clipboard_seconds` is the lease's duration, read from the configuration: the offer is wrapped
 /// in `timeout <clipboard_seconds>`, so it is gone when the lease ends
 /// ([ADR-0007](../docs/adr/0007-the-clipboard-lease.md)).
 pub fn paste(value: &str, clipboard_seconds: u64) -> bool {
-    if !copy_to_clipboard(value, clipboard_seconds) || !offer_serves(value) {
+    if !copy_to_clipboard(value, clipboard_seconds) {
         return false;
     }
 
