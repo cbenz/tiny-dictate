@@ -61,6 +61,9 @@ BIN_LEASE="$WORK/bin-lease"
 # A third stub directory: the waybar module's exec is run with a `tiny-dictate` that prints the
 # word it is told to print, so the module's own mapping is what the test observes.
 BIN_WAYBAR="$WORK/bin-waybar"
+# A fourth stub directory: one clipboard state per selection, and every claim logged with what
+# PRIMARY served when it started, so the order of the two offers is observable.
+BIN_OFFERS="$WORK/bin-offers"
 RUN="$WORK/run"
 HOME_DIR="$WORK/home"
 # The durable sessions live under the state directory. Pointing it at the work directory
@@ -442,6 +445,32 @@ mv "$staged" "$WORK/clipboard"
 while :; do sleep 0.05; done
 STUB
 
+# A pair of clipboard stubs with one state per selection, so the order of the two offers is
+# observable: a `--primary` claim publishes `serve.primary`, the plain one `serve.clipboard`, and
+# every claim records what PRIMARY was serving at the instant it started. The case about the two
+# offers' ordering asserts on that, because a claim that lands while another is being established
+# is the one Mutter cancels.
+mkdir -p "$BIN_OFFERS"
+cat > "$BIN_OFFERS/wl-copy" <<'STUB'
+#!/usr/bin/env bash
+selection=clipboard
+for argument in "$@"; do
+    [ "$argument" = "--primary" ] && selection=primary
+done
+printf '%s\n' "$selection" >> "$WORK/offers.log"
+printf '%s\n' "$(cat "$WORK/serve.primary" 2>/dev/null)" >> "$WORK/primary-at-claim"
+cat > "$WORK/serve.$selection"
+STUB
+
+cat > "$BIN_OFFERS/wl-paste" <<'STUB'
+#!/usr/bin/env bash
+selection=clipboard
+for argument in "$@"; do
+    [ "$argument" = "--primary" ] && selection=primary
+done
+cat "$WORK/serve.$selection" 2>/dev/null
+STUB
+
 # A `tiny-dictate` whose one word is chosen by $FAKE_STATUS, and that logs the verb it was given:
 # the module must call it, and call it with `status`.
 mkdir -p "$BIN_WAYBAR"
@@ -593,7 +622,7 @@ def main():
 main()
 PY
 
-chmod +x "$BIN"/* "$BIN-broken-meter"/* "$BIN_LEASE"/* "$BIN_WAYBAR"/*
+chmod +x "$BIN"/* "$BIN-broken-meter"/* "$BIN_LEASE"/* "$BIN_WAYBAR"/* "$BIN_OFFERS"/*
 
 # A broken stub would silently test nothing: check them before running anything.
 for stub in "$BIN"/* "$BIN-broken-meter"/* "$BIN_LEASE"/* "$BIN_WAYBAR"/*; do
@@ -648,6 +677,15 @@ td_lease() {
     TINY_DICTATE_TRANSCRIBE="${TINY_DICTATE_TRANSCRIBE:-$BIN/transcribe}" \
         TINY_DICTATE_PRESENT_COMMAND="${TINY_DICTATE_PRESENT_COMMAND:-$BIN/present}" \
         PATH="$BIN_LEASE:$BIN:$PATH" \
+        XDG_RUNTIME_DIR="$RUN" HOME="$HOME_DIR" "$SCRIPT" "$@"
+}
+
+# Same, with clipboard stubs that keep one state per selection and record what PRIMARY serves when
+# each claim starts: the case about the two offers' ordering asserts on it.
+td_offers() {
+    TINY_DICTATE_TRANSCRIBE="${TINY_DICTATE_TRANSCRIBE:-$BIN/transcribe}" \
+        TINY_DICTATE_PRESENT_COMMAND="${TINY_DICTATE_PRESENT_COMMAND:-$BIN/present}" \
+        PATH="$BIN_OFFERS:$BIN:$PATH" \
         XDG_RUNTIME_DIR="$RUN" HOME="$HOME_DIR" "$SCRIPT" "$@"
 }
 
@@ -758,6 +796,9 @@ reset_run() {
     : > "$WORK/pactl.log"
     : > "$WORK/wl-copy.log"
     : > "$WORK/wl-copy-parent.log"
+    : > "$WORK/offers.log"
+    : > "$WORK/primary-at-claim"
+    rm -f "$WORK"/serve.*
     rm -f "$WORK/transcribe-size" "$WORK/transcribe-received" "$WORK/transcribe-report" \
         "$WORK/clipboard" "$WORK/arecord-report" "$WORK/lame-report" "$WORK/journal.err" \
         "$WORK/waybar-report"
@@ -3468,6 +3509,24 @@ test_clipboard_lease_expires() {
 # delay later -- the window the real `wl-copy` spends on its display roundtrip -- while `wl-paste`
 # keeps serving the previous text, and the `ydotool` stub records what the clipboard held at the
 # instant of the chord. Two dictations in a row: the first one is what leaves a live offer behind.
+# The chord reads PRIMARY, so PRIMARY is offered first and the CLIPBOARD claim starts only once it
+# serves the text. Two claims that land together lose one on Mutter, and the paste then reads the
+# previous dictation ([ADR-0015](../adr/0015-the-paste-waits-for-the-offer.md)).
+test_paste_offers_primary_first() {
+    start_test "the paste offers PRIMARY first, and CLIPBOARD once PRIMARY serves the text"
+    TRANSCRIBE_TEXT="offered text" td_offers start
+    sleep 0.4
+    td_offers stop
+    check "the dictation finishes" wait_idle
+
+    check "the first offer is PRIMARY" [ "$(head -1 "$WORK/offers.log")" = "primary" ]
+    check "the second offer is CLIPBOARD" [ "$(sed -n '2p' "$WORK/offers.log")" = "clipboard" ]
+    check "CLIPBOARD is claimed only once PRIMARY serves the text" \
+        [ "$(sed -n '2p' "$WORK/primary-at-claim")" = "offered text" ]
+    check "the text reached the CLIPBOARD selection" \
+        [ "$(cat "$WORK/serve.clipboard" 2>/dev/null)" = "offered text" ]
+}
+
 test_paste_waits_for_the_offer() {
     start_test "the paste waits for the offer to serve the text it injects"
     write_config 'clipboard_seconds = 30'
@@ -3986,6 +4045,7 @@ run_test test_clipboard_lease_invocation
 run_test test_clipboard_lease_duration_from_config
 run_test test_transcribe_uses_the_lease
 run_test test_clipboard_lease_expires
+run_test test_paste_offers_primary_first
 run_test test_paste_waits_for_the_offer
 run_test test_paste_without_the_read_back_tool
 run_test test_dev_install_and_restore
