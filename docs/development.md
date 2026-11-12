@@ -16,6 +16,10 @@ cargo build --release
 On Arch, that is `pacman -S gtk4 gtk4-layer-shell rust base-devel`. The GUI toolkit is linked into
 every invocation, `tiny-dictate status` included — deliberate, not a packaging mistake.
 
+The pill is built against the crate's `v4_22` feature, so the GTK4 development package must be 4.22
+or later, and gtk4-layer-shell 1.3 or later; a distribution older than that fails in `gdk4-sys`
+before anything is compiled. Ubuntu 24.04, which ships GTK 4.14, cannot build this checkout.
+
 The crate is `publish = false`: it is distributed as a binary, not through crates.io.
 
 ## Tests
