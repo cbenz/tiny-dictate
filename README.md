@@ -26,9 +26,13 @@ At runtime it needs:
 
 - `arecord` — recording (alsa-utils)
 - `lame` — MP3 encoding
-- `ydotool` — pasting
+- `ydotool` — pasting, in the version that takes `key <code>:<state>` (1.0 and later). The C++
+  `ydotool` 0.1.8 that Debian and Ubuntu ship has no such syntax: it reads the token as a key name,
+  types the first character of each argument instead, and exits 0, so the paste reports success while
+  inserting stray characters
 - `notify-send` — failure notifications (libnotify)
-- `wl-clipboard` — the clipboard
+- `wl-clipboard` — the clipboard, 2.3.0 or later: the offer passes `wl-copy --sensitive`, which older
+  releases reject, and a `wl-copy` that exits on the option leaves the clipboard empty
 - `curl` — the reference transcriber
 - the `gtk4` and `gtk4-layer-shell` shared libraries — the pill
 - a compositor with `wlr-layer-shell`, for the pill only: sway, Hyprland, niri, KDE. Without one a
